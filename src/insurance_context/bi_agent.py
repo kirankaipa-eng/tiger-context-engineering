@@ -195,10 +195,18 @@ class BIToolkit:
         """`row_filters`: the caller's row-level security (bisecurity.filters_for); every query honours it."""
         self.layer, self.wh, self.row_filters = layer, warehouse, row_filters
         self.max_rows, self.max_top, self.last = max_rows, max_top, {}
+        self.on_query = None  # called with {sql, ms} after each warehouse query (`ask --trace`)
 
     def _query(self, sql: str, limit: int) -> tuple[list[str], list[tuple]]:
+        import time
         self.last = {"sql": sql, "rows": None}
-        cols, rows = self.wh.query(sql, limit=limit)
+        t = time.monotonic()
+        try:
+            cols, rows = self.wh.query(sql, limit=limit)
+        finally:
+            self.last["ms"] = int((time.monotonic() - t) * 1000)
+            if self.on_query:
+                self.on_query(self.last)
         self.last["rows"] = len(rows)
         return cols, rows
 

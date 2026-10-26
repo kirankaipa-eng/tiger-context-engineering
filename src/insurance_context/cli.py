@@ -470,6 +470,11 @@ def cmd_pbi_ask(args):
     args.dir = _capture_dir(args.dir)
     layer = BILayer.load(args.dir)
     kit = BIToolkit(layer, Warehouse.open(args.dir, layer, prefer=args.target))
+    if args.trace:
+        def show_sql(q):
+            sql = "\n".join("       " + line for line in q["sql"].strip().splitlines())
+            print(f"     SQL on {kit.wh.describe()} ({q['ms']} ms):\n{sql}", file=sys.stderr)
+        kit.on_query = show_sql
     orch = Orchestrator(
         api_key=os.environ["API_KEY"], base_url=os.environ["API_BASE_URL"],
         model_name=os.environ.get("CHAT_MODEL", "gpt-4o"), system_prompt=kit.system_prompt(),
@@ -487,7 +492,10 @@ def cmd_pbi_ask(args):
                 if t == "agent_tool_call" and data.get("status") == "started":
                     chunks.clear()  # text before a tool call is the model narrating; the answer is what follows the last
                     if args.trace:
-                        print(f"  -> {data.get('tool')}({json.dumps(data.get('args', {}))[:160]})", file=sys.stderr)
+                        print(f"  -> {data.get('tool')}({json.dumps(data.get('args', {}))})", file=sys.stderr)
+                elif t == "agent_tool_call" and args.trace:
+                    first = (data.get("summary") or "").strip().splitlines()[:1]
+                    print(f"  <- {data.get('tool')}: {first[0][:200] if first else ''}", file=sys.stderr)
                 elif t == "chunk":
                     chunks.append(data.get("text", ""))
                 elif t == "result":
