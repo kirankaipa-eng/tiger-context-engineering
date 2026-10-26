@@ -349,7 +349,7 @@ def cmd_pbi_export(args):
     out = Path(args.out or REPO_ROOT / "build" / "metric-views" / (src.stem if src.is_file() else src.name))
     if src.is_file() and src.suffix.lower() in (".pbix", ".pbit"):
         cap = out / "capture"
-        import_pbix(src, cap, catalog=args.catalog, schema=args.schema, standin=False)
+        import_pbix(src, cap, catalog=args.catalog, schema=args.schema, standin=not args.no_standin)
         layer = BILayer.load(cap)
     elif (src / "capture.yaml").exists():
         layer = BILayer.load(src)
@@ -374,9 +374,17 @@ def cmd_pbi_export(args):
     return 0
 
 
+def _capture_dir(folder: str) -> str:
+    """The folder holding capture.yaml: the one given, or the `capture/` an export wrote inside it."""
+    d = Path(folder)
+    return str(d / "capture") if not (d / "capture.yaml").exists() and (d / "capture" / "capture.yaml").exists() \
+        else folder
+
+
 def cmd_pbi_metrics(args):
     from .bi_agent import describe, needs, param_range, parameters
     from .bilayer import BILayer
+    args.dir = _capture_dir(args.dir)
     layer = BILayer.load(args.dir)
     for k, m in layer.metrics.items():
         if m.get("hidden"):
@@ -397,6 +405,7 @@ def cmd_pbi_metrics(args):
 def cmd_pbi_query(args):
     from .bi_agent import BIToolkit
     from .bilayer import BILayer, Warehouse
+    args.dir = _capture_dir(args.dir)
     layer = BILayer.load(args.dir)
     wh = Warehouse.open(args.dir, layer, prefer=args.target)
     where = {}
@@ -449,6 +458,7 @@ def cmd_pbi_ask(args):
         print("no LLM configured: set API_KEY, API_BASE_URL and CHAT_MODEL in .env (see .env.example)",
               file=sys.stderr)
         return 1
+    args.dir = _capture_dir(args.dir)
     layer = BILayer.load(args.dir)
     kit = BIToolkit(layer, Warehouse.open(args.dir, layer, prefer=args.target))
     orch = Orchestrator(
@@ -627,6 +637,7 @@ def main(argv: list[str] | None = None) -> int:
     pe.add_argument("--out", help="output folder (default build/metric-views/<name>)")
     pe.add_argument("--catalog", default="pilot", help="Databricks catalog of the tables and the views")
     pe.add_argument("--schema", help="Databricks schema (default: the model name)")
+    pe.add_argument("--no-standin", action="store_true", help="do not copy the .pbix rows into a local DuckDB")
     pe.set_defaults(fn=cmd_pbi_export)
     pm = psub.add_parser("metrics", help="list captured metrics")
     pm.add_argument("dir")

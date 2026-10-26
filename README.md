@@ -116,6 +116,19 @@ uv run ictx pbi ask build/pbi/sales-returns "Which product category has the high
 uv run ictx pbi export build/pbi-sample/models/sales-returns/sales-returns.pbix --out build/metric-views/sales-returns  # Databricks metric views
 ```
 
+`import` writes a capture folder: `capture.yaml` (the metrics) and `pilot.duckdb` (a local copy of
+the .pbix's rows, so questions run on a laptop). `metrics`, `query` and `ask` take that folder.
+`export` writes the Databricks metric views and, in its `capture/` subfolder, the same capture; those
+commands accept the export folder too. With your own model, swap the paths:
+
+```bash
+uv run ictx pbi import path/to/model.pbix --out build/pbi/model
+uv run ictx pbi ask build/pbi/model "Total net paid by month for the last 12 months?"
+```
+
+A TMDL folder or a DirectQuery .pbix carries no rows: answers then need Databricks
+(`DATABRICKS_*` in `.env`, `--target databricks`).
+
 The field guide continues from here: serving the metrics over MCP to Claude Code or Copilot, CI on
 a models repo, Databricks, security: [docs/powerbi/README.md](docs/powerbi/README.md).
 

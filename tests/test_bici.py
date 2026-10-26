@@ -182,7 +182,7 @@ def test_drift_finds_missing_tables_columns_and_changed_types(model, tmp_path):
 def test_drift_without_a_warehouse_fails_and_types_group_by_kind(model, tmp_path):
     write_tmdl(model, tmp_path / "models" / "shop")
     ok, report = bici.run_drift(tmp_path / "models", prefer="local")  # TMDL only: nothing to check against
-    assert not ok and "no local stand-in" in report
+    assert not ok and "no data to run on" in report
     assert [bici._family(t) for t in ("BIGINT", "decimal(18,2)", "STRING", "timestamp_ntz", "TIMESTAMP WITH TIME ZONE",
                                       "boolean", "map<string,int>")] == \
         ["number", "number", "string", "datetime", "datetime", "boolean", None]

@@ -273,7 +273,8 @@ class BILayer:
     def load(cls, folder: str | Path) -> "BILayer":
         path = Path(folder) / CAPTURE
         if not path.exists():
-            raise LayerError(f"no {CAPTURE} in {folder}; run `ictx pbi import <file.pbix> --out {folder}` first")
+            raise LayerError(f"no {CAPTURE} in {folder} (nor in {Path(folder) / 'capture'}); run "
+                             f"`ictx pbi import <file.pbix> --out {folder}` first")
         return cls(yaml.safe_load(path.read_text()))
 
     # ------------------------------------------------------------ what can be asked

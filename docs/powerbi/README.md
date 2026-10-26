@@ -93,6 +93,7 @@ every reachable column as a `field` (plus year, quarter and month fields for dat
 | `<view>.sql` | `CREATE OR REPLACE VIEW <catalog>.<schema>.<view>_metrics WITH METRICS LANGUAGE YAML AS $$ ... $$` |
 | `<view>.context.yaml` | our context the specification has no place for, keyed by measure name: Power BI name and DAX, how exact the translation is, how it must be asked; the metrics the specification cannot express (ranks, ISINSCOPE switches, ALL / ALLSELECTED, latest-period variables) with their captured definitions; display-only measures and the number each shows; what-if ranges; RLS roles; which field is which Power BI column |
 | `export.md` | per view: counts, and every metric left out with why |
+| `capture/` | the capture (`capture.yaml`, and from a .pbix the local copy of its rows): `ictx pbi metrics / query / ask` take the export folder |
 
 | captured as | in the metric view | fidelity |
 |---|---|---|

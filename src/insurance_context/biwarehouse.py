@@ -57,7 +57,9 @@ class Warehouse:
         catalog = (layer.spec.get("warehouse") or {}).get("catalog", "pilot")
         path = Path(folder) / f"{catalog}.duckdb"
         if not path.exists():
-            raise _layer_error(f"no Databricks settings and no local stand-in at {path}")
+            raise _layer_error(f"no data to run on: no local copy of the rows at {path} (a TMDL folder has none; "
+                               "capture the .pbix with `ictx pbi import` or `ictx pbi export`), and no Databricks "
+                               "settings (DATABRICKS_SERVER_HOSTNAME, DATABRICKS_HTTP_PATH, ... in .env)")
         return cls("local", str(path), timeout=timeout)
 
     def _connect(self):
