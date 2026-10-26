@@ -402,6 +402,15 @@ def cmd_pbi_metrics(args):
     return 0
 
 
+def cmd_pbi_coverage(args):
+    from .bilayer import BILayer
+    from .daxcapture import coverage
+    args.dir = _capture_dir(args.dir)
+    layer = BILayer.load(args.dir)
+    print(f"{layer.model}: " + coverage(layer.metrics, examples=args.examples))
+    return 0
+
+
 def cmd_pbi_query(args):
     from .bi_agent import BIToolkit
     from .bilayer import BILayer, Warehouse
@@ -639,6 +648,10 @@ def main(argv: list[str] | None = None) -> int:
     pe.add_argument("--schema", help="Databricks schema (default: the model name)")
     pe.add_argument("--no-standin", action="store_true", help="do not copy the .pbix rows into a local DuckDB")
     pe.set_defaults(fn=cmd_pbi_export)
+    pc = psub.add_parser("coverage", help="why measures were not captured, grouped by root cause")
+    pc.add_argument("dir")
+    pc.add_argument("--examples", type=int, default=2, help="example measures (with DAX) per cause")
+    pc.set_defaults(fn=cmd_pbi_coverage)
     pm = psub.add_parser("metrics", help="list captured metrics")
     pm.add_argument("dir")
     pm.add_argument("-v", "--verbose", action="store_true", help="also list measures not captured, with why")

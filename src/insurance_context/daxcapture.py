@@ -339,6 +339,8 @@ def _measure(ctx: _Ctx, name: str) -> dict:
             spec["status"] = "captured"
     except Unsupported as u:
         spec.update(status="presentation" if u.kind == "presentation" else "not_captured", why=u.why)
+        if u.kind != "presentation":
+            spec["gap"] = u.kind  # what kind of DAX stopped it: syntax, function, context, period, ...
     finally:
         ctx.pending.discard(name)
     ctx.out[key] = {k: spec[k] for k in ("label", "status", *[x for x in spec if x not in ("label", "status")])}
@@ -1025,3 +1027,47 @@ def _row(ctx: _Ctx, node) -> str:
             return f"{fn.lower()}({inner})"
         raise _why(fn)
     raise Unsupported("syntax", f"cannot capture {kind} in a row expression")
+
+
+# ------------------------------------------------------------------ coverage
+
+def _shape(why: str) -> str:
+    """A reason with its specifics (names, columns, quoted DAX) taken out, so like reasons group."""
+    why = re.sub(r"'[^']*'|\"[^\"]*\"", "'...'", why)
+    why = re.sub(r"(?:'[^']*'|[\w.]+)?\[[^\]]+\](?:\.\[[^\]]+\])?", "[...]", why)
+    return why
+
+
+def coverage(metrics: dict, examples: int = 2, width: int = 160) -> str:
+    """Why measures were not captured, by root cause: a measure built on one that is not captured is
+    counted under the reason its root failed, so the report shows which few gaps block the most."""
+    metrics = {k: m for k, m in metrics.items() if not m.get("hidden")}  # Power BI's measures, not their parts
+    by_label = {m.get("label"): k for k, m in metrics.items()}
+    missing = {k: m for k, m in metrics.items() if m.get("status") == "not_captured"}
+    status = {}
+    for m in metrics.values():
+        status[m.get("status")] = status.get(m.get("status"), 0) + 1
+
+    def root(k: str, seen=()) -> str:
+        m = metrics[k]
+        hit = re.match(r"built on \[(.+?)\], which is not captured", m.get("why", ""))
+        dep = by_label.get(hit.group(1)) if hit else None
+        return root(dep, (*seen, k)) if dep in missing and dep not in seen else k
+
+    groups: dict[tuple, dict] = {}
+    for k in missing:
+        r = root(k)
+        g = groups.setdefault((metrics[r].get("gap", "?"), _shape(metrics[r].get("why", ""))),
+                              {"roots": set(), "blocked": 0})
+        g["roots"].add(r)
+        g["blocked"] += 1
+    lines = [f"{len(metrics)} measures: {status.get('captured', 0)} captured, {status.get('presentation', 0)} "
+             f"display-only, {len(missing)} not captured", "",
+             "Not captured, by root cause (`blocks`: measures it stops, its own and those built on them):", "",
+             f"{'blocks':>6} {'roots':>5}  {'kind':<17} reason"]
+    for (gap, why), g in sorted(groups.items(), key=lambda x: (-x[1]["blocked"], x[0])):
+        lines.append(f"{g['blocked']:>6} {len(g['roots']):>5}  {gap:<17} {why[:width]}")
+        for r in sorted(g["roots"])[:examples]:
+            dax = metrics[r].get("dax", "")
+            lines.append(f"{'':>14}e.g. [{metrics[r].get('label', r)}] = {dax[:width - 20]}{'...' if len(dax) > width - 20 else ''}")
+    return "\n".join(lines)
