@@ -62,6 +62,8 @@ def _children(m: dict) -> list[str]:
     out = _REFS.findall(m.get("formula") or "")
     if m.get("rank"):
         out.append(m["rank"].get("of"))
+    if m.get("iterate"):
+        out += [m["iterate"].get("of"), m["iterate"].get("having")]
     for b in m.get("by_scope") or []:
         out.append(b.get("metric") or b.get("else"))
     return [k for k in out if k]
@@ -126,6 +128,13 @@ def describe(layer: BILayer, key: str) -> str:
         r = m["rank"]
         return (f"rank of each {r['over']} by {r['of']} ({'highest' if r.get('order', 'desc') == 'desc' else 'lowest'}"
                 f" = 1{', ties share a rank, no gaps' if r.get('ties') == 'dense' else ''})")
+    if m.get("iterate"):
+        it = m["iterate"]
+        each = f"{it['of']} for each {', '.join(it['over'])}"
+        if it["agg"] == "count":
+            return f"count of {', '.join(it['over'])} values where {it['having']} holds"
+        return (f"{ {'sum': 'sum', 'avg': 'average', 'min': 'smallest', 'max': 'largest'}[it['agg']] } of {each}"
+                + (f" where {it['having']} holds" if it.get("having") else ""))
     if m.get("by_scope"):
         parts = [f"by {b['column']}: {b['metric']}" for b in m["by_scope"] if "column" in b]
         other = next((b["else"] for b in m["by_scope"] if "else" in b), None)
@@ -247,17 +256,21 @@ class BIToolkit:
         t, c, _ = parse_ref(column)
         return (((self.layer.tables.get(t) or {}).get("columns") or {}).get(c) or {}).get("type")
 
-    def column_values(self, column: str) -> str:
+    def column_values(self, column: str, filters: dict | None = None) -> str:
         try:
-            _, rows = self._query(self._values_sql(column), MAX_VALUES + 1)
+            where, notes = self.resolve(filters)
+            _, rows = self._query(self._values_sql(column, where), MAX_VALUES + 1)
         except Exception as exc:  # noqa: BLE001 - report it to the agent, do not end the turn
             return f"Error: {exc}"
         vals = [r[0] for r in rows]
         many = f"more than {MAX_VALUES:,}" if len(vals) > MAX_VALUES else str(len(vals))
-        return f"{column} has {many} values: " + ", ".join(map(str, vals[:100])) + (" ..." if len(vals) > 100 else "")
+        shown = 500 if filters else 100
+        head = f"{column}" + (f" where {', '.join(f'{k} = {v!r}' for k, v in where.items())}" if where else "")
+        return (f"{head} has {many} values: " + ", ".join(map(str, vals[:shown])) + (" ..." if len(vals) > shown else "")
+                + (f"\n(Matched: {'; '.join(notes)})" if notes else ""))
 
-    def _values_sql(self, column: str) -> str:
-        sql = self.layer.values_sql(column, row_filters=self.row_filters)
+    def _values_sql(self, column: str, where: dict | None = None) -> str:
+        sql = self.layer.values_sql(column, row_filters=self.row_filters, where=where, limit=MAX_VALUES + 1)
         if self.wh.dialect != "duckdb":
             import sqlglot
             sql = sqlglot.transpile(sql, read="duckdb", write=self.wh.dialect)[0]
@@ -371,6 +384,8 @@ How to work:
    take :year/:quarter/:month/:week/:day), `filters` as {{Table[Column]: value or [values]}}, and
    `top` for "top/bottom N" (ascending=true for bottom). Never estimate or do arithmetic the tool
    could do; for a comparison between periods, compute by month or year and compare those rows.
+   To LIST things ("which drugs are type T", "what plans are there") call column_values with
+   `filters`; do not invent a metric for a question that asks for no number.
 3. Hints after a metric in list_metrics say how it must be asked:
    - [needs by=...]: put those columns in `by`. A period metric needs the date at that grain;
      a rank needs the column it ranks (e.g. Store[Store]).
@@ -403,9 +418,12 @@ Data is {"the local stand-in built from the .pbix's own rows; say so once if the
             """Columns the given metrics (default: all) can be grouped or filtered by, as Table[Column]."""
             return kit.list_columns(metrics)
 
-        async def column_values(ctx: RunContext, column: str) -> str:
-            """Distinct values of a column (Table[Column], optionally with a date grain like :month)."""
-            return kit.column_values(column)
+        async def column_values(ctx: RunContext, column: str,
+                                filters: dict[str, str | int | float | list[str]] | None = None) -> str:
+            """Distinct values of a column (Table[Column], optionally with a date grain like :month), narrowed
+            by `filters` on its table or tables it reaches. Use it to LIST things ("which drugs are type T"),
+            and compute only when a number is asked for."""
+            return kit.column_values(column, filters)
 
         async def compute(ctx: RunContext, metrics: list[str], by: list[str] | None = None,
                           filters: dict[str, str | int | float | list[str]] | None = None,

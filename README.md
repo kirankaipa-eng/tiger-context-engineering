@@ -110,6 +110,7 @@ uv run ictx sql summit_group --dialect snowflake > views.sql
 uv run python scripts/pbi_sample.py                       # build/pbi-sample/models/sales-returns/
 uv run ictx pbi import build/pbi-sample/models/sales-returns/sales-returns.pbix --out build/pbi/sales-returns
 uv run ictx pbi metrics build/pbi/sales-returns            # 48 captured, 9 display-only, 1 not captured
+uv run ictx pbi coverage build/pbi/sales-returns           # what was not captured, grouped by root cause
 uv run ictx pbi query build/pbi/sales-returns -m net_sales,store_top_n --by "Store[Store]" --top 3
 uv run ictx pbi query build/pbi/sales-returns -m wif_forecast --param pct_return_rate=25
 uv run ictx pbi ask build/pbi/sales-returns "Which product category has the highest return rate?"

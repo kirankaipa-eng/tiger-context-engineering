@@ -488,9 +488,12 @@ def build_server(served: Served, *, verifier: Verifier | None = None, principal:
                          warehouse=False)
 
     @mcp.tool()
-    async def column_values(ctx: Context, column: str, model: str | None = None) -> str:
-        """Distinct values of a column (Table[Column], a date column may add :year/:quarter/:month/:week/:day)."""
-        return await run("column_values", ctx, model, {"column": column}, lambda kit: kit.column_values(column))
+    async def column_values(ctx: Context, column: str, filters: dict[str, str | int | float | list[str]] | None = None,
+                            model: str | None = None) -> str:
+        """Distinct values of a column (Table[Column], a date column may add :year/:quarter/:month/:week/:day),
+        narrowed by `filters` on its table or tables it reaches. Use it to list things; compute for numbers."""
+        return await run("column_values", ctx, model, {"column": column, "filters": filters},
+                         lambda kit: kit.column_values(column, filters))
 
     @mcp.tool()
     async def compute(ctx: Context, metrics: list[str], by: list[str] | None = None,

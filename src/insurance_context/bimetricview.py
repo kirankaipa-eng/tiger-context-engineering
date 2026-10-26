@@ -44,12 +44,14 @@ from .bilayer import BILayer, LayerError, parse_ref, ref, snake
 
 SPEC = "1.1"
 _AGG = {"sum": "SUM({})", "avg": "AVG({})", "min": "MIN({})", "max": "MAX({})", "count": "COUNT({})",
-        "count_distinct": "COUNT(DISTINCT {})"}
+        "count_distinct": "COUNT(DISTINCT {})", "median": "MEDIAN({})"}
 _COL = re.compile(r"\{('(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_ ]*)\[([^\]]+)\]\}")
 _REF = re.compile(r"\{([?$]?)([a-z0-9_]+)\}")
 _GRAIN_FIELD = {"year": ("year", "DATE_TRUNC('YEAR', {})"), "quarter": ("quarter", "DATE_TRUNC('QUARTER', {})"),
                 "month": ("month", "DATE_TRUNC('MONTH', {})")}
 _NOT_IN_SPEC = {
+    "iterate": "computed per value of a column, then combined (SUMX / AVERAGEX / COUNTROWS(FILTER(VALUES ...)) "
+               "over a measure); the specification has no per-group-then-combine measures; our engine answers it",
     "rank": "ranks are not part of the metric view specification; our engine answers it (RANK() over the rows "
             "a question returns)",
     "by_scope": "the answer depends on which column the question groups by (ISINSCOPE); the specification has no "

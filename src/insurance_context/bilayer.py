@@ -71,7 +71,7 @@ _RESHAPE = ("Table.AddColumn", "Table.NestedJoin", "Table.ExpandTableColumn", "T
 _STEP = {"day": ("DAY", 1), "month": ("MONTH", 1), "quarter": ("MONTH", 3), "year": ("YEAR", 1)}
 _UNIT_KEY = {"year": "year({})", "quarter": "(year({0}) * 10 + quarter({0}))", "month": "strftime({}, '%Y-%m')"}
 _AGG_SQL = {"sum": "sum({})", "avg": "avg({})", "min": "min({})", "max": "max({})", "count": "count({})",
-            "count_distinct": "count(DISTINCT {})"}
+            "count_distinct": "count(DISTINCT {})", "median": "median({})"}
 
 
 class LayerError(ValueError):
@@ -282,21 +282,25 @@ class BILayer:
     def captured(self) -> dict[str, dict]:
         return {k: v for k, v in self.metrics.items() if v.get("status") == "captured" and not v.get("hidden")}
 
-    def leaves(self, key: str, seen: tuple = (), by: list[str] | None = None) -> list[str]:
+    def leaves(self, key: str, seen: tuple = (), by: list[str] | None = None, units: bool = False) -> list[str]:
         """The base metrics (one aggregate over a table) a metric is computed from. With `by`, a scope
-        switch follows the branch that question takes; without it, every branch."""
+        switch follows the branch that question takes; without it, every branch. With `units`, an
+        `iterate` metric is returned as itself (compile computes it in a query of its own)."""
         if key in seen:
             raise LayerError(f"metric cycle: {' -> '.join((*seen, key))}")
         m = self.metrics.get(key)
         if m is None or (m.get("status") not in ("captured", None) and not m.get("hidden")):
             known = ", ".join(self.captured())
             raise LayerError(f"no captured metric {key!r}" + (f" ({m.get('why')})" if m else "") + f". Captured: {known}")
+        if units and "iterate" in m:
+            self.leaves(key, seen, by)  # its own parts are checked (missing, cycles) all the same
+            return [key]
         refs = self._refs(key, by)
         if refs is None:
             return [key]
         out = []
         for k in refs:
-            out += [x for x in self.leaves(k, (*seen, key), by) if x not in out]
+            out += [x for x in self.leaves(k, (*seen, key), by, units) if x not in out]
         return out
 
     def _refs(self, key: str, by: list[str] | None) -> list[str] | None:
@@ -306,6 +310,9 @@ class BILayer:
             return [x.group(3) for x in _REF.finditer(m["formula"]) if x.group(3)]
         if "rank" in m:
             return [m["rank"]["of"]]
+        if "iterate" in m:
+            it = m["iterate"]
+            return [it["of"], *([it["having"]] if it.get("having") else [])]
         if "by_scope" in m:
             if by is None:
                 return [b.get("metric") or b.get("else") for b in m["by_scope"]]
@@ -484,6 +491,8 @@ class BILayer:
         elif "rank" in m:
             extra.append(m["rank"]["over"])
             refs = [m["rank"]["of"]]
+        elif "iterate" in m:
+            refs = self._refs(key, by)
         else:
             refs = self._refs(key, by)
         if refs is None:
@@ -592,19 +601,21 @@ class BILayer:
         param = self._params(params)
         leaves = []
         for k in metrics:
-            leaves += [x for x in self.leaves(k, by=by) if x not in leaves]
+            leaves += [x for x in self.leaves(k, by=by, units=True) if x not in leaves]
+        iters = [k for k in leaves if "iterate" in self.metrics[k]]
+        leaves = [k for k in leaves if k not in iters]
         groups: dict[tuple, list[str]] = {}
         for k in leaves:
             m = self.metrics[k]
             t = m.get("time")
             groups.setdefault((m["table"], tuple(m.get("filter") or []), tuple(sorted(t.items())) if t else None,
                                _frozen(m.get("context")), _frozen(m.get("latest"))), []).append(k)
+        homes = sorted({g[0] for g in groups} | {self.metrics[x]["table"] for k in iters for x in self.leaves(k)})
         for d in [*by, *where]:  # a column no metric's rows reach is a question the model cannot answer
             t, c, _ = parse_ref(d)
-            homes = sorted({g[0] for g in groups})
             if t not in self.tables or c not in (self.tables[t].get("columns") or {}):
                 raise LayerError(f"no column {ref(t, c)} in the warehouse mapping")
-            if groups and t in self.tables and not any(t in self.reachable(h) for h in homes):
+            if homes and t in self.tables and not any(t in self.reachable(h) for h in homes):
                 raise LayerError(f"{t} is not related to {', '.join(homes)}: rows of {', '.join(homes)} do not reach "
                                  f"{t} through the model's relationships, so no metric asked for has a value per "
                                  f"{ref(t, c)}; group or filter by a column of a table they reach")
@@ -714,8 +725,16 @@ class BILayer:
             if by:
                 joins.append((f"m{i}", on))
             ctes.append(f"m{i} AS (\n  {sql}\n)")
+        for i, k in enumerate(iters):
+            ctes.append(f"x{i} AS (\n  {self._iterate(k, by, where, row_filters, params)}\n)")
+            src[k] = f"x{i}.{k}"
+            keyed.append(f"x{i}")
+            if by:
+                joins.append((f"x{i}", [f"x{i}.d{n} IS NOT DISTINCT FROM k.d{n}" for n in range(len(by))]))
+            else:
+                pieces.append(f"x{i}")
         q = _Q(src, by, param)
-        if not groups:  # only what-if parameters: nothing to read
+        if not groups and not iters:  # only what-if parameters: nothing to read
             if by:
                 raise LayerError(f"{', '.join(self._label(k) for k in metrics)} reads no rows (only what-if "
                                  f"parameters), so it has no value per {', '.join(by)}; ask it without by, or with a metric")
@@ -743,6 +762,27 @@ class BILayer:
         if top:
             sql += f"\nLIMIT {int(top)}"
         return sql if dialect == "duckdb" else sqlglot.transpile(sql, read="duckdb", write=dialect, pretty=True)[0]
+
+    def _iterate(self, key: str, by: list[str], where: dict, row_filters, params) -> str:
+        """SUMX / AVERAGEX / MINX / MAXX / COUNTX / COUNTROWS(FILTER(...)) over the values of `over`:
+        the metric `of` per cell of the question and value of `over` (DAX's context transition), then
+        combined per cell; `having` keeps the values whose metric is non-zero (FILTER's condition)."""
+        it, label = self.metrics[key]["iterate"], self._label(key)
+        agg = it.get("agg", "sum")
+        if agg not in ("sum", "avg", "min", "max", "count"):
+            raise LayerError(f"{label}: iterate.agg is sum, avg, min, max or count")
+        over = [d for d in it["over"] if parse_ref(d)[:2] not in {parse_ref(b)[:2] for b in by}]
+        inner_by = [*by, *over]
+        wanted = [it["of"], *([it["having"]] if it.get("having") else [])]
+        inner = self.compile(wanted, by=inner_by, where=where, row_filters=row_filters, params=params)
+        dims = [f"t.{_ident(d)} AS d{n}" for n, d in enumerate(by)]
+        value = "*" if agg == "count" else f"t.{it['of']}"
+        sql = f"SELECT {', '.join([*dims, _AGG_SQL[agg].format(value) + f' AS {key}'])}\n  FROM ({inner}) t"
+        if it.get("having"):
+            sql += f"\n  WHERE t.{it['having']} <> 0"
+        if by:
+            sql += f"\n  GROUP BY {', '.join(str(n + 1) for n in range(len(by)))}"
+        return sql
 
     def _cells(self, table: str, by: list[str], where: dict, row_filters, lat: dict | None, param,
                names: list[int]) -> str:
@@ -798,7 +838,7 @@ class BILayer:
             return self._expr(x.group(3), q, raw=bool(x.group(2)), ranking=ranking)
         body = "(" + _REF.sub(sub, m["formula"]) + ")"
         if raw:  # BLANK when every number it reads is blank
-            cols = [q.src[x] for x in self.leaves(key, by=q.by)]
+            cols = [q.src[x] for x in self.leaves(key, by=q.by, units=True)]
             if cols:
                 return f"(CASE WHEN {' AND '.join(f'{c} IS NULL' for c in cols)} THEN NULL ELSE {body} END)"
         return body
@@ -811,12 +851,19 @@ class BILayer:
         reach = self.reachable(table)
         return [f"({self._render(cond, scope)})" for t, cond in row_filters.items() if t in reach]
 
-    def values_sql(self, dim: str, limit: int = 500, row_filters: dict[str, str] | None = None) -> str:
-        """Distinct values a column takes, to match what people type against what the data holds."""
+    def values_sql(self, dim: str, limit: int = 500, row_filters: dict[str, str] | None = None,
+                   where: dict | None = None) -> str:
+        """Distinct values a column takes, to match what people type against what the data holds, or to
+        list them: `where` narrows them by columns of its table or tables it reaches ({Table[Column]: value})."""
         table, _, _ = parse_ref(dim)
         scope = _Scope(table, {})
         expr = self._dim(dim, scope)
         conds = [f"{expr} IS NOT NULL"] + self._security(table, row_filters, scope)
+        for d, v in (where or {}).items():
+            if parse_ref(d)[0] not in self.reachable(table):
+                raise LayerError(f"{parse_ref(d)[0]} is not related to {table}: list {dim} filtered by columns of "
+                                 f"{table} or of tables it reaches, or ask a metric by {dim} with that filter")
+            conds.append(_condition(self._dim(d, scope), v))
         joins = "".join(f" {j}" for _, j in scope.joins.values())
         return (f"SELECT DISTINCT {expr} AS v FROM {self._relation(table)} b{joins} WHERE {' AND '.join(conds)} "
                 f"ORDER BY 1 LIMIT {limit}")

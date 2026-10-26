@@ -59,7 +59,7 @@ from dataclasses import dataclass, field
 
 from .pbimodel import Model
 
-AGGS = {"SUM": "sum", "AVERAGE": "avg", "MIN": "min", "MAX": "max", "COUNT": "count", "COUNTA": "count",
+AGGS = {"MEDIAN": "median", "SUM": "sum", "AVERAGE": "avg", "MIN": "min", "MAX": "max", "COUNT": "count", "COUNTA": "count",
         "DISTINCTCOUNT": "count_distinct", "DISTINCTCOUNTNOBLANK": "count_distinct"}
 ITERATORS = {"SUMX": "sum", "AVERAGEX": "avg", "MINX": "min", "MAXX": "max", "COUNTX": "count"}
 _TIME = {"PREVIOUSMONTH", "PREVIOUSYEAR", "PREVIOUSQUARTER", "PREVIOUSDAY", "NEXTMONTH", "NEXTYEAR", "NEXTQUARTER",
@@ -315,6 +315,8 @@ def _refs(spec: dict) -> list[str]:
     out = [m.group(2) for m in _REF.finditer(spec.get("formula", ""))]
     if "rank" in spec:
         out.append(spec["rank"]["of"])
+    if "iterate" in spec:
+        out += [spec["iterate"]["of"], *([spec["iterate"]["having"]] if spec["iterate"].get("having") else [])]
     return out + [b.get("metric") or b.get("else") for b in spec.get("by_scope", [])]
 
 
@@ -457,7 +459,7 @@ def _why(fn: str) -> Unsupported:
     return Unsupported("function", f"uses {fn}, which is not captured yet")
 
 
-_SAME = ("table", "agg", "expr", "filter", "context", "latest", "time", "formula", "rank", "by_scope")
+_SAME = ("table", "agg", "expr", "filter", "context", "latest", "time", "formula", "rank", "by_scope", "iterate")
 
 
 def _hidden(ctx: _Ctx, owner: str, spec: dict) -> str:
@@ -557,6 +559,9 @@ def _value(ctx: _Ctx, node, owner: str) -> str:
         if fn == "VALUE" and args and args[0] is not None and _is_text(args[0]):
             raise Unsupported("sort_key", "turns text glued together (VALUE of CONCATENATE) back into a number: a "
                                           "sort key for a visual, which measures nothing; sort by its parts instead")
+        it = _iterate(ctx, node, owner)
+        if it is not None:
+            return it
         base = _aggregation(ctx, node)
         if base is not None:
             return "{" + _hidden(ctx, owner, base) + "}"
@@ -703,7 +708,12 @@ def _calculate(ctx: _Ctx, expr, args: list, owner: str) -> str:
     """CALCULATE(expr, filters...): row conditions, filter modifiers (ALL...), a latest period
     (T[C] = MAX(T[C]) + n) and at most one period (time intelligence)."""
     filters, periods, context, latest = [], [], [], []
-    for a in args:
+    for a in list(args):
+        if a[0] == "call" and a[1] == "FILTER" and len(a[2]) == 2 and a[2][0] is not None and \
+                a[2][0][0] == "call" and a[2][0][1] in ("ALL", "REMOVEFILTERS") and not _has_measure(ctx, a[2][1]):
+            context += [e for e in (_modifier(ctx, a[2][0]) or []) if e not in context]
+            filters.append(_row(ctx, a[2][1]))
+            continue
         m = _modifier(ctx, a)
         if m is not None:
             context += [e for e in m if e not in context]
@@ -952,6 +962,80 @@ def _aggregation(ctx: _Ctx, node) -> dict | None:
     return None
 
 
+def _has_measure(ctx: _Ctx, node) -> bool:
+    """The expression reads a measure (directly, or through CALCULATE): evaluated per row, it needs
+    the row's context (DAX's context transition), which a plain row expression does not have."""
+    if isinstance(node, tuple):
+        if node and node[0] == "ref":
+            return True
+        if node and node[0] == "call" and node[1] == "CALCULATE":
+            return True
+        if node and node[0] == "col" and _measure_ref(ctx, node)[0] == "ref":
+            return True
+        return any(_has_measure(ctx, x) for x in node[1:])
+    if isinstance(node, list):
+        return any(_has_measure(ctx, x) for x in node)
+    return False
+
+
+def _over(ctx: _Ctx, node) -> list[str]:
+    """What an iterator steps through, as the columns that identify one step: VALUES(T[C]) or
+    DISTINCT(T[C]) -> T[C]; a table on the one side of a relationship -> its key; another table ->
+    its columns (each distinct row)."""
+    if node[0] == "call" and node[1] in ("VALUES", "DISTINCT") and node[2] and node[2][0] is not None:
+        a = node[2][0]
+        if a[0] == "col":
+            _column(ctx, a)
+            return [col(a[1], a[2])[1:-1]]
+        node = a
+    if node[0] != "table":
+        raise _why(node[1]) if node[0] == "call" else Unsupported("syntax", "iterates something other than a table")
+    t = ctx.model.tables.get(node[1])
+    if t is None:
+        raise Unsupported("reference", f"no table {node[1]!r} in the model")
+    keys = sorted({r.to_column for r in ctx.model.relationships if r.to_table == t.name and r.active})
+    names = keys if len(keys) == 1 else [c.name for c in t.columns if c.expression is None]
+    for c in names:
+        _column(ctx, ("col", t.name, c))
+    return [col(t.name, c)[1:-1] for c in names]
+
+
+def _iterate(ctx: _Ctx, node, owner: str) -> str | None:
+    """SUMX / AVERAGEX / MINX / MAXX / COUNTX over VALUES(T[C]) or a table, of an expression that reads
+    measures; COUNTROWS(FILTER(VALUES(T[C]), <measure condition>)): the measure per value, then
+    combined (`iterate`). None for a plain row iterator, which _aggregation captures."""
+    fn, args = node[1], node[2]
+    if fn in ITERATORS and len(args) >= 2 and args[0] is not None and args[1] is not None:
+        table, expr = args[0], args[1]
+    elif fn == "COUNTROWS" and args and args[0] is not None:
+        table, expr = args[0], None
+    else:
+        return None
+    cond = None
+    if table[0] == "call" and table[1] == "FILTER" and len(table[2]) == 2 and None not in table[2]:
+        base, test = table[2]
+        if _has_measure(ctx, test):
+            table, cond = base, test
+        elif base[0] == "call" and base[1] in ("VALUES", "DISTINCT"):  # a condition on the values themselves
+            if expr is None:
+                return None
+            table, expr = base, ("call", "CALCULATE", [expr, test])
+    grouped = table[0] == "call" and table[1] in ("VALUES", "DISTINCT")
+    if cond is None and not (expr is not None and _has_measure(ctx, expr)) and not (grouped and expr is not None):
+        return None
+    over = _over(ctx, table)
+    spec = {"agg": "count" if fn == "COUNTROWS" else ITERATORS[fn], "over": over}
+    if cond is not None:
+        spec["having"] = _hidden(ctx, owner, {"formula": f"CASE WHEN {_test(ctx, cond, owner)} THEN 1 ELSE 0 END"})
+    spec["of"] = _part(ctx, expr, owner) if expr is not None else spec["having"]
+    if fn == "SUMX" and cond is None and table[0] == "table":  # row by row over the table its rows are in
+        leaf = ctx.out.get(spec["of"], {})
+        if leaf.get("table") == table[1] and leaf.get("agg") in ("sum", "count") and not any(
+                leaf.get(x) for x in ("context", "latest", "time")):
+            return "{" + spec["of"] + "}"
+    return "{" + _hidden(ctx, owner, {"iterate": spec}) + "}"
+
+
 def _column(ctx: _Ctx, c) -> None:
     t = ctx.model.tables.get(c[1])
     if t is None:
@@ -974,6 +1058,8 @@ def _condition(ctx: _Ctx, node) -> str | None:
     if node[0] == "call" and node[1] == "FILTER":
         table, filters = _table_arg(ctx, node)
         return " AND ".join(f"({f})" for f in filters)
+    if node[0] == "call" and node[1] in ("NOT", "AND", "OR", "ISBLANK"):
+        return _row(ctx, node)
     if node[0] == "call":
         raise _why(node[1])
     return _row(ctx, node)
@@ -1014,6 +1100,8 @@ def _row(ctx: _Ctx, node) -> str:
             return _row(ctx, args[0])
         if fn == "NOT":
             return f"(NOT {_row(ctx, args[0])})"
+        if fn in ("AND", "OR") and len(args) == 2:
+            return f"({_row(ctx, args[0])} {fn} {_row(ctx, args[1])})"
         if fn == "ISBLANK":
             return f"({_row(ctx, args[0])} IS NULL)"
         if fn == "DIVIDE":
