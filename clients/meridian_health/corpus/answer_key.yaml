@@ -1,0 +1,66 @@
+# What a good curator should conclude from the Meridian Health Plan corpus.
+# Used to measure recall (needles found) and precision (decoys ignored).
+# `corroborated_by` names the planted signal in the Meridian fixture warehouse
+# (fixtures/payer_warehouse.py, build_meridian) that confirms the document.
+needles:
+  - scenario: 1
+    doc: cms_0057f_prior_auth_excerpt.md
+    page: 3
+    kind: metric_change
+    change: >-
+      governed metric for PA decisions within CMS-0057-F time frames (72h expedited,
+      7 days standard), measured in hours from the receipt timestamp
+    layer: pack
+    corroborated_by: >-
+      ma_src.auth: standard requests delegated to the MSK benefit manager (MSK_BM) received
+      March-April 2026 decided in 8-16 days; pa_timeliness_rate by month drops to ~75%
+  - scenario: 2
+    doc: hcc_v28_phase_in_memo.md
+    page: 2
+    kind: ontology_change
+    change: new value in RiskScoreBasisEnum (cms_hcc_v28) for payment year 2026
+    layer: pack
+    corroborated_by: ma_src.risk_score.model_ver = 'V28' for payment_year 2026 (drift proposal on RiskScoreBasisEnum)
+  - scenario: 3
+    doc: payment_integrity_policy_pi12.md
+    page: 2
+    kind: ontology_change
+    change: new value in DenialCategoryEnum (clinical_validation)
+    layer: pack
+    corroborated_by: ma_src.claim.denial_group = 'CLINICAL_VALIDATION' from March 2026 (drift proposal on DenialCategoryEnum)
+  - scenario: 4
+    doc: star_ratings_measure_update_2027.md
+    page: 2
+    kind: ontology_change
+    change: new attribute on StarMeasure (display_only); weighted star metric must exclude display measures
+    layer: pack
+  - scenario: 5
+    doc: lakeshore_capitation_amendment_3.md
+    page: 2
+    kind: ontology_change
+    change: >-
+      new attribute on ValueBasedArrangement (quality withhold rate). The capitation rate
+      change ($165 -> $172) is data, not an ontology change.
+    layer: pack
+  - scenario: 6
+    doc: pbm_formulary_change_notice_2026q3.md
+    page: 2
+    kind: ontology_change
+    change: new value in BrandGenericEnum (biosimilar)
+    layer: pack
+  - scenario: 7
+    doc: um_policy_um014_gold_card.md
+    page: 3
+    kind: ontology_change
+    change: client extension on PriorAuthorization (gold-card exemption flag)
+    layer: client
+  - scenario: 8
+    doc: finance_ops_minutes_2026_05.md
+    page: 1
+    kind: ask_owner
+    change: conflicting definitions of 'MCR' (finance) vs medical_loss_ratio (actuarial)
+decoys:
+  - {doc: ndc_drug_file_update_2026q2.md, page: 2, kind: reference_data, why: routine code-set load, no model change}
+  - {doc: benefit_summary_rules_2026.md, page: 1, kind: rule, why: benefit configuration (copay, visit limits), not ontology}
+  - {doc: medicare_choice_brochure_2026.md, kind: noise}
+  - {doc: trade_press_ma_stars_2026.md, kind: noise}

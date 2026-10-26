@@ -1,0 +1,14 @@
+.env
+.venv/
+build/
+__pycache__/
+*.duckdb
+*.duckdb.wal
+.pytest_cache/
+.studio/
+studio/web/node_modules/
+studio/web/.next/
+studio/web/next-env.d.ts
+studio/web/tsconfig.tsbuildinfo
+.studio-business/
+studio/web/.next-business/

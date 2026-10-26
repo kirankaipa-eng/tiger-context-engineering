@@ -1,0 +1,415 @@
+"""Q&A over a Power BI model's captured metrics: agent tools whose numbers all come from SQL.
+
+    kit = BIToolkit(BILayer.load(folder), Warehouse.open(folder, layer))
+    Orchestrator(..., system_prompt=kit.system_prompt(), tools=kit.tools(), tool_registry=kit.registry())
+
+The agent never writes SQL. It picks captured metrics, columns to group or filter by, and a
+top N; the layer compiles that to SQL for the warehouse, and every answer carries the
+definitions and the SQL that produced it. Filter values are matched to what the data holds
+("external" -> "External") or the call fails with the valid values, so a typo cannot come
+back as a zero that looks like an answer.
+
+What a metric needs to be asked (list_metrics shows it as a hint after the definition):
+  [needs by=Calendar[Date]:month or finer]   a period metric: group by the date at that grain
+  [needs by=Store[Store]]                     a rank: group by the column it ranks
+  [what-if return_rate: ...]                  reads a what-if parameter: compute(params={key: value})
+A scope switch (DAX ISINSCOPE) answers with a different metric depending on the column grouped
+by; its definition says which. Presentation measures (text for a visual) are listed as
+display-only with the metric whose number they show. `metric_needs` reads BILayer.needs(key)
+and falls back to time_by(key) plus the spec's rank and parameter shapes.
+
+Limits: at most `max_rows` rows are fetched and shown (the warehouse stops reading past them), a
+column's distinct values are read up to MAX_VALUES, and `top` above `max_top` is refused. After a
+call, `last` holds the SQL that ran and the rows it returned, for the server's audit log.
+"""
+
+from __future__ import annotations
+
+from .agent_runtime import RunContext  # tool signatures are resolved against module globals
+
+import re
+from decimal import Decimal
+
+from .agent_tools import _markdown, _match_value
+from .bilayer import BILayer, LayerError, Warehouse, parse_ref
+
+MAX_ROWS = 200
+MAX_VALUES = 10_000
+
+
+def _fmt(v) -> str:
+    if isinstance(v, Decimal):  # Databricks DECIMAL sums, DuckDB numeric literals
+        v = int(v) if v == v.to_integral_value() and abs(v) >= 1000 else float(v)
+    if isinstance(v, bool) or v is None:
+        return "" if v is None else str(v)
+    if isinstance(v, int):
+        return f"{v:,}"
+    if isinstance(v, float):
+        return f"{v:,.0f}" if abs(v) >= 1000 else f"{v:,.4g}"
+    return str(v)
+
+
+def _num(v) -> str:
+    return "?" if v is None else f"{v:g}" if isinstance(v, (int, float)) and not isinstance(v, bool) else str(v)
+
+
+_REFS = re.compile(r"\{\??([a-z0-9_]+)\}")
+_PARAM = re.compile(r"\{\$([A-Za-z0-9_]+)\}")
+
+
+def _children(m: dict) -> list[str]:
+    """Metric keys a metric reads: formula placeholders, a rank's `of`, a scope switch's branches."""
+    out = _REFS.findall(m.get("formula") or "")
+    if m.get("rank"):
+        out.append(m["rank"].get("of"))
+    for b in m.get("by_scope") or []:
+        out.append(b.get("metric") or b.get("else"))
+    return [k for k in out if k]
+
+
+def _tree(layer: BILayer, key: str) -> list[str]:
+    seen, todo = [], [key]
+    while todo:
+        k = todo.pop()
+        if k in seen or k not in layer.metrics:
+            continue
+        seen.append(k)
+        todo += _children(layer.metrics[k])
+    return seen
+
+
+def parameters(layer: BILayer) -> dict[str, dict]:
+    """The model's what-if parameters: {key: {label, table, column, min, max, step, default}}."""
+    return dict(layer.spec.get("parameters") or {})
+
+
+def metric_needs(layer: BILayer, key: str) -> dict:
+    """{"by": groupings the metric needs, "params": {key: {label, min, max, step, default}}}.
+    BILayer.needs when the compiler has it; else time_by plus rank `over` and `{$param}` reads."""
+    known = parameters(layer)
+    if hasattr(layer, "needs"):
+        try:
+            got = layer.needs(key) or {}
+        except LayerError:
+            return {"by": [], "params": {}}
+        return {"by": list(got.get("by") or []),
+                "params": {p: {**known.get(p, {}), **(v or {})} for p, v in (got.get("params") or {}).items()}}
+    try:
+        by = list(layer.time_by(key))
+    except Exception:  # noqa: BLE001 - a shape this compiler does not know yet
+        by = []
+    params: dict = {}
+    for k in _tree(layer, key):
+        m = layer.metrics[k]
+        over = (m.get("rank") or {}).get("over")
+        if over and over not in by:
+            by.append(over)
+        for p in _PARAM.findall(m.get("formula") or "") + _PARAM.findall(m.get("expr") or ""):
+            params.setdefault(p, known.get(p, {}))
+    return {"by": by, "params": params}
+
+
+def param_range(p: str, info: dict) -> str:
+    """"% Return Rate (return_rate): 0 to 0.2 step 0.01, default 0.05"."""
+    label = info.get("label")
+    rng = (f"{_num(info.get('min'))} to {_num(info.get('max'))}" + (f" step {_num(info['step'])}" if info.get("step")
+                                                                   else "")) if "min" in info else "any value"
+    default = f"default {_num(info['default'])}" if info.get("default") is not None else "no default: must be given"
+    return f"{label + ' (' + p + ')' if label and label != p else p}: {rng}, {default}"
+
+
+def describe(layer: BILayer, key: str) -> str:
+    m = layer.metrics[key]
+    if "formula" in m:
+        return f"formula {m['formula']}"
+    if m.get("rank"):
+        r = m["rank"]
+        return (f"rank of each {r['over']} by {r['of']} ({'highest' if r.get('order', 'desc') == 'desc' else 'lowest'}"
+                f" = 1{', ties share a rank, no gaps' if r.get('ties') == 'dense' else ''})")
+    if m.get("by_scope"):
+        parts = [f"by {b['column']}: {b['metric']}" for b in m["by_scope"] if "column" in b]
+        other = next((b["else"] for b in m["by_scope"] if "else" in b), None)
+        return ("depends on the grouping: " + "; ".join(parts)
+                + (f"; otherwise {other}" if other else "; otherwise not answered (group by one of those columns)"))
+    if m.get("status") == "presentation":
+        return f"text for display, shows {m['value']}" if m.get("value") else "text for display"
+    what = f"{m['agg']}({m['expr']})" if m["expr"] != "*" else f"count of {m['table']} rows"
+    what += f" where {' and '.join(m['filter'])}" if m.get("filter") else ""
+    t = m.get("time")
+    if t:
+        what += (f", {t['to_date']} to date over {t['date']}" if t.get("to_date") else
+                 f", {t['date']} shifted {t['shift']:+d} {t['unit']}")
+    for c in m.get("context") or []:
+        exc = f" except {', '.join(c['except'])}" if c.get("except") else ""
+        if c.get("level"):
+            what += f", ignoring the {c['level']} within {c['remove']} (by {c['level']} it gives the whole year)"
+        elif c.get("keep") == "filters":
+            what += f", ignoring the question's grouping by {c['remove']}{exc} (its filters still apply)"
+        else:
+            what += f", ignoring the question's grouping and filters on {c['remove']}{exc}"
+    lt = m.get("latest")
+    if lt:
+        off = int(lt.get("offset") or 0)
+        what += (f", only the {'latest' if lt.get('agg', 'max') == 'max' else 'earliest'} {lt['column']} in the "
+                 f"question's rows" + (f" {off:+d}" if off else ""))
+    return what
+
+
+def needs(layer: BILayer, key: str) -> str:
+    """How a metric must be asked for ("" for an ordinary metric): groupings, then what-if parameters."""
+    n = metric_needs(layer, key)
+    out = ""
+    if n["by"]:
+        exact = set()
+        for x in _tree(layer, key):
+            t = layer.metrics[x].get("time") or {}
+            if t.get("grain"):
+                exact.add(t["date"])
+        shown = []
+        for d in n["by"]:
+            try:
+                t, c, g = parse_ref(d)
+            except LayerError:
+                shown.append(d)
+                continue
+            dated = g and not any(parse_ref(e)[:2] == (t, c) for e in exact)
+            shown.append(d + (" or finer" if dated else ""))
+        out += f" [needs by={', '.join(shown)}]"
+    if n["params"]:
+        out += " [what-if " + "; ".join(param_range(p, i) for p, i in n["params"].items()) + "]"
+    return out
+
+
+def _shown_by(layer: BILayer) -> dict[str, list[str]]:
+    """{metric key: labels of the display-only measures that show it}."""
+    out: dict[str, list[str]] = {}
+    for m in layer.metrics.values():
+        if m.get("status") == "presentation" and m.get("value") and not m.get("hidden"):
+            out.setdefault(m["value"], []).append(m.get("label") or m["value"])
+    return out
+
+
+class BIToolkit:
+    def __init__(self, layer: BILayer, warehouse: Warehouse, row_filters: dict[str, str] | None = None,
+                 max_rows: int = MAX_ROWS, max_top: int | None = None):
+        """`row_filters`: the caller's row-level security (bisecurity.filters_for); every query honours it."""
+        self.layer, self.wh, self.row_filters = layer, warehouse, row_filters
+        self.max_rows, self.max_top, self.last = max_rows, max_top, {}
+
+    def _query(self, sql: str, limit: int) -> tuple[list[str], list[tuple]]:
+        self.last = {"sql": sql, "rows": None}
+        cols, rows = self.wh.query(sql, limit=limit)
+        self.last["rows"] = len(rows)
+        return cols, rows
+
+    def list_metrics(self) -> str:
+        shows = _shown_by(self.layer)
+        lines = [f"- {k} ({m['label']}): {describe(self.layer, k)}{needs(self.layer, k)}"
+                 + (f" (shown as text by {', '.join(shows[k])})" if k in shows else "")
+                 for k, m in self.layer.captured().items()]
+        shown = [m for m in self.layer.metrics.values() if not m.get("hidden") and m.get("status") == "presentation"]
+        display = [f"- {m['label']}: shows {m['value']} as text" if m.get("value")
+                   else f"- {m['label']}: {m.get('why') or 'text or a constant for display, no number behind it'}"
+                   for m in shown]
+        other = [f"- {m['label']}: {m.get('why', m.get('status'))}" for m in self.layer.metrics.values()
+                 if not m.get("hidden") and m.get("status") not in ("captured", "presentation")]
+        out = "Captured metrics (compute these):\n" + "\n".join(lines)
+        params = parameters(self.layer)
+        if params:
+            out += ("\n\nWhat-if parameters (compute params={key: value}; the default when not given):\n"
+                    + "\n".join(f"- {param_range(p, i)}" for p, i in params.items()))
+        if display:
+            out += ("\n\nDisplay-only measures (text for a visual; compute the metric they show):\n"
+                    + "\n".join(display))
+        if other:
+            out += "\n\nPower BI measures not captured, and why:\n" + "\n".join(other)
+        return out
+
+    def list_columns(self, metrics: list[str] | None = None) -> str:
+        try:
+            cols = self.layer.columns_for(metrics or list(self.layer.captured()))
+        except LayerError as exc:
+            return f"Error: {exc}"
+        dates = [c for c in cols if self._type(c) == "dateTime"]
+        return ("Columns to group or filter by (Table[Column]):\n" + ", ".join(cols)
+                + (f"\n\nDate columns also take a grain suffix (:year :quarter :month :week :day), e.g. "
+                   f"{dates[0]}:month" if dates else ""))
+
+    def _type(self, column: str) -> str | None:
+        t, c, _ = parse_ref(column)
+        return (((self.layer.tables.get(t) or {}).get("columns") or {}).get(c) or {}).get("type")
+
+    def column_values(self, column: str) -> str:
+        try:
+            _, rows = self._query(self._values_sql(column), MAX_VALUES + 1)
+        except Exception as exc:  # noqa: BLE001 - report it to the agent, do not end the turn
+            return f"Error: {exc}"
+        vals = [r[0] for r in rows]
+        many = f"more than {MAX_VALUES:,}" if len(vals) > MAX_VALUES else str(len(vals))
+        return f"{column} has {many} values: " + ", ".join(map(str, vals[:100])) + (" ..." if len(vals) > 100 else "")
+
+    def _values_sql(self, column: str) -> str:
+        sql = self.layer.values_sql(column, row_filters=self.row_filters)
+        if self.wh.dialect != "duckdb":
+            import sqlglot
+            sql = sqlglot.transpile(sql, read="duckdb", write=self.wh.dialect)[0]
+        return sql
+
+    def resolve(self, filters: dict | None) -> tuple[dict, list[str]]:
+        out, notes = {}, []
+        for column, value in (filters or {}).items():
+            wanted = value if isinstance(value, (list, tuple, set)) else [value]
+            if not any(isinstance(v, str) for v in wanted):
+                out[column] = value
+                continue
+            _, rows = self._query(self._values_sql(column), MAX_VALUES + 1)
+            known = [r[0] for r in rows]
+            got = []
+            for v in wanted:
+                if not isinstance(v, str) or v in known:
+                    got.append(v)
+                    continue
+                hit = _match_value(v, known)
+                if hit is None:  # a word of a longer label ("online" -> "Online Store"), when only one has it
+                    words = [k for k in known if isinstance(k, str) and v.lower() in k.lower().split()]
+                    hit = words[0] if len(words) == 1 else None
+                if hit is None:
+                    shown = ", ".join(map(str, known[:40])) + (" ..." if len(known) > 40 else "")
+                    raise LayerError(f"no {column} value matches {v!r}. Values in the data: {shown}")
+                got.append(hit)
+                notes.append(f"read {column}={v!r} as {hit!r}")
+            out[column] = got if isinstance(value, (list, tuple, set)) else got[0]
+        return out, notes
+
+    def resolve_params(self, metrics: list[str], given: dict | None) -> tuple[dict, list[str]]:
+        """What-if values by parameter key (a label is accepted too), checked against the slider's range;
+        and a note per parameter the metrics read, saying which value is used."""
+        known = parameters(self.layer)
+        for k in metrics:
+            if k in self.layer.metrics:
+                for p, info in metric_needs(self.layer, k)["params"].items():
+                    known.setdefault(p, info)
+        out = {}
+        for name, value in (given or {}).items():
+            key = name if name in known else next(
+                (p for p, i in known.items() if str(i.get("label", "")).strip().lower() == str(name).strip().lower()),
+                None)
+            if key is None:
+                listed = "; ".join(param_range(p, i) for p, i in known.items()) or "none"
+                raise LayerError(f"no what-if parameter {name!r}. Parameters: {listed}")
+            info = known[key]
+            try:
+                v = float(value) if not isinstance(value, (int, float)) or isinstance(value, bool) else value
+            except (TypeError, ValueError):
+                raise LayerError(f"{param_range(key, info)}; {value!r} is not a number") from None
+            lo, hi = info.get("min"), info.get("max")
+            if lo is not None and hi is not None and not (min(lo, hi) - 1e-9 <= v <= max(lo, hi) + 1e-9):
+                raise LayerError(f"{param_range(key, info)}; {_num(v)} is outside the range the report offers")
+            out[key] = v
+        notes = []
+        used = {p: i for k in metrics if k in self.layer.metrics for p, i in metric_needs(self.layer, k)["params"].items()}
+        for p, info in used.items():
+            label = info.get("label") or p
+            if p in out:
+                notes.append(f"{label} = {_num(out[p])} (as asked)")
+            elif info.get("default") is not None:
+                notes.append(f"{label} = {_num(info['default'])} (the report's default; pass params={{{p!r}: ...}} "
+                             "to change it)")
+        return out, notes
+
+    def compute(self, metrics: list[str], by: list[str] | None = None, filters: dict | None = None,
+                top: int | None = None, order_by: str | None = None, ascending: bool = False,
+                params: dict | None = None) -> str:
+        if top is not None and self.max_top and top > self.max_top:
+            return f"Error: top is capped at {self.max_top}; ask for fewer rows or narrow with filters."
+        try:
+            params, what_if = self.resolve_params(metrics, params)
+            filters, notes = self.resolve(filters)
+            extra = {"params": params} if params else {}  # a compiler without what-if never sees the argument
+            sql = self.layer.compile(metrics, by, filters, top, order_by, ascending, dialect=self.wh.dialect,
+                                     row_filters=self.row_filters, **extra)
+            cols, rows = self._query(sql, self.max_rows + 1)
+        except Exception as exc:  # noqa: BLE001 - a bad column or a warehouse error goes back to the agent
+            return f"Error: {exc}"
+        shown = rows[:self.max_rows]
+        table = _markdown(cols, [[_fmt(v) if c in metrics else str(v) for c, v in zip(cols, r)] for r in shown])
+        out = f"Data: {self.wh.describe()}\n\n{table}"
+        if len(rows) > self.max_rows:
+            out += f"\n(more than {self.max_rows} rows; first {self.max_rows} shown. Narrow it with filters or top.)"
+        if notes:
+            out += "\nFilters: " + "; ".join(notes) + "."
+        if what_if:
+            out += "\nWhat-if: " + "; ".join(what_if) + "."
+        if not rows or all(not v for r in rows for c, v in zip(cols, r) if c in metrics):
+            out += "\nNo data matches, so the result is empty or zero. Do not report it as the answer; check filters."
+        try:
+            leaves = {x for k in metrics for x in self.layer.leaves(k)} | set(metrics)
+        except Exception:  # noqa: BLE001 - definitions are a courtesy; the numbers already ran
+            leaves = set(metrics)
+        leaves |= {x for k in metrics for x in _tree(self.layer, k)}
+        out += "\n\nDefinitions (captured from the Power BI measures):\n" + "\n".join(
+            f"- {k}: {describe(self.layer, k)}" for k in metrics) + \
+            "".join(f"\n  - {k}: {describe(self.layer, k)}" for k in sorted(leaves - set(metrics)))
+        return out + f"\n\nSQL ({self.wh.dialect}):\n{sql}"
+
+    def system_prompt(self) -> str:
+        return f"""You answer business questions about the Power BI model "{self.layer.model}".
+Numbers come only from the compute tool, which runs the model's captured metrics as SQL on
+{self.wh.describe()}.
+
+How to work:
+1. Call list_metrics first in a conversation, and list_columns when you need a column.
+2. For any number call compute with metric keys, `by` columns written Table[Column] (date columns
+   take :year/:quarter/:month/:week/:day), `filters` as {{Table[Column]: value or [values]}}, and
+   `top` for "top/bottom N" (ascending=true for bottom). Never estimate or do arithmetic the tool
+   could do; for a comparison between periods, compute by month or year and compare those rows.
+3. Hints after a metric in list_metrics say how it must be asked:
+   - [needs by=...]: put those columns in `by`. A period metric needs the date at that grain;
+     a rank needs the column it ranks (e.g. Store[Store]).
+   - Ranks: rank 1 is the highest unless the definition says lowest. "Top 3 stores" is the base
+     metric by Store[Store] with top=3 (it can include the rank metric too); "where does North
+     rank" is the rank metric by Store[Store], filtered to North. A rank counts only the rows
+     the question's filters leave, so filtering changes the ranks.
+   - "depends on the grouping": a scope switch returns a different metric depending on which
+     column is in `by`; group by the column that matches the question (it says which).
+   - [what-if ...]: the metric reads a what-if parameter (a slider in the report). For "what if
+     the return rate were 10%" pass params={{key: 0.1}} within the range shown; without params
+     the default is used. Always say which value the answer used (compute reports it).
+4. If someone asks for a Power BI measure that is not captured, say so in one line with the
+   reason list_metrics gives, then answer with the nearest captured metric if there is one. A
+   display-only measure is text for a visual (a label, an arrow): compute the metric it shows.
+5. When a question is ambiguous but has a sensible default, pick it, state the assumption in one
+   line, and answer. Ask only if there is no sensible default.
+6. Lead with the answer, then a small table, then the definition used. Show the SQL only if asked.
+Data is {"the local stand-in built from the .pbix's own rows; say so once if the user asks where numbers come from" if self.wh.kind == "local" else "live from Databricks"}."""
+
+    def tools(self) -> list:
+        kit = self
+
+        async def list_metrics(ctx: RunContext) -> str:
+            """List the captured metrics (keys, labels, definitions, what each needs: by columns, what-if
+            parameters), the what-if parameters, display-only measures and the measures not captured, with why."""
+            return kit.list_metrics()
+
+        async def list_columns(ctx: RunContext, metrics: list[str] | None = None) -> str:
+            """Columns the given metrics (default: all) can be grouped or filtered by, as Table[Column]."""
+            return kit.list_columns(metrics)
+
+        async def column_values(ctx: RunContext, column: str) -> str:
+            """Distinct values of a column (Table[Column], optionally with a date grain like :month)."""
+            return kit.column_values(column)
+
+        async def compute(ctx: RunContext, metrics: list[str], by: list[str] | None = None,
+                          filters: dict[str, str | int | float | list[str]] | None = None,
+                          top: int | None = None, order_by: str | None = None, ascending: bool = False,
+                          params: dict[str, float] | None = None) -> str:
+            """Compute captured metrics grouped `by` columns (Table[Column], dates may add :month etc.),
+            filtered ({Table[Column]: value or [values]}; values may be typed loosely), optionally the
+            `top` N rows ordered by `order_by` (default the first metric; ascending=true for bottom N),
+            with what-if `params` ({parameter key: value}; the report's default when left out)."""
+            return kit.compute(metrics, by, filters, top, order_by, ascending, params)
+
+        return [list_metrics, list_columns, column_values, compute]
+
+    def registry(self) -> dict:
+        return {fn.__name__: (fn, (fn.__doc__ or "").strip().split("\n")[0]) for fn in self.tools()}

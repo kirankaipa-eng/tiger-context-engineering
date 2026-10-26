@@ -1,0 +1,80 @@
+table DiseaseCategory
+	lineageTag: 28227e11-43a3-5650-8fb4-6525668bbfac
+
+	column 'Disease Category'
+		dataType: string
+		lineageTag: 4f53602c-339f-527d-9d9d-901f01a13422
+		summarizeBy: none
+		sourceColumn: Disease Category
+		sortByColumn: Sort
+
+		annotation SummarizationSetBy = Automatic
+
+	column '2021'
+		dataType: int64
+		formatString: \$#,0
+		lineageTag: 59b82bfb-3437-5a88-92a4-084b3489db23
+		summarizeBy: sum
+		sourceColumn: 2021
+
+		annotation SummarizationSetBy = Automatic
+
+	column '2022'
+		dataType: int64
+		formatString: \$#,0
+		lineageTag: c77a7d61-fa9a-55a9-afed-b8fef2fe8e7d
+		summarizeBy: sum
+		sourceColumn: 2022
+
+		annotation SummarizationSetBy = Automatic
+
+	column '2023'
+		dataType: int64
+		formatString: \$#,0
+		lineageTag: 3b5750f1-c862-5a86-8696-97009b413a34
+		summarizeBy: sum
+		sourceColumn: 2023
+
+		annotation SummarizationSetBy = Automatic
+
+	column '2024'
+		dataType: int64
+		formatString: \$#,0
+		lineageTag: f784906f-98e2-5685-91ff-a0d6caa67e13
+		summarizeBy: sum
+		sourceColumn: 2024
+
+		annotation SummarizationSetBy = Automatic
+
+	column '2025'
+		dataType: int64
+		formatString: \$#,0
+		lineageTag: fee5c9f7-62ea-5c33-9c11-6f3c660b9fbd
+		summarizeBy: sum
+		sourceColumn: 2025
+
+		annotation SummarizationSetBy = Automatic
+
+	column YoY
+		dataType: string
+		lineageTag: 59313b94-7951-5f36-a917-c5ee0e7d165c
+		summarizeBy: none
+		sourceColumn: YoY
+
+		annotation SummarizationSetBy = Automatic
+
+	column Sort
+		dataType: int64
+		formatString: 0
+		lineageTag: 469c2c07-1efb-581c-8af3-143577cb9428
+		summarizeBy: none
+		sourceColumn: Sort
+		isHidden
+
+		annotation SummarizationSetBy = Automatic
+
+	partition DiseaseCategory = m
+		mode: import
+		source = let Source = Table.FromRows({{"Neoplasms",45,51,64,66,71,"+7.6%",1}, {"Musculoskeletal",42,47,49,55,52,"-5.5%",2}, {"Circulatory",38,42,42,43,49,"+14.0%",3}, {"Health Status",34,40,41,40,44,"+10.0%",4}, {"Digestive",25,27,29,32,35,"+9.4%",5}}, {"Disease Category", "2021", "2022", "2023", "2024", "2025", "YoY", "Sort"}), Typed = Table.TransformColumnTypes(Source, {{"Disease Category", type text}, {"2021", Int64.Type}, {"2022", Int64.Type}, {"2023", Int64.Type}, {"2024", Int64.Type}, {"2025", Int64.Type}, {"YoY", type text}, {"Sort", Int64.Type}}) in Typed
+
+	annotation PBI_ResultType = Table

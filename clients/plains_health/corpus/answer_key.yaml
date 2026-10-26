@@ -1,0 +1,51 @@
+# What a good curator should conclude from the Plains Health Plan corpus.
+# Used to measure recall (needles found) and precision (decoys ignored).
+# `corroborated_by` names the planted signal in the Plains warehouse
+# (fixtures/mee_warehouse.py) that confirms the document.
+needles:
+  - scenario: 1
+    doc: medical_policy_mp112_observation_services.md
+    page: 2
+    kind: mapping_change
+    change: >-
+      observation stays are outpatient: institutional claims whose stay began as observation
+      map to service_category outpatient, not inpatient
+    layer: client
+    corroborated_by: >-
+      plh_src.medical_claims joined to adt_events.admit_type = 'observation': ~520 inpatient
+      admits averaging 1.3 days, and OP PMPM is 0
+  - scenario: 2
+    doc: um_policy_um021_authorization_validity.md
+    page: 2
+    kind: ontology_change
+    change: new value in PriorAuthStatusEnum (expired), separate from withdrawn
+    layer: client
+    corroborated_by: plh_src.prior_authorizations.status = 'expired' on 123 requests (enum finding)
+  - scenario: 3
+    doc: medical_economics_data_dictionary_v4.md
+    page: 3
+    kind: metric_change
+    change: >-
+      PMPM on an incurred basis with three months of runout, versus the pack's paid basis
+      through the valuation date (a definition conflict for owners to decide)
+    layer: client
+  - scenario: 4
+    doc: payment_integrity_policy_pi25_modifiers.md
+    page: 2
+    kind: metric_change
+    change: >-
+      governed metric: modifier 25 / 59 rate per rendering provider relative to its peer
+      cohort (same specialty, same state), quarterly, minimum 50 claims
+    layer: client
+    corroborated_by: plh_src.anomalies (six providers at 2.7x-4.2x their cohort)
+decoys:
+  - doc: cms_ipps_rate_notice_fy2026.md
+    why: a rate notice; the two-midnight benchmark restates existing practice
+  - doc: benefit_summary_2026_commercial_ppo.md
+    why: benefit design (copays), a business rule
+  - doc: trade_press_observation_stays.md
+    why: news; not a source of definitions
+  - doc: finance_committee_minutes_2026_02.md
+    why: minutes; asks a question, defines nothing
+  - doc: facility_rate_sheet_2026.md
+    why: contract rates, a business rule

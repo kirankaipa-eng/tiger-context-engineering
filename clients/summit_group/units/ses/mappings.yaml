@@ -1,0 +1,250 @@
+# Summit Excess & Surplus: transactional policy/claims platform -> ontology.
+
+unit: SES
+dialect: duckdb
+source_schema: ses
+
+classes:
+  Insured:
+    table: ab_account
+    slots:
+      id: {column: ACCT_ID}
+      name: {column: LEGAL_NM}
+      dba_name: {column: DBA}
+      tax_id: {column: FEIN}
+      naics_code: {column: NAICS}
+      years_in_business: {column: YRS_BUS}
+      annual_revenue: {column: REVENUE}
+      employee_count: {column: EMP_CT}
+      operations_description: {column: OPS_DESC}
+      mailing_state: {column: MAIL_ST}
+
+  Submission:
+    table: uw_submission
+    slots:
+      id: {column: SUB_ID}
+      insured: {column: ACCT_ID}
+      producer: {column: BRKR_GRP_ID}
+      operating_unit: {value: SES}
+      received_date: {column: RCVD_DT}
+      requested_effective_date: {column: REQ_EFF_DT}
+      requested_lines:
+        expr: >-
+          list_transform(string_split(src.LOBS, ','), x -> CASE x WHEN 'GL' THEN 'general_liability'
+          WHEN 'UMB' THEN 'umbrella_excess' WHEN 'XS' THEN 'excess_casualty' WHEN 'PROP' THEN 'commercial_property'
+          WHEN 'PL' THEN 'professional_liability' WHEN 'ENV' THEN 'environmental' END)
+        postgres: >-
+          ARRAY(SELECT CASE x WHEN 'GL' THEN 'general_liability' WHEN 'UMB' THEN 'umbrella_excess'
+          WHEN 'XS' THEN 'excess_casualty' WHEN 'PROP' THEN 'commercial_property'
+          WHEN 'PL' THEN 'professional_liability' WHEN 'ENV' THEN 'environmental' END
+          FROM unnest(string_to_array(src.LOBS, ',')) AS x)
+      submission_status:
+        expr: "CASE src.SUB_STS WHEN 'NTU' THEN 'not_taken_up' ELSE lower(src.SUB_STS) END"
+      clearance_status:
+        expr: "CASE src.CLEARANCE WHEN 'CLEAR' THEN 'clear' WHEN 'BOR_BLOCK' THEN 'blocked_other_broker' WHEN 'DUP' THEN 'duplicate_same_broker' END"
+      appetite_verdict: {expr: "lower(src.APPETITE)"}
+      decline_reason: {column: DECL_RSN}
+      total_insured_value: {column: TIV}
+      target_premium: {column: TGT_PREM}
+      prior_carrier: {column: PRIOR_CARRIER}
+      renewal_of: {column: RENEWAL_OF_POL}
+
+  Quote:
+    table: uw_quote
+    slots:
+      id: {column: QUOTE_ID}
+      submission: {column: SUB_ID}
+      quote_date: {column: QUOTE_DT}
+      coverage_line: &ses_lob
+        expr: >-
+          CASE src.LOB_CD WHEN 'GL' THEN 'general_liability' WHEN 'UMB' THEN 'umbrella_excess'
+          WHEN 'XS' THEN 'excess_casualty' WHEN 'PROP' THEN 'commercial_property'
+          WHEN 'PL' THEN 'professional_liability' WHEN 'ENV' THEN 'environmental' END
+      quoted_premium: {column: QUOTE_PREM}
+      quote_status:
+        expr: "CASE src.QUOTE_STS WHEN 'ACCEPTED' THEN 'accepted' WHEN 'NTU' THEN 'not_taken_up' ELSE lower(src.QUOTE_STS) END"
+
+  UnderwritingDecision:
+    table: uw_decision
+    slots:
+      id: {column: DEC_ID}
+      submission: {column: SUB_ID}
+      decision_type: {expr: "lower(src.DEC_TYP)"}
+      decision_outcome: {expr: "lower(src.OUTCOME)"}
+      rule_id: {column: RULE_ID}
+      rule_pack_version: {column: PACK_VER}
+      authority_level: {column: AUTH_LVL}
+      decided_by_role: {column: DEC_ROLE}
+      decision_date: {column: DEC_DT}
+      decision_reason: {column: RSN_TXT}
+
+  PriorLossExperience:
+    table: uw_loss_run
+    slots:
+      id: {column: LR_ID}
+      insured: {column: ACCT_ID}
+      submission: {column: SUB_ID}
+      policy_year: {column: POL_YR}
+      prior_carrier: {column: CARRIER}
+      claim_count: {column: CLM_CT}
+      paid_amount: {column: PAID}
+      reserved_amount: {column: RESERVED}
+      valuation_date: {column: VAL_DT}
+
+  Policy:
+    table: pc_policy
+    slots:
+      id: {column: POL_ID}
+      policy_number: {column: POL_NBR}
+      insured: {column: ACCT_ID}
+      producer: {column: BRKR_GRP_ID}
+      operating_unit: {value: SES}
+      writing_company: {column: WRT_CO}
+      effective_date: {column: EFF_DT}
+      termination_date: {column: EXP_DT}
+      coverage_status:
+        expr: "CASE src.POL_STS WHEN 'IN_FORCE' THEN 'active' ELSE lower(src.POL_STS) END"
+      market_type: {value: non_admitted}
+      policy_form:
+        expr: "CASE src.POL_FORM WHEN 'OCC' THEN 'occurrence' WHEN 'CM' THEN 'claims_made' END"
+      retroactive_date: {column: RETRO_DT}
+      new_renewal: {expr: "CASE src.NEW_REN WHEN 'N' THEN 'new' WHEN 'R' THEN 'renewal' END"}
+      renewal_of: {column: PRIOR_POL_ID}
+      written_premium: {column: TOT_PREM}
+      audit_basis: {expr: "lower(src.AUDIT_FREQ)"}
+      cancellation_reason: {column: CXL_RSN}
+      ssg_underwriting_region:
+        expr: >-
+          CASE WHEN src.SL_TAX_ST IN ('NY','NJ','PA') THEN 'northeast'
+          WHEN src.SL_TAX_ST IN ('FL','GA','LA') THEN 'southeast'
+          WHEN src.SL_TAX_ST IN ('TX','IL','OH') THEN 'central' ELSE 'west' END
+      ses_surplus_lines_tax_state: {column: SL_TAX_ST}
+
+  CoveragePart:
+    table: pc_policy_line
+    slots:
+      id: {column: LINE_ID}
+      policy: {column: POL_ID}
+      coverage_line: *ses_lob
+      class_code: {column: CLASS_CD}
+      class_code_system:
+        expr: "CASE WHEN src.LOB_CD = 'PROP' THEN 'carrier_internal' ELSE 'naics' END"
+      exposure_basis:
+        expr: "CASE src.EXPO_BASIS WHEN 'TIV' THEN 'total_insured_value' WHEN 'SALES' THEN 'gross_sales' WHEN 'PAYROLL' THEN 'payroll' ELSE 'flat' END"
+      exposure_amount: {column: EXPO_AMT}
+      rate: {column: RATE}
+      occurrence_limit: {column: OCC_LMT}
+      aggregate_limit: {column: AGG_LMT}
+      deductible: {column: DED}
+      self_insured_retention: {column: SIR}
+      attachment_point: {column: ATTACH_PT}
+      written_premium: {column: LINE_PREM}
+      rating_state: {column: RATE_ST}
+
+  PolicyTransaction:
+    table: pc_transaction
+    note: Premium transactions read directly (new, renewal, endorsement, cancellation, audit).
+    slots:
+      id: {column: TXN_ID}
+      policy: {column: POL_ID}
+      coverage_part: {column: LINE_ID}
+      transaction_type:
+        expr: >-
+          CASE src.TXN_TYP WHEN 'NB' THEN 'new_business' WHEN 'RN' THEN 'renewal' WHEN 'END' THEN 'endorsement'
+          WHEN 'CXL' THEN 'cancellation' WHEN 'REI' THEN 'reinstatement' WHEN 'AUD' THEN 'premium_audit' END
+      transaction_effective_date: {column: TXN_EFF_DT}
+      booked_date: {column: BOOK_DT}
+      written_premium_change: {column: PREM_CHG}
+
+  RiskLocation:
+    table: pc_location
+    slots:
+      id: {column: LOC_ID}
+      insured: {column: ACCT_ID}
+      policy: {column: POL_ID}
+      location_number: {column: LOC_NBR}
+      address_state: {column: ST}
+      postal_code: {column: ZIP}
+      construction_class:
+        expr: >-
+          CASE src.CONSTR_CD WHEN '1' THEN 'frame' WHEN '2' THEN 'joisted_masonry' WHEN '3' THEN 'non_combustible'
+          WHEN '4' THEN 'masonry_non_combustible' WHEN '5' THEN 'modified_fire_resistive' WHEN '6' THEN 'fire_resistive' END
+      occupancy: {column: OCC_DESC}
+      year_built: {column: YR_BLT}
+      sprinklered: {expr: "src.SPRK = 'Y'"}
+      protection_class: {column: PPC}
+      building_value: {column: BLDG_VAL}
+      contents_value: {column: CNTS_VAL}
+      business_income_value: {column: BI_VAL}
+      total_insured_value: {expr: "src.BLDG_VAL + src.CNTS_VAL + src.BI_VAL"}
+      cat_peril_zone:
+        expr: >-
+          list_transform(string_split(src.CAT_ZONES, ','), z -> CASE z WHEN 'NS1' THEN 'named_storm_tier1'
+          WHEN 'NS2' THEN 'named_storm_tier2' WHEN 'EQ' THEN 'earthquake' WHEN 'WF' THEN 'wildfire'
+          WHEN 'FLD' THEN 'flood_sfha' WHEN 'SCS' THEN 'severe_convective_storm' END)
+        postgres: >-
+          ARRAY(SELECT CASE z WHEN 'NS1' THEN 'named_storm_tier1' WHEN 'NS2' THEN 'named_storm_tier2'
+          WHEN 'EQ' THEN 'earthquake' WHEN 'WF' THEN 'wildfire' WHEN 'FLD' THEN 'flood_sfha'
+          WHEN 'SCS' THEN 'severe_convective_storm' END FROM unnest(string_to_array(src.CAT_ZONES, ',')) AS z)
+
+  CommercialClaim:
+    table: cc_claim
+    slots:
+      id: {column: CLM_ID}
+      claim_number: {column: CLM_NBR}
+      policy: {column: POL_ID}
+      coverage_line: *ses_lob
+      loss_date: {column: LOSS_DT}
+      received_date: {column: RPT_DT}
+      loss_description: {column: LOSS_DESC}
+      cause_of_loss:
+        expr: >-
+          CASE src.CAUSE_CD WHEN 'BI' THEN 'bodily_injury' WHEN 'PD' THEN 'property_damage_liability'
+          WHEN 'PROD' THEN 'products_defect' WHEN 'FIRE' THEN 'fire' WHEN 'WIND' THEN 'wind_hail'
+          WHEN 'SCS' THEN 'wind_hail' WHEN 'HURR' THEN 'named_storm' WHEN 'WATER' THEN 'water_damage'
+          WHEN 'THEFT' THEN 'theft_crime' WHEN 'E&O' THEN 'professional_error' WHEN 'POLL' THEN 'pollution'
+          ELSE 'other' END
+      loss_state: {column: LOSS_ST}
+      catastrophe_event: {column: CAT_CD}
+      litigated: {expr: "src.IN_SUIT = 'Y'"}
+      coverage_position:
+        expr: "CASE src.COV_POS WHEN 'ACC' THEN 'accepted' WHEN 'ROR' THEN 'reservation_of_rights' WHEN 'DEN' THEN 'denied' ELSE 'under_investigation' END"
+      claim_handler: {column: ADJ_NM}
+      handling_type: {expr: "CASE WHEN src.ADJ_NM LIKE 'TPA%' THEN 'tpa' ELSE 'in_house' END"}
+      claim_status:
+        expr: "CASE src.CLM_STS WHEN 'O' THEN 'open' WHEN 'C' THEN 'closed' WHEN 'CWP' THEN 'closed_without_payment' WHEN 'RO' THEN 'reopened' END"
+      closed_date: {column: CLOSE_DT}
+
+  Claimant:
+    table: cc_claimant
+    slots:
+      id: {column: CLMT_ID}
+      name: {column: CLMT_NM}
+      claimant_type: {expr: "CASE src.CLMT_TYP WHEN '3P' THEN 'third_party' WHEN '1P' THEN 'first_party' WHEN 'IW' THEN 'injured_worker' END"}
+      represented_by_counsel: {expr: "src.ATTY_IND = 'Y'"}
+
+  ClaimExposure:
+    table: cc_exposure
+    slots:
+      id: {column: EXP_ID}
+      claim: {column: CLM_ID}
+      claimant: {column: CLMT_ID}
+      coverage_line: *ses_lob
+      exposure_type:
+        expr: >-
+          CASE src.EXP_TYP WHEN 'BI' THEN 'bodily_injury' WHEN 'PD' THEN 'property_damage'
+          WHEN 'DEF' THEN 'defense_only' WHEN 'FPP' THEN 'first_party_property' END
+      exposure_status: {expr: "CASE src.EXP_STS WHEN 'O' THEN 'open' ELSE 'closed' END"}
+
+  ClaimFinancialTransaction:
+    table: cc_transaction
+    note: Reserve, payment and recovery transactions read directly; codes decoded to ontology values.
+    slots:
+      id: {column: TXN_ID}
+      claim: {column: CLM_ID}
+      claim_exposure: {column: EXP_ID}
+      transaction_date: {column: TXN_DT}
+      financial_type: {expr: "CASE src.TXN_TYP WHEN 'RSV' THEN 'reserve_change' WHEN 'PMT' THEN 'payment' WHEN 'REC' THEN 'recovery' END"}
+      cost_category: {expr: "CASE src.COST_TYP WHEN 'LOSS' THEN 'loss' WHEN 'EXP' THEN 'alae' END"}
+      recovery_type: {expr: "CASE src.RECOV_TYP WHEN 'SUBRO' THEN 'subrogation' WHEN 'SALV' THEN 'salvage' END"}
+      amount: {column: AMT}

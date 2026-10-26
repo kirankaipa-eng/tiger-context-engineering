@@ -1,0 +1,94 @@
+# Northwind Life & Annuity: fictional individual life and annuity carrier used as the
+# reference deployment for the life & annuity pack. Two units on two platforms:
+#   LIFE  individual life (term, UL, IUL, whole life) on a legacy policy
+#         administration system that also hosts the enterprise reference hub
+#         (org units, legal entities, product catalog, producer master, mortality tables)
+#   ANN   deferred annuities (MYGA, fixed indexed, RILA) on a newer platform with its own codes
+# Everything here is a diff against the pinned base pack; base IRIs never move.
+
+client: northwind_life
+title: Northwind Life & Annuity
+line: life_annuity
+line_version: 0.2.0
+version: 1
+prefix: nwl
+namespace: https://ontology.tigeranalytics.com/clients/northwind-life/
+
+units:
+  - code: LIFE
+    name: Northwind Individual Life
+    source_system: Legacy individual-life policy administration system (+ enterprise reference hub)
+  - code: ANN
+    name: Northwind Annuities
+    source_system: Deferred annuity administration platform
+
+# --- group overlay: vocabulary and rules both units share ---------------------
+
+# Northwind's words. The ANN unit overlay adds its own (Producer -> Financial Professional).
+labels:
+  classes:
+    AnnuityContract: Deferred Annuity
+    DeathClaim: Mortality Claim
+    Application: New Business Submission
+    Producer: Agent
+    UnderwritingCase: Underwriting Decision
+    StatutoryReserve: Stat Reserve
+  slots:
+    policy_number: Policy No.
+    face_amount: Specified Amount
+    annualized_premium: Target Premium
+    distribution_channel: Distribution Channel
+
+extend:
+  add_slots:
+    Producer:
+      nwl_marketing_org:
+        description: >-
+          Independent marketing organization (IMO / BGA) the producer is contracted
+          through. Northwind's override commissions and persistency reporting roll up by it.
+    AnnuityContract:
+      nwl_rate_lock_date:
+        range: date
+        description: >-
+          Date the MYGA guaranteed rate was locked. Northwind honors a rate locked up
+          to 30 days before the application is signed, even if a lower rate sheet
+          has taken effect since.
+
+restrict:
+  - class: LifeProduct
+    slot: life_product_type
+    allow: [term, whole_life, universal_life, indexed_universal_life]
+    reason: Northwind does not sell variable universal life or final expense.
+  - class: AnnuityProduct
+    slot: annuity_product_type
+    allow: [fixed_deferred, fixed_indexed, registered_index_linked]
+    reason: Northwind writes deferred annuities only; no variable or income (SPIA/DIA) annuities.
+
+require:
+  - class: LifePolicy
+    slot: application
+    reason: Placement, days-to-issue and underwriting mix are measured from the application.
+  - class: AnnuityContract
+    slot: application
+    reason: Every annuity sale passes a best-interest review on its application before issue.
+
+hide:
+  - InsuredPerson.birth_date
+  - ContractParty.tax_id
+
+# Shared reference data: one product catalog and one producer master for the
+# enterprise, so product codes and producer ids are never unit-qualified.
+global_identity: [Product, Producer]
+
+# Client dimensions sit next to the pack's conformed ones.
+dimensions:
+  marketing_org:
+    label: Marketing organization (IMO / BGA)
+    paths:
+      Application: producer.nwl_marketing_org
+      LifePolicy: producer.nwl_marketing_org
+      AnnuityContract: producer.nwl_marketing_org
+      CommissionPayment: producer.nwl_marketing_org
+
+agent_policy:
+  redact: [pii, phi]

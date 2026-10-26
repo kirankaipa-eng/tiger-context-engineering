@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Context Studio: concept</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400&amp;display=swap">
+<style>
+body{margin:0;font-family:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;color:#1c1c1a;background:#f4f3ef}
+a{color:#1f4fbf;text-decoration:none}a:hover{color:#163a8c}
+.nav{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:6px;color:#3d3c38;font-size:14px}
+.nav.on{background:#e3e7f3;color:#163a8c;font-weight:600}
+.badge{margin-left:auto;background:#1f4fbf;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px}
+.lbl{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#6b6960;font-weight:600}
+.box{border:1px solid #d3d0c7;border-radius:8px;background:#fff}
+.pill{font-size:12px;padding:3px 9px;border-radius:12px;border:1px solid #d3d0c7;color:#3d3c38;background:#faf9f6}
+.new{border-color:#e0b25c;color:#7a5410;background:#fcf4e3}
+.btn{font:inherit;font-size:14px;padding:10px 16px;border-radius:6px;border:1px solid #bdb9ae;background:#fff;color:#1c1c1a;min-height:44px}
+.btn.primary{background:#1f4fbf;border-color:#1f4fbf;color:#fff;font-weight:600}
+.muted{color:#6b6960}
+.tab{padding:10px 2px;font-size:14px;color:#6b6960;border-bottom:2px solid transparent}
+.tab.on{color:#1c1c1a;font-weight:600;border-bottom-color:#1c1c1a}
+.row{display:grid;grid-template-columns:200px minmax(0,1fr) 220px;gap:16px;padding:11px 16px;border-top:1px solid #ece9e2;font-size:13px;line-height:1.45}
+</style>
+</head>
+<body>
+<div style="width: 1440px; height: 900px; display: flex; flex-direction: column; overflow: hidden">
+  <header style="height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 16px; padding: 0 20px; background: #fff; border-bottom: 1px solid #d3d0c7">
+    <div style="font-weight: 600; font-size: 16px; width: 176px">Context Studio</div>
+    <button class="btn" style="min-height: 36px; padding: 6px 12px">Summit Group · Commercial P&amp;C</button>
+    <label style="flex-grow: 1; max-width: 520px"><span style="position: absolute; left: -9999px">Search</span><input type="search" placeholder="Search concepts, metrics, proposals" style="width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 8px 12px; border: 1px solid #d3d0c7; border-radius: 6px; background: #faf9f6"></label>
+    <div style="margin-left: auto; font-size: 14px" class="muted">Signed in as <b style="color: #1c1c1a">Summit data steward</b></div>
+  </header>
+  <div style="flex-grow: 1; display: flex; min-height: 0">
+    <nav style="width: 216px; flex-shrink: 0; padding: 16px 12px; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid #d3d0c7">
+      <a class="nav" href="inbox.html">Inbox <span class="badge">2</span></a>
+      <a class="nav" href="map.html">Map</a>
+      <a class="nav on" href="concept.html">Concepts</a>
+      <a class="nav" href="metric.html">Metrics</a>
+      <a class="nav" href="mapping.html">Mappings</a>
+      <a class="nav" href="history.html">History</a>
+    </nav>
+
+    <main style="flex-grow: 1; min-width: 0; padding: 20px 28px; display: flex; flex-direction: column; gap: 14px; overflow: hidden">
+      <div class="muted" style="font-size: 13px"><a href="#">Concepts</a> › Claims › Claim File</div>
+      <div style="display: flex; align-items: flex-end; gap: 16px">
+        <div style="display: flex; flex-direction: column; gap: 4px">
+          <h1 style="margin: 0; font-size: 28px; font-weight: 600">Claim File</h1>
+          <div class="muted" style="font-size: 13px">Standard name: Claim · also called Loss, Claim record · owned by Summit data steward</div>
+        </div>
+        <button class="btn primary" style="margin-left: auto">Suggest a change</button>
+      </div>
+      <div style="display: flex; gap: 24px; border-bottom: 1px solid #d3d0c7">
+        <span class="tab on">Definition</span><span class="tab">Fields · 14</span><span class="tab">Where it comes from · 3</span><span class="tab">Related</span><span class="tab">History</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px">
+        <div class="box" style="padding: 16px; display: flex; flex-direction: column; gap: 8px">
+          <div class="lbl">What it means at Summit</div>
+          <p style="margin: 0; font-size: 14px; line-height: 1.55">A request for payment under a policy, tracked from first notice to closure. One claim file can hold several exposures (a building and a business-interruption loss from the same fire).</p>
+          <div class="muted" style="font-size: 12px">Written by people · last approved 12 Sep by Summit data steward</div>
+        </div>
+        <div class="box" style="padding: 16px; display: flex; flex-direction: column; gap: 8px">
+          <div class="lbl">Where it comes from</div>
+          <div style="font-size: 13px; line-height: 1.7">SES · claims system<br>HPG · monthly bordereau<br>CORP · claims warehouse</div>
+          <a href="mapping.html" style="font-size: 13px">Open mappings</a>
+        </div>
+      </div>
+
+      <div class="box" style="overflow: hidden">
+        <div style="padding: 12px 16px; display: flex; align-items: center"><div class="lbl">Key fields</div><a href="#" style="margin-left: auto; font-size: 13px">All 14 fields</a></div>
+        <div class="row" style="background: #faf9f6"><b>Field</b><b>Meaning</b><b>Values</b></div>
+        <div class="row"><span>Cause of loss</span><span>What caused the loss, as the adjuster coded it</span><span>Fire, wind, water, … <span class="pill new">+ PFAS proposed</span></span></div>
+        <div class="row"><span>Claim status</span><span>Where the claim is in its life</span><span>Open, closed, reopened <span class="pill new">+ suspended proposed</span></span></div>
+        <div class="row"><span>Coverage line</span><span>Which coverage part the claim is paid from</span><span>12 values</span></div>
+        <div class="row"><span>Litigated</span><span>A lawsuit has been filed <span class="pill new">2 definitions disagree</span></span><span>Yes / no</span></div>
+        <div class="row"><span>Claimant name</span><span>Who is claiming</span><span class="muted">Sensitive · hidden from agents</span></div>
+      </div>
+    </main>
+
+    <aside style="width: 320px; flex-shrink: 0; border-left: 1px solid #d3d0c7; background: #fff; display: flex; flex-direction: column">
+      <div style="padding: 16px; border-bottom: 1px solid #e6e3db"><div style="font-weight: 600; font-size: 14px">Curator</div><div class="muted" style="font-size: 12px">About: Claim File</div></div>
+      <div style="flex-grow: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px; font-size: 13px; line-height: 1.5">
+        <div style="align-self: flex-end; max-width: 240px; background: #e3e7f3; padding: 10px 12px; border-radius: 8px">What does “litigated” mean here?</div>
+        <div style="max-width: 260px; background: #f4f3ef; padding: 10px 12px; border-radius: 8px">Two sources disagree. The claims manual (ch. 4) says a suit is filed; the data dictionary says an attorney is involved. I have asked both owners instead of choosing. <a href="inbox.html">See the question</a></div>
+      </div>
+      <label style="padding: 12px 16px; border-top: 1px solid #e6e3db"><span style="position: absolute; left: -9999px">Ask the curator</span><input placeholder="Ask about Claim File" style="width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 10px 12px; border: 1px solid #d3d0c7; border-radius: 6px"></label>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

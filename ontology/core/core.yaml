@@ -1,0 +1,301 @@
+id: https://ontology.tigeranalytics.com/insurance/core
+name: insurance_core
+title: Insurance Core Kernel (L1)
+description: >-
+  Line-of-business-neutral insurance kernel. Every line pack (health payer, P&C,
+  life) specializes these classes rather than redefining them, so cross-line
+  questions ("all claims for this party") keep working.
+version: 0.1.0
+license: Apache-2.0
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ins: https://ontology.tigeranalytics.com/insurance/core/
+  schema: http://schema.org/
+  fhir: http://hl7.org/fhir/
+  dcterms: http://purl.org/dc/terms/
+default_prefix: ins
+default_range: string
+
+imports:
+  - linkml:types
+
+# Annotation conventions (read by the compilers, carried into OWL as annotation
+# properties):
+#   sensitivity: phi | pii          -> redacted in the agent-facing (ont_agent) views
+#   sensitivity: financial          -> informational; never redacted by default
+#   agent_visible: false            -> column omitted from agent-facing views
+#   identity_scope: global          -> ids are shared across units (no unit prefix)
+
+classes:
+
+  Entity:
+    abstract: true
+    description: Anything with a stable business identifier.
+    slots:
+      - id
+      - source_system
+
+  Party:
+    is_a: Entity
+    abstract: true
+    description: A person or organization that plays a role in insurance.
+    exact_mappings:
+      - schema:Thing
+    slots:
+      - name
+
+  Person:
+    is_a: Party
+    exact_mappings:
+      - schema:Person
+    slots:
+      - given_name
+      - family_name
+      - birth_date
+      - gender
+    slot_usage:
+      name:
+        annotations:
+          sensitivity: pii
+
+  Organization:
+    is_a: Party
+    exact_mappings:
+      - schema:Organization
+    slots:
+      - tax_id
+
+  OperatingUnit:
+    is_a: Organization
+    description: >-
+      A business unit of the carrier that owns underwriting and claims decisions
+      for its book (e.g. an E&S division, a program unit, a health plan region).
+      Decentralized carriers run many of these with their own systems; the unit
+      is the scope for client overlays.
+    annotations:
+      identity_scope: global
+    slots:
+      - unit_code
+      - parent_unit
+      - business_segment
+
+  WritingCompany:
+    is_a: Organization
+    description: The licensed legal entity whose paper a policy is issued on.
+    annotations:
+      identity_scope: global
+    slots:
+      - naic_company_code
+      - domicile_state
+      - admitted_status
+
+  Producer:
+    is_a: Organization
+    description: >-
+      A distribution partner: retail or wholesale broker, agent, MGA or program
+      administrator.
+    aliases: [broker, agent, intermediary]
+    slots:
+      - producer_type
+      - license_state
+
+  Product:
+    is_a: Entity
+    description: >-
+      A sellable insurance offering (a health plan, a homeowners product). The
+      template that individual coverages are issued against.
+    slots:
+      - name
+      - line_of_business
+      - effective_date
+      - termination_date
+
+  Coverage:
+    is_a: Entity
+    abstract: true
+    description: >-
+      The contractual fact that a party is insured under a product for a period.
+      Health: an enrollment/eligibility span. P&C: a policy term coverage.
+    close_mappings:
+      - fhir:Coverage
+    slots:
+      - product
+      - effective_date
+      - termination_date
+      - coverage_status
+
+  Claim:
+    is_a: Entity
+    abstract: true
+    description: A request for payment under a coverage.
+    close_mappings:
+      - fhir:Claim
+    slots:
+      - claim_status
+      - received_date
+      - total_paid_amount
+
+  ClaimLine:
+    is_a: Entity
+    abstract: true
+    description: One billable item within a claim.
+    slots:
+      - line_number
+      - billed_amount
+      - paid_amount
+
+  Decision:
+    is_a: Entity
+    abstract: true
+    description: >-
+      A recorded determination (approve/deny/pend) with a reason. Kept as a
+      first-class entity so agents can explain and audit outcomes.
+    slots:
+      - decision_date
+      - decision_reason
+
+slots:
+  id:
+    identifier: true
+    range: string
+    description: Stable business identifier.
+  source_system:
+    range: string
+    description: >-
+      Lineage: the operating unit / source system the record was read from.
+      Populated by the mapping compiler, never by hand.
+  name:
+    range: string
+  unit_code:
+    range: string
+    description: Short, stable code for an operating unit.
+  parent_unit:
+    range: OperatingUnit
+  business_segment:
+    range: BusinessSegmentEnum
+  naic_company_code:
+    range: string
+    pattern: "^[0-9]{5}$"
+  domicile_state:
+    range: string
+    pattern: "^[A-Z]{2}$"
+  admitted_status:
+    range: AdmittedStatusEnum
+  producer_type:
+    range: ProducerTypeEnum
+  license_state:
+    range: string
+    pattern: "^[A-Z]{2}$"
+  given_name:
+    range: string
+    annotations:
+      sensitivity: pii
+  family_name:
+    range: string
+    annotations:
+      sensitivity: pii
+  birth_date:
+    range: date
+    annotations:
+      sensitivity: pii
+  gender:
+    range: GenderEnum
+  tax_id:
+    range: string
+    annotations:
+      sensitivity: pii
+  line_of_business:
+    range: LineOfBusinessEnum
+  product:
+    range: Product
+    description: The product this coverage is issued against.
+  effective_date:
+    range: date
+  termination_date:
+    range: date
+  coverage_status:
+    range: CoverageStatusEnum
+  claim_status:
+    range: string
+    description: Specialized per line pack with a lifecycle enum.
+  received_date:
+    range: date
+  total_paid_amount:
+    range: decimal
+    minimum_value: 0
+    annotations:
+      sensitivity: financial
+  line_number:
+    range: integer
+    minimum_value: 1
+  billed_amount:
+    range: decimal
+    minimum_value: 0
+  paid_amount:
+    range: decimal
+    minimum_value: 0
+  decision_date:
+    range: date
+  decision_reason:
+    range: string
+
+enums:
+  GenderEnum:
+    enum_uri: ins:GenderEnum
+    permissible_values:
+      female:
+      male:
+      other:
+      unknown:
+  LineOfBusinessEnum:
+    enum_uri: ins:LineOfBusinessEnum
+    permissible_values:
+      commercial_health:
+      medicare_advantage:
+      medicaid_managed_care:
+      personal_auto:
+      homeowners:
+      commercial_property:
+      workers_comp:
+      individual_life:
+      individual_annuity:
+      group_benefits:
+  CoverageStatusEnum:
+    enum_uri: ins:CoverageStatusEnum
+    permissible_values:
+      pending:
+        description: Bound or enrolled, not yet effective.
+      active:
+      suspended:
+      expired:
+        description: Reached the end of its term without renewal.
+      cancelled:
+        description: Ended before the end of its term.
+      terminated:
+        description: Ended (health enrollment termination).
+  BusinessSegmentEnum:
+    enum_uri: ins:BusinessSegmentEnum
+    permissible_values:
+      insurance:
+      reinsurance:
+      health_plan:
+      corporate:
+  AdmittedStatusEnum:
+    enum_uri: ins:AdmittedStatusEnum
+    permissible_values:
+      admitted:
+        description: Licensed in the state; rates and forms filed with the regulator.
+      non_admitted:
+        description: Excess & surplus lines; freedom of rate and form, placed via a surplus lines broker.
+  ProducerTypeEnum:
+    enum_uri: ins:ProducerTypeEnum
+    permissible_values:
+      retail_broker:
+      retail_agent:
+      wholesale_broker:
+      mga:
+        description: Managing general agent with delegated underwriting authority.
+      program_administrator:
+      captive_agent:
+      direct:

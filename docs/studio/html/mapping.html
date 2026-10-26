@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Context Studio: mapping</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400&amp;display=swap">
+<style>
+body{margin:0;font-family:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;color:#1c1c1a;background:#f4f3ef}
+a{color:#1f4fbf;text-decoration:none}a:hover{color:#163a8c}
+.nav{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:6px;color:#3d3c38;font-size:14px}
+.nav.on{background:#e3e7f3;color:#163a8c;font-weight:600}
+.badge{margin-left:auto;background:#1f4fbf;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px}
+.lbl{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#6b6960;font-weight:600}
+.box{border:1px solid #d3d0c7;border-radius:8px;background:#fff}
+.pill{font-size:12px;padding:3px 9px;border-radius:12px;border:1px solid #d3d0c7;color:#3d3c38;background:#faf9f6}
+.ok{border-color:#9cc3a6;color:#23603a;background:#eef6f0}
+.warn{border-color:#e0b25c;color:#7a5410;background:#fcf4e3}
+.btn{font:inherit;font-size:14px;padding:10px 16px;border-radius:6px;border:1px solid #bdb9ae;background:#fff;color:#1c1c1a;min-height:44px}
+.btn.primary{background:#1f4fbf;border-color:#1f4fbf;color:#fff;font-weight:600}
+.muted{color:#6b6960}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12.5px}
+.row{display:grid;grid-template-columns:180px 28px 200px minmax(0,1fr);gap:10px;align-items:center;padding:10px 16px;border-top:1px solid #ece9e2;font-size:13px}
+.bar{height:10px;border-radius:5px;background:#e6e3db}
+.srow{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;padding:10px 16px;border-top:1px solid #ece9e2;align-items:center}
+</style>
+</head>
+<body>
+<div style="width: 1440px; height: 900px; display: flex; flex-direction: column; overflow: hidden">
+  <header style="height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 16px; padding: 0 20px; background: #fff; border-bottom: 1px solid #d3d0c7">
+    <div style="font-weight: 600; font-size: 16px; width: 176px">Context Studio</div>
+    <button class="btn" style="min-height: 36px; padding: 6px 12px">Summit Group · HPG unit</button>
+    <label style="flex-grow: 1; max-width: 520px"><span style="position: absolute; left: -9999px">Search</span><input type="search" placeholder="Search concepts, metrics, proposals" style="width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 8px 12px; border: 1px solid #d3d0c7; border-radius: 6px; background: #faf9f6"></label>
+    <div style="margin-left: auto; font-size: 14px" class="muted">Signed in as <b style="color: #1c1c1a">HPG data engineer</b></div>
+  </header>
+  <div style="flex-grow: 1; display: flex; min-height: 0">
+    <nav style="width: 216px; flex-shrink: 0; padding: 16px 12px; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid #d3d0c7">
+      <a class="nav" href="inbox.html">Inbox <span class="badge">1</span></a>
+      <a class="nav" href="map.html">Map</a>
+      <a class="nav" href="concept.html">Concepts</a>
+      <a class="nav" href="metric.html">Metrics</a>
+      <a class="nav on" href="mapping.html">Mappings</a>
+      <a class="nav" href="history.html">History</a>
+    </nav>
+
+    <main style="flex-grow: 1; min-width: 0; padding: 20px 28px; display: flex; flex-direction: column; gap: 14px; overflow: hidden">
+      <div class="muted" style="font-size: 13px"><a href="#">Mappings</a> › HPG › Claim financial transaction</div>
+      <div style="display: flex; align-items: center; gap: 12px">
+        <h1 style="margin: 0; font-size: 26px; font-weight: 600">HPG bordereau → Claim financial transaction</h1>
+      </div>
+      <div class="muted" style="font-size: 13px">Source: <span class="mono">hpg_raw.BDX_CLAIMS</span> · monthly bordereau from the MGA · spec v3.2</div>
+
+      <div class="box" style="overflow: hidden">
+        <div style="padding: 12px 16px; display: flex; align-items: center"><div class="lbl">Columns to fields</div><a href="#" style="margin-left: auto; font-size: 13px">All 22 fields</a></div>
+        <div class="row" style="background: #faf9f6; font-weight: 600"><span>Source column</span><span></span><span>Field</span><span>How</span></div>
+        <div class="row"><span class="mono">CLM_REF</span><span class="muted">→</span><span>Claim</span><span class="muted">direct</span></div>
+        <div class="row"><span class="mono">TXN_DT</span><span class="muted">→</span><span>Transaction date</span><span class="muted">direct</span></div>
+        <div class="row" style="background: #fcf4e3"><span class="mono">PAID_TD</span><span class="muted">→</span><span>Paid loss</span><span>From Jan 2027 excludes expense. <span class="pill warn">Proposal waiting for you</span></span></div>
+        <div class="row" style="background: #fcf4e3"><span class="mono">EXP_PAID_TD</span><span class="muted">→</span><span>Paid expense (ALAE)</span><span>New column in spec v3.2 · proposed</span></div>
+        <div class="row"><span class="mono">CAUSE_CD</span><span class="muted">→</span><span>Cause of loss</span><span class="muted">decoded: 14 codes · <span class="pill warn">PFAS unknown</span></span></div>
+      </div>
+
+      <div class="box" style="overflow: hidden">
+        <div style="padding: 12px 16px; display: flex; align-items: center"><div class="lbl">Preview: what the mapped rows look like</div><span class="muted" style="margin-left: auto; font-size: 12px">From the unit's data, sensitive fields hidden</span></div>
+        <div class="srow" style="background: #faf9f6; font-size: 13px; font-weight: 600"><span>Claim</span><span>Date</span><span>Paid loss</span><span>Paid expense</span><span>Cause</span></div>
+        <div class="srow"><div class="bar" style="width: 70%"></div><div class="bar" style="width: 60%"></div><div class="bar" style="width: 50%"></div><div class="bar" style="width: 45%"></div><div class="bar" style="width: 40%"></div></div>
+        <div class="srow"><div class="bar" style="width: 70%"></div><div class="bar" style="width: 60%"></div><div class="bar" style="width: 55%"></div><div class="bar" style="width: 35%"></div><div class="bar" style="width: 40%"></div></div>
+        <div class="srow"><div class="bar" style="width: 70%"></div><div class="bar" style="width: 60%"></div><div class="bar" style="width: 40%"></div><div class="bar" style="width: 50%"></div><div class="bar" style="width: 40%"></div></div>
+      </div>
+
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center">
+        <span class="lbl" style="margin-right: 4px">Checks on this unit</span>
+        <span class="pill ok">Required fields filled</span><span class="pill ok">Totals match the bordereau</span><span class="pill warn">1 unknown code: PFAS</span>
+      </div>
+
+      <div style="display: flex; gap: 10px; margin-top: auto; padding-top: 16px; border-top: 1px solid #e6e3db; align-items: center">
+        <button class="btn primary">Submit mapping change</button>
+        <button class="btn">Save draft</button>
+        <span class="muted" style="margin-left: auto; font-size: 13px">Goes to: HPG data engineer (unit mappings)</span>
+      </div>
+    </main>
+
+    <aside style="width: 320px; flex-shrink: 0; border-left: 1px solid #d3d0c7; background: #fff; display: flex; flex-direction: column">
+      <div style="padding: 16px; border-bottom: 1px solid #e6e3db"><div style="font-weight: 600; font-size: 14px">Curator</div><div class="muted" style="font-size: 12px">About: HPG claim transactions</div></div>
+      <div style="flex-grow: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px; font-size: 13px; line-height: 1.5">
+        <div style="max-width: 260px; background: #f4f3ef; padding: 10px 12px; border-radius: 8px">Spec v3.2, p.7, footnote 3 splits expense out of PAID_TD from January. I drafted the two-column mapping; the preview uses it.</div>
+        <div style="align-self: flex-end; max-width: 240px; background: #e3e7f3; padding: 10px 12px; border-radius: 8px">What about months before January?</div>
+        <div style="max-width: 260px; background: #f4f3ef; padding: 10px 12px; border-radius: 8px">They keep the old rule: PAID_TD includes expense. The mapping switches on the bordereau month.</div>
+      </div>
+      <label style="padding: 12px 16px; border-top: 1px solid #e6e3db"><span style="position: absolute; left: -9999px">Ask the curator</span><input placeholder="Ask about this mapping" style="width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 10px 12px; border: 1px solid #d3d0c7; border-radius: 6px"></label>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

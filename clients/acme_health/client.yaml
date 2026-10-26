@@ -1,0 +1,60 @@
+# Client overlay: a fictional regional health plan.
+# Everything here is a diff against the pinned base pack. It never redefines a
+# base element: IRIs of base concepts stay stable, and only additions land in
+# the client namespace.
+
+client: acme_health
+title: Acme Health Plan
+line: health_payer
+line_version: 0.2.0
+version: 3
+prefix: acme
+namespace: https://ontology.tigeranalytics.com/clients/acme-health/
+
+units:
+  - code: CORE
+    name: Acme core administration
+    source_system: Core claims & enrollment platform
+
+# Acme's business vocabulary. Agents and generated docs speak these labels;
+# exports keep the canonical IRI and add the label as title + alias.
+labels:
+  classes:
+    Member: Beneficiary
+    PriorAuthorization: Pre-Certification
+    MedicalClaim: Encounter Claim
+    Enrollment: Eligibility Segment
+  slots:
+    member_number: Subscriber ID
+    denial_reason_code: Adjustment Reason
+
+extend:
+  enums:
+    AcmeRiskTierEnum: [low, rising, high, catastrophic]
+    AcmeCareProgramEnum: [none, diabetes, chf, maternity, behavioral_health]
+
+  add_slots:
+    Member:
+      acme_risk_tier:
+        range: AcmeRiskTierEnum
+        description: Acme's internal stratification from its care-management vendor.
+      acme_care_program:
+        range: AcmeCareProgramEnum
+        description: Care-management program the beneficiary is enrolled in.
+    PriorAuthorization:
+      acme_reviewer_queue:
+        description: UM work queue that owns the request (e.g. UM-ONC, UM-IMG).
+
+restrict:
+  - class: MedicalClaim
+    slot: claim_type
+    allow: [professional, institutional]
+    reason: Acme carves dental and pharmacy out to delegated vendors.
+
+require:
+  - class: MedicalClaim
+    slot: rendering_provider
+    reason: Acme contracts require rendering NPI on every professional claim.
+
+hide:
+  - Member.birth_date

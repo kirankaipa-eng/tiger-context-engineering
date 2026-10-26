@@ -1,0 +1,18 @@
+# Northwind Annuities unit overlay: the annuity platform's vocabulary and a rider
+# detail only this platform carries. Extensions here stay in the u_ann views.
+
+labels:
+  classes:
+    Producer: Financial Professional
+    InsuredPerson: Annuitant
+    SuitabilityReview: Best Interest Review
+    CreditingStrategy: Crediting Option
+
+extend:
+  add_slots:
+    Rider:
+      ann_benefit_base:
+        range: decimal
+        description: >-
+          Guaranteed benefit base of a GLWB or return-of-premium death benefit rider:
+          the amount withdrawals or the death benefit are computed on, not cash value.

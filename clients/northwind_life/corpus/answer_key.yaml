@@ -1,0 +1,80 @@
+# What a good curator should conclude from the Northwind Life & Annuity corpus.
+# Used to measure recall (needles found) and precision (decoys ignored).
+# `corroborated_by` names the planted signal in the Northwind fixture warehouse
+# (fixtures/la_warehouse.py, build_northwind) that confirms the document.
+needles:
+  - scenario: 1
+    doc: vm22_pbr_election_memo.md
+    page: 2
+    kind: ontology_change
+    change: >-
+      new value in ReserveMethodEnum (vm22_pbr, VM-22 principle-based reserves for
+      non-variable annuities). Must not be folded into the existing vm22 value, which
+      means the legacy section 22 valuation interest rates (page 3).
+    layer: pack
+    corroborated_by: >-
+      ann_src.reserve.method = 'VM22PBR' on 2026 valuations of MYGA and FIA contracts issued
+      from 2026-01-01 (drift proposal on ReserveMethodEnum); statutory_reserve by reserve_method
+  - scenario: 2
+    doc: trigger_strategy_supplement.md
+    page: 2
+    kind: ontology_change
+    change: new value in CreditingMethodEnum (performance_trigger); the trigger rate is a declared rate, not a cap
+    layer: pack
+    corroborated_by: >-
+      ann_src.crediting_option.method = 'TRIGGER' on Index Advantage options effective 2026-03-01
+      (drift proposal on CreditingMethodEnum)
+  - scenario: 3
+    doc: term_rop_rider_filing.md
+    page: 2
+    kind: ontology_change
+    change: new value in RiderTypeEnum (return_of_premium)
+    layer: pack
+    corroborated_by: lifepas.RIDER.RDR_CD = 'ROP' on term policies issued from 2026-01-01 (drift proposal on RiderTypeEnum)
+  - scenario: 4
+    doc: best_interest_bulletin_2026.md
+    page: 2
+    kind: ontology_change
+    change: >-
+      new attribute on SuitabilityReview (basis for the recommendation / alternatives
+      considered documented), distinct from review_outcome and consumer_profile_complete
+    layer: pack
+  - scenario: 5
+    doc: iul_illustration_ag49a_memo.md
+    page: 2
+    kind: ontology_change
+    change: new attribute on CreditingStrategy (maximum illustrated rate under AG 49-A), not to be confused with cap_rate
+    layer: pack
+  - scenario: 6
+    doc: mortality_experience_study_2026.md
+    page: 2
+    kind: ontology_change
+    change: new attribute on MortalityRate (policy duration / select period) so select-and-ultimate rates can be loaded
+    layer: pack
+    corroborated_by: >-
+      mortality_ae_ratio by issue_year: ~0.9 for the 2019-2021 cohorts vs ~0.65 for 2023-2024
+      (select-period mortality in the fixture)
+  - scenario: 7
+    doc: yrt_reinsurance_treaty_excerpt.md
+    page: 2
+    kind: ontology_change
+    change: >-
+      new entity ReinsuranceCession (policy, treaty, reinsurer, retained and ceded net amount
+      at risk, reinsurance premium). The retention limit itself is treaty data.
+    layer: pack
+  - scenario: 8
+    doc: producer_compensation_bulletin_2026.md
+    page: 2
+    kind: ontology_change
+    change: client extension on CommissionPayment (Northwind bonus program code)
+    layer: client
+  - scenario: 9
+    doc: distribution_committee_minutes_2026_05.md
+    page: 1
+    kind: ask_owner
+    change: conflicting definitions of 'lapse rate' (Finance, per policies in force at January 1) vs lapse_rate (per exposure year)
+decoys:
+  - {doc: annuity_rate_sheet_2026_07.md, page: 2, kind: rate_change, why: cap and declared rate cuts are data on existing CreditingStrategy records, not a model change}
+  - {doc: uw_guideline_ug07_accelerated.md, page: 1, kind: rule, why: accelerated underwriting face limit is a business rule; underwriting_path already models the path}
+  - {doc: trade_press_annuity_sales_2026.md, kind: noise}
+  - {doc: iul_consumer_brochure_2026.md, kind: noise}

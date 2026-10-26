@@ -1,0 +1,785 @@
+id: https://ontology.tigeranalytics.com/insurance/life-annuity
+name: life_annuity
+title: Life & Annuity Pack (L2)
+description: >-
+  Individual life and annuity specialization of the insurance kernel: products
+  and riders, policies and annuity contracts, owners, insureds, annuitants and
+  beneficiaries, new-business underwriting and best-interest review, indexed
+  crediting, account values, contract transactions, death claims and statutory
+  reserves, plus what new-business, persistency and mortality analytics need
+  (application disposition, annualized premium, termination reasons, producer
+  compensation, mortality-table rates for actual-to-expected studies). Aligned to
+  the ACORD life data model where a counterpart exists (recorded as annotations
+  only, since ACORD content is licensed).
+version: 0.2.0
+license: Apache-2.0
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ins: https://ontology.tigeranalytics.com/insurance/core/
+  la: https://ontology.tigeranalytics.com/insurance/life-annuity/
+  schema: http://schema.org/
+default_prefix: la
+default_range: string
+
+imports:
+  - linkml:types
+  - ../core/core
+
+# Annotation conventions are the kernel's (see core.yaml): sensitivity phi|pii is
+# redacted for agents, identity_scope: global marks identifiers shared industry-wide.
+# Version 0.2.0 added classes, slots and enum values only and pinned every enum IRI;
+# owner / applicant / beneficiary / claimant now range over ContractParty (a
+# concrete Party), so the views can resolve them, and rates (cap, participation,
+# spread, floor, rider charge) are typed float: a two-place decimal truncates 9.25%
+# to 9%. No IRI moved.
+
+classes:
+
+  # ---------------------------------------------------------------- parties
+
+  InsuredPerson:
+    is_a: Person
+    description: The person whose life a policy insures, or whose life an annuity is measured on.
+    aliases: [insured, life insured, annuitant]
+    slots:
+      - smoker_status
+      - address_state
+
+  ContractParty:
+    is_a: Party
+    description: >-
+      A person or entity that owns, applies for, is named beneficiary of, or claims
+      on a policy or contract: individuals, trusts, estates, businesses and
+      charities. Admin systems usually keep one client file for every role.
+    aliases: [client, owner, policyholder, contract holder]
+    annotations:
+      acord_note: "ACORD Life Party"
+    slots:
+      - party_kind
+      - birth_date
+      - tax_id
+      - address_state
+
+  # ------------------------------------------------------------- products
+
+  LifeProduct:
+    is_a: Product
+    description: A life insurance product (term, whole life, universal life, indexed UL, variable UL).
+    annotations:
+      acord_note: "ACORD Life OLI_PRODTYPE"
+    slots:
+      - life_product_type
+      - writing_company
+
+  AnnuityProduct:
+    is_a: Product
+    description: >-
+      An annuity product: fixed, fixed indexed, registered index-linked (RILA),
+      variable, or an income annuity (SPIA/DIA).
+    slots:
+      - annuity_product_type
+      - writing_company
+      - surrender_charge_years
+
+  CreditingStrategy:
+    is_a: Entity
+    description: >-
+      One interest crediting option on an indexed or fixed product: the index,
+      the method and the current cap, participation rate, spread, buffer or
+      declared rate. Rates are declared by the carrier and change on a rate sheet,
+      so a strategy has one record per rate effective date.
+    aliases: [index option, allocation option]
+    slots:
+      - product
+      - index_name
+      - crediting_method
+      - term_years
+      - cap_rate
+      - participation_rate
+      - spread_rate
+      - floor_rate
+      - buffer_rate
+      - declared_rate
+      - rate_effective_date
+
+  # ------------------------------------------------------ new business
+
+  Application:
+    is_a: Entity
+    description: A signed request for a life policy or annuity contract, before issue.
+    slots:
+      - product
+      - applicant
+      - producer
+      - application_date
+      - state_of_issue
+      - replacement_indicator
+      - line_of_business
+      - distribution_channel
+      - application_status
+
+  UnderwritingCase:
+    is_a: Decision
+    description: >-
+      The life underwriting decision on an application: risk class, table
+      rating and flat extras. Accelerated (no-exam) cases are flagged.
+    slots:
+      - application
+      - underwriting_path
+      - risk_class
+      - table_rating
+      - flat_extra_per_thousand
+      - uw_status
+
+  SuitabilityReview:
+    is_a: Decision
+    description: >-
+      The best-interest / suitability review of an annuity sale or
+      replacement, required before the contract is issued.
+    aliases: [best interest review, suitability check]
+    annotations:
+      regulatory_note: >-
+        NAIC Suitability in Annuity Transactions Model Regulation (#275, 2020
+        revision) requires producers to act in the consumer's best interest and
+        document the basis for the recommendation; states adopt it with their
+        own variations.
+    slots:
+      - application
+      - review_outcome
+      - replacement_indicator
+      - consumer_profile_complete
+
+  # ----------------------------------------------------- policies/contracts
+
+  LifePolicy:
+    is_a: Coverage
+    description: An issued life insurance policy. Life specialization of Coverage.
+    aliases: [life policy, certificate]
+    slots:
+      - policy_number
+      - owner
+      - insured
+      - producer
+      - writing_company
+      - issue_date
+      - issue_age
+      - state_of_issue
+      - face_amount
+      - risk_class
+      - premium_mode
+      - modal_premium
+      - annualized_premium
+      - paid_to_date
+      - application
+      - distribution_channel
+      - crediting_strategy
+      - termination_reason
+      - operating_unit
+    slot_usage:
+      product:
+        range: LifeProduct
+        required: true
+      insured:
+        required: true
+      issue_date:
+        required: true
+
+  Rider:
+    is_a: Entity
+    description: An optional benefit attached to a policy or contract (waiver of premium, ADB, GLWB).
+    slots:
+      - policy
+      - contract
+      - rider_type
+      - rider_amount
+      - rider_charge_rate
+      - effective_date
+
+  AnnuityContract:
+    is_a: Coverage
+    description: >-
+      An issued annuity contract, in its accumulation or payout phase. Annuity
+      specialization of Coverage.
+    slots:
+      - contract_number
+      - owner
+      - annuitant
+      - producer
+      - writing_company
+      - issue_date
+      - issue_age
+      - state_of_issue
+      - tax_qualification
+      - contract_phase
+      - initial_premium
+      - application
+      - distribution_channel
+      - crediting_strategy
+      - termination_reason
+      - operating_unit
+    slot_usage:
+      product:
+        range: AnnuityProduct
+        required: true
+      annuitant:
+        required: true
+      issue_date:
+        required: true
+
+  Beneficiary:
+    is_a: Entity
+    description: A party named to receive proceeds on death, with its share.
+    slots:
+      - policy
+      - contract
+      - beneficiary_party
+      - beneficiary_designation
+      - share_percent
+
+  AccountValueSnapshot:
+    is_a: Entity
+    description: >-
+      Values of a contract or permanent policy at a valuation date. Balances
+      are point-in-time: always query them as of a date.
+    slots:
+      - policy
+      - contract
+      - valuation_date
+      - account_value
+      - cash_surrender_value
+      - surrender_charge_amount
+      - loan_balance
+      - credited_rate
+
+  ContractTransaction:
+    is_a: Entity
+    description: >-
+      A money movement on a policy or contract: premium, withdrawal, surrender,
+      loan, 1035 exchange in or out, annuitization or income payment.
+    slots:
+      - policy
+      - contract
+      - transaction_type
+      - transaction_date
+      - transaction_amount
+
+  # ----------------------------------------------------------------- claims
+
+  DeathClaim:
+    is_a: Claim
+    description: A claim for the death benefit of a life policy or annuity contract.
+    slots:
+      - policy
+      - contract
+      - date_of_death
+      - cause_of_death
+      - contestable
+      - death_benefit_amount
+      - paid_date
+      - claimant
+    slot_usage:
+      claim_status:
+        range: DeathClaimStatusEnum
+        required: true
+      date_of_death:
+        required: true
+
+  # ------------------------------------------------------------- finance
+
+  StatutoryReserve:
+    is_a: Entity
+    description: >-
+      The statutory reserve held for one policy or contract at a valuation
+      date, with the method and mortality table used.
+    annotations:
+      regulatory_note: >-
+        Life reserves follow the Valuation Manual (VM-20 principle-based for
+        many life products issued since 2017, CRVM otherwise); annuities follow
+        CARVM / VM-22. The prescribed mortality table (e.g. 2017 CSO) drives the
+        floor, so a table change moves every reserve on the block.
+    slots:
+      - policy
+      - contract
+      - valuation_date
+      - reserve_method
+      - mortality_table
+      - reserve_amount
+
+  MortalityRate:
+    is_a: Entity
+    description: >-
+      One annual mortality rate (qx) from a mortality table, by attained age, sex and
+      tobacco class. Valuation tables (2017 CSO) set reserve floors; experience
+      tables (e.g. the 2015 VBT) are the expected basis for actual-to-expected
+      studies. Rates are reference data shared by every unit.
+    annotations:
+      identity_scope: global
+    slots:
+      - mortality_table
+      - attained_age
+      - gender
+      - smoker_status
+      - mortality_rate
+
+  CommissionPayment:
+    is_a: Entity
+    description: >-
+      Compensation paid to a producer on a policy or contract: first-year and
+      renewal commission on life, upfront and trail commission on annuities,
+      bonuses and overrides.
+    aliases: [commission, producer compensation]
+    slots:
+      - producer
+      - policy
+      - contract
+      - commission_type
+      - payment_date
+      - commission_amount
+
+slots:
+  smoker_status:
+    range: SmokerStatusEnum
+    annotations:
+      sensitivity: phi
+  address_state:
+    pattern: "^[A-Z]{2}$"
+  life_product_type:
+    range: LifeProductTypeEnum
+  annuity_product_type:
+    range: AnnuityProductTypeEnum
+  writing_company:
+    range: WritingCompany
+  operating_unit:
+    range: OperatingUnit
+  surrender_charge_years:
+    range: integer
+    minimum_value: 0
+  index_name:
+    description: The external index the strategy tracks (e.g. S&P 500).
+  crediting_method:
+    range: CreditingMethodEnum
+  term_years:
+    range: integer
+    minimum_value: 1
+  cap_rate:
+    range: float
+    minimum_value: 0
+    description: Maximum credited rate per term, as a fraction (0.085 = 8.5%).
+  participation_rate:
+    range: float
+    minimum_value: 0
+  spread_rate:
+    range: float
+    minimum_value: 0
+  floor_rate:
+    range: float
+  buffer_rate:
+    range: float
+    minimum_value: 0
+    description: >-
+      RILA buffer: index losses up to this fraction are absorbed by the carrier
+      (0.10 = first 10% of loss). Not a floor, which limits the loss itself.
+  declared_rate:
+    range: float
+    minimum_value: 0
+    description: >-
+      Rate the carrier declares for a fixed (declared-rate) strategy or a MYGA
+      guarantee period, as a fraction.
+  rate_effective_date:
+    range: date
+  applicant:
+    range: ContractParty
+  producer:
+    range: Producer
+  application:
+    range: Application
+  application_date:
+    range: date
+  state_of_issue:
+    pattern: "^[A-Z]{2}$"
+  replacement_indicator:
+    range: boolean
+    description: True when the sale replaces an existing policy or contract.
+  underwriting_path:
+    range: UnderwritingPathEnum
+  risk_class:
+    range: RiskClassEnum
+  table_rating:
+    range: integer
+    minimum_value: 0
+    description: Substandard table (each table is +25% mortality).
+  flat_extra_per_thousand:
+    range: decimal
+    minimum_value: 0
+  uw_status:
+    range: UnderwritingStatusEnum
+  review_outcome:
+    range: ReviewOutcomeEnum
+  consumer_profile_complete:
+    range: boolean
+  policy_number:
+  contract_number:
+  owner:
+    range: ContractParty
+    annotations:
+      sensitivity: pii
+  insured:
+    range: InsuredPerson
+  annuitant:
+    range: InsuredPerson
+  issue_date:
+    range: date
+  issue_age:
+    range: integer
+    minimum_value: 0
+  face_amount:
+    range: decimal
+    minimum_value: 0
+    annotations:
+      sensitivity: financial
+  premium_mode:
+    range: PremiumModeEnum
+  modal_premium:
+    range: decimal
+    minimum_value: 0
+  policy:
+    range: LifePolicy
+  contract:
+    range: AnnuityContract
+  rider_type:
+    range: RiderTypeEnum
+  rider_amount:
+    range: decimal
+    minimum_value: 0
+  rider_charge_rate:
+    range: float
+    minimum_value: 0
+  tax_qualification:
+    range: TaxQualificationEnum
+  contract_phase:
+    range: ContractPhaseEnum
+  initial_premium:
+    range: decimal
+    minimum_value: 0
+  beneficiary_party:
+    range: ContractParty
+    annotations:
+      sensitivity: pii
+  beneficiary_designation:
+    range: BeneficiaryDesignationEnum
+  share_percent:
+    range: decimal
+    minimum_value: 0
+    maximum_value: 100
+  valuation_date:
+    range: date
+  account_value:
+    range: decimal
+    minimum_value: 0
+    annotations:
+      sensitivity: financial
+  cash_surrender_value:
+    range: decimal
+    minimum_value: 0
+  surrender_charge_amount:
+    range: decimal
+    minimum_value: 0
+  loan_balance:
+    range: decimal
+    minimum_value: 0
+  credited_rate:
+    range: float
+    description: >-
+      Rate credited over the twelve months ending at the valuation date, as a
+      fraction. Can be negative on a registered index-linked annuity (buffer breached).
+  party_kind:
+    range: PartyKindEnum
+  annualized_premium:
+    range: decimal
+    minimum_value: 0
+    description: >-
+      Planned premium for one policy year (modal premium x payments per year; target
+      premium on UL/IUL). The basis for new annualized premium and first-year commission.
+    annotations:
+      sensitivity: financial
+  paid_to_date:
+    range: date
+    description: Date through which premium has been paid; a policy past its grace period lapses.
+  distribution_channel:
+    range: DistributionChannelEnum
+  crediting_strategy:
+    range: CreditingStrategy
+    description: >-
+      The crediting strategy holding the largest share of value (primary allocation).
+      Multi-strategy allocations are not modeled yet.
+  termination_reason:
+    range: TerminationReasonEnum
+    description: Why the policy or contract ended; empty while in force.
+  application_status:
+    range: ApplicationStatusEnum
+  paid_date:
+    range: date
+  attained_age:
+    range: integer
+    minimum_value: 0
+    maximum_value: 125
+  mortality_rate:
+    range: float
+    minimum_value: 0
+    maximum_value: 1
+    description: Probability of death within one year (qx).
+  commission_type:
+    range: CommissionTypeEnum
+  payment_date:
+    range: date
+  commission_amount:
+    range: decimal
+    annotations:
+      sensitivity: financial
+  transaction_type:
+    range: ContractTransactionTypeEnum
+  transaction_date:
+    range: date
+  transaction_amount:
+    range: decimal
+  date_of_death:
+    range: date
+    annotations:
+      sensitivity: phi
+  cause_of_death:
+    annotations:
+      sensitivity: phi
+  contestable:
+    range: boolean
+    description: Death within the contestability period (usually two years from issue).
+  death_benefit_amount:
+    range: decimal
+    minimum_value: 0
+  claimant:
+    range: ContractParty
+  reserve_method:
+    range: ReserveMethodEnum
+  mortality_table:
+    range: MortalityTableEnum
+  reserve_amount:
+    range: decimal
+    annotations:
+      sensitivity: financial
+
+enums:
+  SmokerStatusEnum:
+    enum_uri: la:SmokerStatusEnum
+    permissible_values:
+      non_tobacco:
+      tobacco:
+      unknown:
+  LifeProductTypeEnum:
+    enum_uri: la:LifeProductTypeEnum
+    permissible_values:
+      term:
+      whole_life:
+      universal_life:
+      indexed_universal_life:
+      variable_universal_life:
+      final_expense:
+  AnnuityProductTypeEnum:
+    enum_uri: la:AnnuityProductTypeEnum
+    permissible_values:
+      fixed_deferred:
+        description: Multi-year guaranteed (MYGA) or declared-rate deferred annuity.
+      fixed_indexed:
+      registered_index_linked:
+        description: RILA; SEC-registered, buffers or floors on index losses.
+      variable:
+      single_premium_immediate:
+        description: SPIA
+      deferred_income:
+        description: DIA
+  CreditingMethodEnum:
+    enum_uri: la:CreditingMethodEnum
+    permissible_values:
+      annual_point_to_point:
+      monthly_point_to_point:
+      monthly_average:
+      monthly_sum_cap:
+      declared_rate:
+  UnderwritingPathEnum:
+    enum_uri: la:UnderwritingPathEnum
+    permissible_values:
+      fully_underwritten:
+      accelerated:
+        description: No exam or fluids; decided on data sources.
+      simplified_issue:
+      guaranteed_issue:
+  RiskClassEnum:
+    enum_uri: la:RiskClassEnum
+    permissible_values:
+      preferred_plus:
+      preferred:
+      standard_plus:
+      standard:
+      substandard:
+      declined:
+  UnderwritingStatusEnum:
+    enum_uri: la:UnderwritingStatusEnum
+    permissible_values:
+      open:
+      approved:
+      approved_other_than_applied:
+      declined:
+      postponed:
+      withdrawn:
+  ReviewOutcomeEnum:
+    enum_uri: la:ReviewOutcomeEnum
+    permissible_values:
+      approved:
+      approved_with_conditions:
+      rejected:
+      pending_info:
+  PremiumModeEnum:
+    enum_uri: la:PremiumModeEnum
+    permissible_values:
+      annual:
+      semi_annual:
+      quarterly:
+      monthly:
+      single:
+  RiderTypeEnum:
+    enum_uri: la:RiderTypeEnum
+    permissible_values:
+      waiver_of_premium:
+      accidental_death:
+      child_term:
+      chronic_illness:
+      long_term_care:
+      guaranteed_lifetime_withdrawal:
+        description: GLWB on an annuity.
+      guaranteed_minimum_death_benefit:
+  TaxQualificationEnum:
+    enum_uri: la:TaxQualificationEnum
+    permissible_values:
+      non_qualified:
+      traditional_ira:
+      roth_ira:
+      qualified_plan:
+  ContractPhaseEnum:
+    enum_uri: la:ContractPhaseEnum
+    permissible_values:
+      accumulation:
+      payout:
+  BeneficiaryDesignationEnum:
+    enum_uri: la:BeneficiaryDesignationEnum
+    permissible_values:
+      primary:
+      contingent:
+  ContractTransactionTypeEnum:
+    enum_uri: la:ContractTransactionTypeEnum
+    permissible_values:
+      premium:
+      partial_withdrawal:
+      full_surrender:
+      policy_loan:
+      loan_repayment:
+      exchange_1035_in:
+      exchange_1035_out:
+      annuitization:
+      income_payment:
+      rider_charge:
+      cost_of_insurance:
+  DeathClaimStatusEnum:
+    enum_uri: la:DeathClaimStatusEnum
+    description: Death claim lifecycle state.
+    permissible_values:
+      reported:
+      in_review:
+      contestable_review:
+      approved:
+      paid:
+      denied:
+  ReserveMethodEnum:
+    enum_uri: la:ReserveMethodEnum
+    permissible_values:
+      vm20_pbr:
+        description: Principle-based reserve under Valuation Manual section 20.
+      crvm:
+        description: Commissioners Reserve Valuation Method (formulaic life reserves).
+      carvm:
+        description: Commissioners Annuity Reserve Valuation Method (formulaic annuity reserves).
+      vm22:
+        description: >-
+          Valuation Manual section 22 as applied before principle-based reserving for
+          non-variable annuities: prescribed maximum valuation interest rates used
+          with CARVM.
+  MortalityTableEnum:
+    enum_uri: la:MortalityTableEnum
+    permissible_values:
+      cso_2017:
+        description: 2017 Commissioners Standard Ordinary table.
+      cso_2001:
+      annuity_2012_iam:
+        description: 2012 Individual Annuity Mortality table.
+      vbt_2015:
+        description: 2015 Valuation Basic Table (SOA experience basis); the expected basis for A/E studies.
+  PartyKindEnum:
+    enum_uri: la:PartyKindEnum
+    permissible_values:
+      individual:
+      trust:
+      estate:
+      business:
+      charity:
+  DistributionChannelEnum:
+    enum_uri: la:DistributionChannelEnum
+    permissible_values:
+      career_agency:
+      independent_bga:
+        description: Independent agents through a brokerage general agency or IMO.
+      broker_dealer:
+      bank:
+      direct_to_consumer:
+  TerminationReasonEnum:
+    enum_uri: la:TerminationReasonEnum
+    permissible_values:
+      not_taken:
+        description: Issued but never placed (owner declined delivery or first premium was never paid).
+      free_look:
+        description: Returned within the free-look period.
+      lapse:
+        description: Ended for non-payment of premium after the grace period.
+      surrender:
+        description: Owner surrendered for the cash surrender value.
+      exchange_1035_out:
+        description: Surrendered into a 1035 exchange to another carrier.
+      death:
+      maturity:
+      conversion:
+        description: Term policy converted to a permanent plan.
+  ApplicationStatusEnum:
+    enum_uri: la:ApplicationStatusEnum
+    permissible_values:
+      submitted:
+      in_underwriting:
+      approved:
+        description: Underwriting approved; not yet issued.
+      issued:
+        description: Issued, awaiting delivery and first premium.
+      placed:
+        description: Issued, delivered and paid; in force.
+      not_taken:
+      declined:
+      withdrawn:
+      incomplete:
+        description: Closed for missing requirements.
+  CommissionTypeEnum:
+    enum_uri: la:CommissionTypeEnum
+    permissible_values:
+      first_year:
+      renewal:
+      upfront:
+        description: Annuity commission paid at issue on the premium.
+      trail:
+        description: Asset-based annuity commission paid on account value.
+      bonus:
+      chargeback:
+        description: Recovery of commission already paid (negative amount).

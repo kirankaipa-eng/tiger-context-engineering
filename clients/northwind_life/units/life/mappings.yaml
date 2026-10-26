@@ -1,0 +1,341 @@
+# Northwind Individual Life: legacy policy administration system -> ontology.
+# UPPER_CASE mainframe names, CHAR(8) YYYYMMDD dates with 00000000 for "none",
+# money in cents (*_CTS), rates in basis points (*_BPS) and one- or two-letter
+# codes. The enterprise reference hub (org units, legal entities, product catalog,
+# producer master, mortality tables) is hosted on this platform, so LIFE maps the
+# shared reference data once for the whole client (global identity: product codes
+# and producer ids are never unit-qualified).
+
+unit: LIFE
+dialect: duckdb
+source_schema: lifepas
+
+classes:
+  # ---------------------------------------------------- enterprise reference hub
+  OperatingUnit:
+    query: SELECT * FROM ref.ORG_UNIT
+    note: Org units come from the reference hub; segment code INS = insurance.
+    slots:
+      id: {column: UNIT_CD}
+      unit_code: {column: UNIT_CD}
+      name: {column: UNIT_NM}
+      business_segment: {expr: "CASE src.SEG_CD WHEN 'INS' THEN 'insurance' ELSE 'corporate' END"}
+
+  WritingCompany:
+    query: SELECT * FROM ref.LEGAL_ENTITY
+    note: NWL is the Iowa-domiciled parent company; NWNY writes New York business only.
+    slots:
+      id: {column: CO_CD}
+      name: {column: CO_NM}
+      naic_company_code: {column: NAIC_CD}
+      domicile_state: {column: DOM_ST}
+      admitted_status: {value: admitted}
+      tax_id: {column: FEIN}
+
+  Product:
+    query: SELECT * FROM ref.PRODUCT_CAT
+    note: >-
+      The enterprise product catalog, keyed by the admin systems' own plan / product
+      codes, so a code means the same product on both platforms. LOB_CD IL = individual
+      life, IA = individual annuity. END_DT is empty while the product is on sale.
+    slots:
+      id: {column: PROD_ID}
+      name: {column: PROD_NM}
+      line_of_business: {expr: "CASE src.LOB_CD WHEN 'IL' THEN 'individual_life' WHEN 'IA' THEN 'individual_annuity' END"}
+      effective_date: {column: EFF_DT}
+      termination_date: {column: END_DT}
+
+  Producer:
+    query: SELECT * FROM ref.PRODUCER
+    note: >-
+      The producer master for both units. AGT_TYP IA independent agent, CA career
+      (captive) agent, BD registered representative of a broker-dealer, BK bank
+      representative, DR the direct-to-consumer desk. CHNL_CD (IBGA, CAREER, BD, BANK,
+      DTC) is the producer's home channel; sales carry their own channel code.
+      CONTRACT_DT is the appointment date (not modeled).
+    slots:
+      id: {column: AGT_ID}
+      name: {column: AGT_NM}
+      producer_type:
+        expr: >-
+          CASE src.AGT_TYP WHEN 'IA' THEN 'retail_agent' WHEN 'CA' THEN 'captive_agent'
+          WHEN 'BD' THEN 'retail_broker' WHEN 'BK' THEN 'retail_broker' WHEN 'DR' THEN 'direct' END
+      license_state: {column: RES_ST}
+      nwl_marketing_org: {column: IMO_NM}
+
+  MortalityRate:
+    query: SELECT * FROM ref.MORT_BASIS
+    note: >-
+      Annual qx by table, sex, tobacco class (N / S, U = not distinguished) and attained
+      age. TBL_CD VBT15 = 2015 VBT (experience basis), 17CSO, 12IAM. The fixture loads
+      smooth synthetic curves shaped like the tables; production loads the published ones.
+    slots:
+      id: {expr: "src.TBL_CD || '-' || src.SEX_CD || src.SMK_CD || '-' || CAST(src.ATT_AGE AS VARCHAR)"}
+      mortality_table:
+        expr: "CASE src.TBL_CD WHEN 'VBT15' THEN 'vbt_2015' WHEN '17CSO' THEN 'cso_2017' WHEN '01CSO' THEN 'cso_2001' WHEN '12IAM' THEN 'annuity_2012_iam' ELSE lower(src.TBL_CD) END"
+      gender: {expr: "CASE src.SEX_CD WHEN 'F' THEN 'female' WHEN 'M' THEN 'male' ELSE 'unknown' END"}
+      smoker_status: {expr: "CASE src.SMK_CD WHEN 'S' THEN 'tobacco' WHEN 'N' THEN 'non_tobacco' ELSE 'unknown' END"}
+      attained_age: {column: ATT_AGE}
+      mortality_rate: {column: QX}
+
+  # ------------------------------------------------------------------ products
+  LifeProduct:
+    table: PLANDEF
+    note: PLAN_TYP T term, U universal life, I indexed UL, W whole life. SC_YRS is the surrender-charge period.
+    slots:
+      id: {column: PLAN_CD}
+      name: {column: PLAN_NM}
+      line_of_business: {value: individual_life}
+      life_product_type:
+        expr: "CASE src.PLAN_TYP WHEN 'T' THEN 'term' WHEN 'U' THEN 'universal_life' WHEN 'I' THEN 'indexed_universal_life' WHEN 'W' THEN 'whole_life' END"
+      writing_company: {column: CO_CD}
+      effective_date: {expr: "CAST(strptime(NULLIF(src.EFF_DT, '00000000'), '%Y%m%d') AS DATE)"}
+      termination_date: {expr: "CAST(strptime(NULLIF(src.END_DT, '00000000'), '%Y%m%d') AS DATE)"}
+
+  CreditingStrategy:
+    table: IDXSTRAT
+    note: >-
+      IUL index strategies, one row per strategy per rate sheet (RATE_EFF_DT). METH_CD
+      A1 annual point-to-point, MA monthly average, FX fixed (declared) account.
+      Rates are in basis points (CAP_BPS 925 = 9.25%).
+    slots:
+      id: {column: STRAT_ID}
+      product: {column: PLAN_CD}
+      index_name: {column: IDX_NM}
+      crediting_method:
+        expr: "CASE src.METH_CD WHEN 'A1' THEN 'annual_point_to_point' WHEN 'MA' THEN 'monthly_average' WHEN 'FX' THEN 'declared_rate' ELSE lower(src.METH_CD) END"
+      term_years: {column: TERM_YRS}
+      cap_rate: {expr: "src.CAP_BPS / 10000.0"}
+      participation_rate: {expr: "src.PART_BPS / 10000.0"}
+      floor_rate: {expr: "src.FLR_BPS / 10000.0"}
+      declared_rate: {expr: "src.DECL_BPS / 10000.0"}
+      rate_effective_date: {expr: "CAST(strptime(src.RATE_EFF_DT, '%Y%m%d') AS DATE)"}
+
+  # ------------------------------------------------------------------- clients
+  InsuredPerson:
+    table: CLIENT
+    where: "CLNT_TYP = 'I'"
+    note: >-
+      One client file for every role. CLNT_TYP I individual, T trust, E estate,
+      B business. SMK_CD N / S is captured at underwriting and blank for clients who
+      were never insured. SEX_CD F / M.
+    slots:
+      id: {column: CLNT_ID}
+      name: {expr: "src.FIRST_NM || ' ' || src.LAST_NM"}
+      given_name: {column: FIRST_NM}
+      family_name: {column: LAST_NM}
+      birth_date: &life_dob {expr: "CAST(strptime(NULLIF(src.BIRTH_DT, '00000000'), '%Y%m%d') AS DATE)"}
+      gender: {expr: "CASE src.SEX_CD WHEN 'F' THEN 'female' WHEN 'M' THEN 'male' ELSE 'unknown' END"}
+      smoker_status: {expr: "CASE src.SMK_CD WHEN 'S' THEN 'tobacco' WHEN 'N' THEN 'non_tobacco' ELSE 'unknown' END"}
+      address_state: {column: RES_ST}
+
+  ContractParty:
+    table: CLIENT
+    note: Every client, whatever its role. ENTITY_NM holds the name of a trust, estate or business. TIN is an SSN or EIN.
+    slots:
+      id: {column: CLNT_ID}
+      name: {expr: "coalesce(src.ENTITY_NM, src.FIRST_NM || ' ' || src.LAST_NM)"}
+      party_kind:
+        expr: "CASE src.CLNT_TYP WHEN 'I' THEN 'individual' WHEN 'T' THEN 'trust' WHEN 'E' THEN 'estate' WHEN 'B' THEN 'business' END"
+      birth_date: *life_dob
+      tax_id: {column: TIN}
+      address_state: {column: RES_ST}
+
+  # -------------------------------------------------------------- new business
+  Application:
+    table: APPL
+    note: >-
+      APP_STAT_CD SB submitted, UW in underwriting, AP approved (not yet issued), IS
+      issued, PL placed (delivered and paid), NT not taken, DC declined or postponed,
+      WD withdrawn, IC closed incomplete. DIST_CHNL is the sale's channel: IBGA
+      independent via a brokerage general agency, CAREER, BD, BANK, DTC direct.
+    slots:
+      id: {column: APP_NO}
+      product: {column: PLAN_CD}
+      applicant: {column: APPLCNT_CLNT_ID}
+      producer: {column: AGT_ID}
+      application_date: {expr: "CAST(strptime(src.APP_SIGN_DT, '%Y%m%d') AS DATE)"}
+      state_of_issue: {column: APP_ST}
+      replacement_indicator: {expr: "src.RPLC_IND = 'Y'"}
+      line_of_business: {value: individual_life}
+      distribution_channel: &life_chnl
+        expr: >-
+          CASE src.DIST_CHNL WHEN 'IBGA' THEN 'independent_bga' WHEN 'CAREER' THEN 'career_agency'
+          WHEN 'BD' THEN 'broker_dealer' WHEN 'BANK' THEN 'bank' WHEN 'DTC' THEN 'direct_to_consumer' END
+      application_status:
+        expr: >-
+          CASE src.APP_STAT_CD WHEN 'SB' THEN 'submitted' WHEN 'UW' THEN 'in_underwriting' WHEN 'AP' THEN 'approved'
+          WHEN 'IS' THEN 'issued' WHEN 'PL' THEN 'placed' WHEN 'NT' THEN 'not_taken' WHEN 'DC' THEN 'declined'
+          WHEN 'WD' THEN 'withdrawn' WHEN 'IC' THEN 'incomplete' END
+
+  UnderwritingCase:
+    table: UWCASE
+    note: >-
+      UW_PATH FU fully underwritten, AU accelerated (no exam or fluids), SI simplified
+      issue. RISK_CL PP preferred plus, PF preferred, SP standard plus, ST standard,
+      SS substandard (TBL_RT = table, each +25% mortality). UW_DCSN AP approved as
+      applied, AO approved other than applied, DC declined, PP postponed, WD withdrawn,
+      IC closed incomplete, OP open. RISK_CL is blank unless approved.
+    slots:
+      id: {column: UW_CASE_ID}
+      application: {column: APP_NO}
+      underwriting_path: {expr: "CASE src.UW_PATH WHEN 'FU' THEN 'fully_underwritten' WHEN 'AU' THEN 'accelerated' WHEN 'SI' THEN 'simplified_issue' WHEN 'GI' THEN 'guaranteed_issue' END"}
+      risk_class: &life_class
+        expr: >-
+          CASE src.RISK_CL WHEN 'PP' THEN 'preferred_plus' WHEN 'PF' THEN 'preferred' WHEN 'SP' THEN 'standard_plus'
+          WHEN 'ST' THEN 'standard' WHEN 'SS' THEN 'substandard' END
+      table_rating: {column: TBL_RT}
+      flat_extra_per_thousand: {column: FLAT_XTRA}
+      uw_status:
+        expr: >-
+          CASE src.UW_DCSN WHEN 'AP' THEN 'approved' WHEN 'AO' THEN 'approved_other_than_applied' WHEN 'DC' THEN 'declined'
+          WHEN 'PP' THEN 'postponed' WHEN 'WD' THEN 'withdrawn' WHEN 'IC' THEN 'withdrawn' WHEN 'OP' THEN 'open' END
+      decision_date: {expr: "CAST(strptime(NULLIF(src.DCSN_DT, '00000000'), '%Y%m%d') AS DATE)"}
+      decision_reason: {column: DCSN_RSN}
+
+  # ------------------------------------------------------------------ policies
+  LifePolicy:
+    table: POLMSTR
+    note: >-
+      STAT_CD A active, L lapsed, S surrendered, D death, C converted, N not taken,
+      F free-look return; STAT_DT is the termination date. MODE_CD A / S / Q / M
+      (annual, semi-annual, quarterly, monthly). ANN_PREM_CTS is the annualized
+      (target) premium. FACE_AMT is in whole dollars. STRAT_ID is the IUL primary
+      strategy. TBL_RT repeats the underwriting table rating.
+    slots:
+      id: {column: POL_NO}
+      policy_number: {column: POL_NO}
+      product: {column: PLAN_CD}
+      writing_company: {column: CO_CD}
+      application: {column: APP_NO}
+      owner: {column: OWNR_CLNT_ID}
+      insured: {column: INSD_CLNT_ID}
+      producer: {column: AGT_ID}
+      issue_date: {expr: "CAST(strptime(src.ISS_DT, '%Y%m%d') AS DATE)"}
+      effective_date: {expr: "CAST(strptime(src.ISS_DT, '%Y%m%d') AS DATE)"}
+      termination_date: {expr: "CAST(strptime(NULLIF(src.STAT_DT, '00000000'), '%Y%m%d') AS DATE)"}
+      coverage_status: {expr: "CASE src.STAT_CD WHEN 'A' THEN 'active' WHEN 'N' THEN 'cancelled' ELSE 'terminated' END"}
+      termination_reason:
+        expr: >-
+          CASE src.STAT_CD WHEN 'L' THEN 'lapse' WHEN 'S' THEN 'surrender' WHEN 'D' THEN 'death'
+          WHEN 'C' THEN 'conversion' WHEN 'N' THEN 'not_taken' WHEN 'F' THEN 'free_look' END
+      issue_age: {column: ISS_AGE}
+      state_of_issue: {column: ISS_ST}
+      face_amount: {column: FACE_AMT}
+      risk_class: *life_class
+      premium_mode: {expr: "CASE src.MODE_CD WHEN 'A' THEN 'annual' WHEN 'S' THEN 'semi_annual' WHEN 'Q' THEN 'quarterly' WHEN 'M' THEN 'monthly' END"}
+      modal_premium: {expr: "src.MODAL_PREM_CTS / 100.0"}
+      annualized_premium: {expr: "src.ANN_PREM_CTS / 100.0"}
+      paid_to_date: {expr: "CAST(strptime(NULLIF(src.PD_TO_DT, '00000000'), '%Y%m%d') AS DATE)"}
+      distribution_channel: *life_chnl
+      crediting_strategy: {column: STRAT_ID}
+      operating_unit: {value: LIFE}
+
+  Rider:
+    table: RIDER
+    note: >-
+      RDR_CD WP waiver of premium, ADB accidental death, CTR child term, CIR chronic
+      illness accelerated benefit, LTC long-term care acceleration. RDR_CHG_BPS is the
+      rider charge rate; blank when the rider is free. Codes the decode does not know
+      pass through lower-cased so the conformance check surfaces them.
+    slots:
+      id: {expr: "src.POL_NO || '-' || CAST(src.RDR_SEQ AS VARCHAR)"}
+      policy: {column: POL_NO}
+      rider_type:
+        expr: >-
+          CASE src.RDR_CD WHEN 'WP' THEN 'waiver_of_premium' WHEN 'ADB' THEN 'accidental_death' WHEN 'CTR' THEN 'child_term'
+          WHEN 'CIR' THEN 'chronic_illness' WHEN 'LTC' THEN 'long_term_care' ELSE lower(src.RDR_CD) END
+      rider_amount: {column: RDR_AMT}
+      rider_charge_rate: {expr: "src.RDR_CHG_BPS / 10000.0"}
+      effective_date: {expr: "CAST(strptime(src.RDR_EFF_DT, '%Y%m%d') AS DATE)"}
+
+  Beneficiary:
+    table: BENEF
+    note: BNF_TYP P primary, C contingent. BNF_PCT is a whole percentage.
+    slots:
+      id: {expr: "src.POL_NO || '-' || CAST(src.BNF_SEQ AS VARCHAR)"}
+      policy: {column: POL_NO}
+      beneficiary_party: {column: CLNT_ID}
+      beneficiary_designation: {expr: "CASE src.BNF_TYP WHEN 'P' THEN 'primary' WHEN 'C' THEN 'contingent' END"}
+      share_percent: {column: BNF_PCT}
+
+  AccountValueSnapshot:
+    table: CVSNAP
+    note: >-
+      Quarter-end values on UL, IUL and whole life (cash value). CRED_RT_BPS is the
+      rate credited at the last policy anniversary; blank in the first policy year.
+    slots:
+      id: {expr: "src.POL_NO || '-' || src.VAL_DT"}
+      policy: {column: POL_NO}
+      valuation_date: {expr: "CAST(strptime(src.VAL_DT, '%Y%m%d') AS DATE)"}
+      account_value: {expr: "src.ACCT_VAL_CTS / 100.0"}
+      cash_surrender_value: {expr: "src.CSV_CTS / 100.0"}
+      surrender_charge_amount: {expr: "src.SURR_CHG_CTS / 100.0"}
+      loan_balance: {expr: "src.LOAN_BAL_CTS / 100.0"}
+      credited_rate: {expr: "src.CRED_RT_BPS / 10000.0"}
+
+  ContractTransaction:
+    table: FINTRAN
+    note: >-
+      TRN_CD PRM premium, PWD partial withdrawal, SUR full surrender, LON policy loan,
+      LRP loan repayment. The history file keeps one PRM summary row per policy year;
+      modal billing detail stays in the billing subsystem.
+    slots:
+      id: {column: TRN_ID}
+      policy: {column: POL_NO}
+      transaction_type:
+        expr: >-
+          CASE src.TRN_CD WHEN 'PRM' THEN 'premium' WHEN 'PWD' THEN 'partial_withdrawal' WHEN 'SUR' THEN 'full_surrender'
+          WHEN 'LON' THEN 'policy_loan' WHEN 'LRP' THEN 'loan_repayment' END
+      transaction_date: {expr: "CAST(strptime(src.TRN_DT, '%Y%m%d') AS DATE)"}
+      transaction_amount: {expr: "src.TRN_AMT_CTS / 100.0"}
+
+  CommissionPayment:
+    table: COMMPAY
+    note: CMSN_TYP FY first-year, RN renewal, BN bonus, CB chargeback (negative amount).
+    slots:
+      id: {column: CMSN_ID}
+      policy: {column: POL_NO}
+      producer: {column: AGT_ID}
+      commission_type: {expr: "CASE src.CMSN_TYP WHEN 'FY' THEN 'first_year' WHEN 'RN' THEN 'renewal' WHEN 'BN' THEN 'bonus' WHEN 'CB' THEN 'chargeback' END"}
+      payment_date: {expr: "CAST(strptime(src.CMSN_DT, '%Y%m%d') AS DATE)"}
+      commission_amount: {expr: "src.CMSN_AMT_CTS / 100.0"}
+
+  # --------------------------------------------------------------------- claims
+  DeathClaim:
+    table: CLMHDR
+    note: >-
+      CLM_STAT RP reported, IR in review, CR contestable review, AP approved, PD paid,
+      DN denied. CONTEST_IND Y when death was within the two-year contestable period.
+      DB_AMT_CTS is the death benefit; PD_AMT_CTS adds interest from the date of death.
+      COD_CD is a cause-of-death category.
+    slots:
+      id: {column: CLM_NO}
+      policy: {column: POL_NO}
+      date_of_death: {expr: "CAST(strptime(src.DOD, '%Y%m%d') AS DATE)"}
+      cause_of_death: {column: COD_CD}
+      received_date: {expr: "CAST(strptime(src.NOTIF_DT, '%Y%m%d') AS DATE)"}
+      claim_status:
+        expr: >-
+          CASE src.CLM_STAT WHEN 'RP' THEN 'reported' WHEN 'IR' THEN 'in_review' WHEN 'CR' THEN 'contestable_review'
+          WHEN 'AP' THEN 'approved' WHEN 'PD' THEN 'paid' WHEN 'DN' THEN 'denied' END
+      contestable: {expr: "src.CONTEST_IND = 'Y'"}
+      death_benefit_amount: {expr: "src.DB_AMT_CTS / 100.0"}
+      total_paid_amount: {expr: "src.PD_AMT_CTS / 100.0"}
+      paid_date: {expr: "CASE WHEN src.CLM_STAT = 'PD' THEN CAST(strptime(src.PD_DT, '%Y%m%d') AS DATE) END"}
+      claimant: {column: CLMNT_CLNT_ID}
+
+  # -------------------------------------------------------------------- finance
+  StatutoryReserve:
+    table: STATRSV
+    note: >-
+      Year-end and 2026 quarter-end statutory reserves. RSV_METH VM20 (principle-based)
+      or CRVM; MORT_TBL 17CSO or 01CSO (2019 issues, before the 2017 CSO became mandatory).
+    slots:
+      id: {expr: "src.POL_NO || '-' || src.VAL_DT"}
+      policy: {column: POL_NO}
+      valuation_date: {expr: "CAST(strptime(src.VAL_DT, '%Y%m%d') AS DATE)"}
+      reserve_method: {expr: "CASE src.RSV_METH WHEN 'VM20' THEN 'vm20_pbr' WHEN 'CRVM' THEN 'crvm' ELSE lower(src.RSV_METH) END"}
+      mortality_table:
+        expr: "CASE src.MORT_TBL WHEN '17CSO' THEN 'cso_2017' WHEN '01CSO' THEN 'cso_2001' ELSE lower(src.MORT_TBL) END"
+      reserve_amount: {expr: "src.RSV_AMT_CTS / 100.0"}

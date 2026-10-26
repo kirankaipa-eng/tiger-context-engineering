@@ -1,0 +1,679 @@
+# Governed metric definitions for the health payer pack (commercial + Medicare Advantage).
+#
+# Metrics are defined over ONTOLOGY paths, never tables: `{plan.plan_benefit_package.ma_contract}`
+# is resolved to joins by following the ontology's relationships, so the same
+# definition runs on any client whose units are mapped. Client overlays may
+# override or add metrics (see clients/<client>/client.yaml `metrics:`); every
+# result carries the definition that produced it.
+#
+# Conventions:
+#   * Every financial fact carries `member` and `plan`; plan is the conformed spine for
+#     line of business, market segment, funding type, metal tier, MA contract and PBP.
+#   * PMPM and per-1,000 metrics divide by member months (derived MemberMonth).
+#     Per-1,000 rates are annualized: count / member months x 12,000 (`scale`).
+#   * Ratios are ratios of sums, never averages of ratios, so any cut composes.
+#   * Medical cost is paid basis through the valuation date (claims paid + provider
+#     capitation). It excludes IBNR, so the latest incurred months are incomplete.
+#   * MLR follows the regulatory shape (claims + quality improvement over premium) on
+#     risk-bearing business only: ASO claims are the employer's, not the payer's.
+#
+# Placeholders:  {path}   ontology path from the metric's entity
+#                {as_of}  valuation date (DATE literal)
+#                {ont}    group ontology schema
+
+version: 0.2.0
+
+# ------------------------------------------------------------ derived entities
+# Computed at query time (they depend on as_of), then usable like any entity.
+derived:
+  MemberMonth:
+    description: >-
+      One row per member per calendar month with eligibility on the first day of
+      the month, through the valuation date. The denominator for PMPM and
+      per-1,000 metrics.
+    columns:
+      enrollment: {range: Enrollment}
+      member: {range: Member}
+      plan: {range: HealthPlan}
+      employer_group: {range: EmployerGroup}
+      dual_status: {}
+      source_system: {}
+      month: {}
+    sql: |
+      WITH months AS (
+        SELECT CAST(m AS DATE) AS month
+        FROM (SELECT unnest(generate_series(DATE '2010-01-01', DATE '2040-12-01', INTERVAL 1 MONTH)) AS m)
+      )
+      SELECT e.id AS enrollment, e.member, e.product AS plan, e.employer_group, e.dual_status,
+             e.source_system, mo.month
+      FROM {ont}.enrollment e
+      JOIN months mo
+        ON mo.month >= e.effective_date
+       AND mo.month <= coalesce(e.termination_date, {as_of})
+       AND mo.month <= {as_of}
+
+# ----------------------------------------------------------- conformed dimensions
+dimensions:
+  unit:
+    label: Operating unit (source platform)
+    description: The unit whose system recorded the fact (lineage column on every entity).
+    paths:
+      MemberMonth: source_system
+      MedicalClaim: source_system
+      PharmacyClaim: source_system
+      ProviderCapitationPayment: source_system
+      PremiumInvoice: source_system
+      CapitationPayment: source_system
+      QualityImprovementExpense: source_system
+      PriorAuthorization: source_system
+      Appeal: source_system
+      Grievance: source_system
+      MemberRiskScore: source_system
+      StarMeasureResult: source_system
+      DiagnosisSubmission: source_system
+  line_of_business:
+    label: Line of business
+    paths:
+      MemberMonth: plan.line_of_business
+      MedicalClaim: plan.line_of_business
+      PharmacyClaim: plan.line_of_business
+      ProviderCapitationPayment: plan.line_of_business
+      PremiumInvoice: plan.line_of_business
+      CapitationPayment: plan.line_of_business
+      QualityImprovementExpense: line_of_business
+      PriorAuthorization: plan.line_of_business
+      Appeal: plan.line_of_business
+      Grievance: plan.line_of_business
+      MemberRiskScore: plan.line_of_business
+  market_segment:
+    label: Market segment
+    description: Individual, small group, large group, Medicare (drives the MLR minimum).
+    paths:
+      MemberMonth: plan.market_segment
+      MedicalClaim: plan.market_segment
+      PharmacyClaim: plan.market_segment
+      ProviderCapitationPayment: plan.market_segment
+      PremiumInvoice: plan.market_segment
+      CapitationPayment: plan.market_segment
+      QualityImprovementExpense: market_segment
+      PriorAuthorization: plan.market_segment
+      Appeal: plan.market_segment
+      Grievance: plan.market_segment
+  funding_type:
+    label: Funding type
+    description: Fully insured vs self-funded (ASO).
+    paths:
+      MemberMonth: plan.funding_type
+      MedicalClaim: plan.funding_type
+      PharmacyClaim: plan.funding_type
+      ProviderCapitationPayment: plan.funding_type
+      PremiumInvoice: plan.funding_type
+      CapitationPayment: plan.funding_type
+      PriorAuthorization: plan.funding_type
+  plan:
+    label: Plan
+    paths:
+      MemberMonth: plan.name
+      MedicalClaim: plan.name
+      PharmacyClaim: plan.name
+      ProviderCapitationPayment: plan.name
+      PremiumInvoice: plan.name
+      CapitationPayment: plan.name
+      PriorAuthorization: plan.name
+      Appeal: plan.name
+      Grievance: plan.name
+      MemberRiskScore: plan.name
+  plan_type:
+    label: Plan type
+    paths:
+      MemberMonth: plan.plan_type
+      MedicalClaim: plan.plan_type
+      PharmacyClaim: plan.plan_type
+      ProviderCapitationPayment: plan.plan_type
+      PremiumInvoice: plan.plan_type
+      CapitationPayment: plan.plan_type
+      PriorAuthorization: plan.plan_type
+  metal_tier:
+    label: Metal tier
+    paths:
+      MemberMonth: plan.metal_tier
+      MedicalClaim: plan.metal_tier
+      PharmacyClaim: plan.metal_tier
+      ProviderCapitationPayment: plan.metal_tier
+      PremiumInvoice: plan.metal_tier
+      CapitationPayment: plan.metal_tier
+  contract:
+    label: MA contract (H-number)
+    paths:
+      MemberMonth: plan.plan_benefit_package.ma_contract.contract_number
+      MedicalClaim: plan.plan_benefit_package.ma_contract.contract_number
+      PharmacyClaim: plan.plan_benefit_package.ma_contract.contract_number
+      ProviderCapitationPayment: plan.plan_benefit_package.ma_contract.contract_number
+      PremiumInvoice: plan.plan_benefit_package.ma_contract.contract_number
+      CapitationPayment: ma_contract.contract_number
+      PriorAuthorization: plan.plan_benefit_package.ma_contract.contract_number
+      Appeal: plan.plan_benefit_package.ma_contract.contract_number
+      Grievance: plan.plan_benefit_package.ma_contract.contract_number
+      MemberRiskScore: plan.plan_benefit_package.ma_contract.contract_number
+      StarMeasureResult: ma_contract.contract_number
+  pbp:
+    label: Plan benefit package
+    paths:
+      MemberMonth: plan.plan_benefit_package
+      MedicalClaim: plan.plan_benefit_package
+      PharmacyClaim: plan.plan_benefit_package
+      ProviderCapitationPayment: plan.plan_benefit_package
+      PremiumInvoice: plan.plan_benefit_package
+      CapitationPayment: plan_benefit_package
+      PriorAuthorization: plan.plan_benefit_package
+      MemberRiskScore: plan.plan_benefit_package
+  month:
+    label: Month (incurred / coverage)
+    description: >-
+      Service month for claims, fill month for scripts, coverage or payment month for
+      premium and capitation, request month for prior auths, appeals and grievances.
+    paths:
+      MemberMonth: month
+      MedicalClaim: "CAST(date_trunc('month', {service_from_date}) AS DATE)"
+      PharmacyClaim: "CAST(date_trunc('month', {fill_date}) AS DATE)"
+      ProviderCapitationPayment: "CAST(date_trunc('month', {payment_month}) AS DATE)"
+      PremiumInvoice: "CAST(date_trunc('month', {coverage_month}) AS DATE)"
+      CapitationPayment: "CAST(date_trunc('month', {payment_month}) AS DATE)"
+      QualityImprovementExpense: "CAST(date_trunc('month', {expense_month}) AS DATE)"
+      PriorAuthorization: "CAST(date_trunc('month', {request_date}) AS DATE)"
+      Appeal: "CAST(date_trunc('month', {received_date}) AS DATE)"
+      Grievance: "CAST(date_trunc('month', {received_date}) AS DATE)"
+  year:
+    label: Calendar year (incurred / coverage)
+    paths:
+      MemberMonth: "year({month})"
+      MedicalClaim: "year({service_from_date})"
+      PharmacyClaim: "year({fill_date})"
+      ProviderCapitationPayment: "year({payment_month})"
+      PremiumInvoice: "year({coverage_month})"
+      CapitationPayment: "year({payment_month})"
+      QualityImprovementExpense: "year({expense_month})"
+      PriorAuthorization: "year({request_date})"
+      Appeal: "year({received_date})"
+      Grievance: "year({received_date})"
+  payment_year:
+    label: Payment year
+    description: CMS payment year (risk scores are calculated per payment year).
+    paths:
+      MemberRiskScore: payment_year
+      CapitationPayment: "year({payment_month})"
+      DiagnosisSubmission: payment_year
+  provider_specialty:
+    label: Provider specialty (NUCC taxonomy)
+    paths:
+      MedicalClaim: billing_provider.specialty_taxonomy
+      PharmacyClaim: prescriber.specialty_taxonomy
+      PriorAuthorization: requesting_provider.specialty_taxonomy
+      ProviderCapitationPayment: provider.specialty_taxonomy
+  in_network:
+    label: In network
+    paths:
+      MedicalClaim: in_network
+  service_category:
+    label: Service category
+    paths:
+      MedicalClaim: service_category
+  denial_category:
+    label: Denial category
+    paths:
+      MedicalClaim: denial_category
+  urgency:
+    label: Urgency (standard / expedited)
+    paths:
+      PriorAuthorization: urgency
+      Appeal: urgency
+      Grievance: urgency
+  dual_status:
+    label: Dual eligibility
+    paths:
+      MemberMonth: dual_status
+  risk_score_basis:
+    label: Risk score basis (model)
+    paths:
+      MemberRiskScore: risk_score_basis
+  risk_segment:
+    label: Risk model segment
+    paths:
+      MemberRiskScore: risk_segment
+  star_measure:
+    label: Star measure
+    paths:
+      StarMeasureResult: star_measure.name
+  measure_source:
+    label: Star measure source
+    paths:
+      StarMeasureResult: star_measure.measure_source
+  star_year:
+    label: Star Ratings year
+    paths:
+      StarMeasureResult: star_year
+  brand_generic:
+    label: Brand / generic
+    paths:
+      PharmacyClaim: drug.brand_generic
+  formulary_tier:
+    label: Formulary tier
+    paths:
+      PharmacyClaim: formulary_tier_number
+  pharmacy_type:
+    label: Pharmacy channel
+    paths:
+      PharmacyClaim: pharmacy.pharmacy_type
+  appeal_level:
+    label: Appeal level
+    paths:
+      Appeal: appeal_level
+  grievance_category:
+    label: Grievance category
+    paths:
+      Grievance: grievance_category
+  diagnosis_source:
+    label: Diagnosis source
+    paths:
+      DiagnosisSubmission: submission_type
+
+# ------------------------------------------------------------------- metrics
+metrics:
+  # membership
+  member_months:
+    label: Member months
+    description: Months of eligibility on the first of the month, through the valuation date.
+    entity: MemberMonth
+    measure: "count(*)"
+    format: count
+  insured_member_months:
+    label: Member months (risk-bearing)
+    description: Member months excluding self-funded (ASO) plans.
+    entity: MemberMonth
+    measure: "count(*)"
+    filter: "coalesce({plan.funding_type}, 'fully_insured') <> 'aso'"
+    format: count
+  member_count:
+    label: Distinct members
+    entity: MemberMonth
+    measure: "count(DISTINCT {member})"
+    format: count
+
+  # medical and pharmacy cost (paid basis)
+  medical_claims_paid:
+    label: Medical claims paid
+    description: Plan-paid amount on medical claims finalized on or before the valuation date.
+    entity: MedicalClaim
+    measure: "sum({total_paid_amount})"
+    filter: "{claim_status} <> 'voided'"
+    as_of: paid_date
+    format: currency
+  medical_claims_paid_insured:
+    label: Medical claims paid (risk-bearing)
+    description: Medical claims paid, excluding self-funded (ASO) plans.
+    entity: MedicalClaim
+    measure: "sum({total_paid_amount})"
+    filter: "{claim_status} <> 'voided' AND coalesce({plan.funding_type}, 'fully_insured') <> 'aso'"
+    as_of: paid_date
+    format: currency
+  provider_capitation:
+    label: Provider capitation
+    description: Capitation paid to providers under value-based arrangements.
+    entity: ProviderCapitationPayment
+    measure: "sum({capitation_amount})"
+    as_of: payment_month
+    format: currency
+  medical_cost:
+    label: Medical cost
+    description: Medical claims paid plus provider capitation.
+    sum_of: [medical_claims_paid, provider_capitation]
+    format: currency
+  pharmacy_claims_paid:
+    label: Pharmacy claims paid
+    description: Plan-paid amount on paid (not rejected or reversed) pharmacy claims.
+    entity: PharmacyClaim
+    measure: "sum({total_paid_amount})"
+    filter: "{claim_status} = 'paid'"
+    as_of: fill_date
+    format: currency
+  pharmacy_claims_paid_insured:
+    label: Pharmacy claims paid (risk-bearing)
+    entity: PharmacyClaim
+    measure: "sum({total_paid_amount})"
+    filter: "{claim_status} = 'paid' AND coalesce({plan.funding_type}, 'fully_insured') <> 'aso'"
+    as_of: fill_date
+    format: currency
+  total_cost:
+    label: Total cost of care
+    description: Medical cost plus pharmacy claims paid.
+    sum_of: [medical_cost, pharmacy_claims_paid]
+    format: currency
+  medical_pmpm:
+    label: Medical PMPM
+    description: Medical cost per member per month.
+    ratio: [medical_cost, member_months]
+    format: currency
+  pharmacy_pmpm:
+    label: Pharmacy PMPM
+    description: Pharmacy claims paid per member per month.
+    ratio: [pharmacy_claims_paid, member_months]
+    format: currency
+  total_pmpm:
+    label: Total PMPM
+    description: Total cost of care per member per month.
+    ratio: [total_cost, member_months]
+    format: currency
+
+  # revenue and MLR
+  premium_billed:
+    label: Premium billed
+    description: Premium billed to groups, subscribers and MA members for coverage months through the valuation date.
+    entity: PremiumInvoice
+    measure: "sum({billed_premium_amount})"
+    as_of: coverage_month
+    format: currency
+  cms_capitation_revenue:
+    label: CMS capitation revenue
+    description: CMS monthly payments (Part C, Part D, rebate) including retroactive adjustments.
+    entity: CapitationPayment
+    measure: "sum({total_payment_amount})"
+    as_of: payment_month
+    format: currency
+  premium_revenue:
+    label: Premium revenue
+    description: Premium billed plus CMS capitation.
+    sum_of: [premium_billed, cms_capitation_revenue]
+    format: currency
+  premium_pmpm:
+    label: Premium PMPM
+    description: Premium revenue per risk-bearing member month.
+    ratio: [premium_revenue, insured_member_months]
+    format: currency
+  quality_improvement_expense:
+    label: Quality improvement expense
+    entity: QualityImprovementExpense
+    measure: "sum({expense_amount})"
+    as_of: expense_month
+    format: currency
+  mlr_claims_and_quality:
+    label: MLR numerator (claims + quality improvement)
+    description: Risk-bearing medical claims, provider capitation, pharmacy claims and quality improvement expense.
+    sum_of: [medical_claims_paid_insured, provider_capitation, pharmacy_claims_paid_insured, quality_improvement_expense]
+    format: currency
+  medical_loss_ratio:
+    label: Medical loss ratio (MLR)
+    description: >-
+      (Claims + quality improvement) / premium revenue on risk-bearing business, ratio
+      of sums. Paid basis and before taxes/fees adjustments, so a management view of the
+      regulatory MLR (ACA minimum 80% individual/small group, 85% large group; MA 85%).
+    ratio: [mlr_claims_and_quality, premium_revenue]
+    format: percent
+
+  # utilization
+  inpatient_admits:
+    label: Inpatient admits
+    entity: MedicalClaim
+    measure: >-
+      count(DISTINCT CASE WHEN {service_category} = 'inpatient'
+                           AND {claim_status} NOT IN ('denied', 'voided') THEN {id} END)
+    as_of: received_date
+    format: count
+  inpatient_days:
+    label: Inpatient days
+    entity: MedicalClaim
+    measure: >-
+      sum(CASE WHEN {service_category} = 'inpatient' AND {claim_status} NOT IN ('denied', 'voided')
+               THEN greatest(date_diff('day', {admission_date}, {discharge_date}), 1) ELSE 0 END)
+    as_of: received_date
+    format: count
+  er_visits:
+    label: ER visits
+    entity: MedicalClaim
+    measure: >-
+      count(DISTINCT CASE WHEN {service_category} = 'emergency'
+                           AND {claim_status} NOT IN ('denied', 'voided') THEN {id} END)
+    as_of: received_date
+    format: count
+  admits_per_1000:
+    label: Inpatient admits per 1,000
+    description: Annualized admits per 1,000 members (admits / member months x 12,000).
+    ratio: [inpatient_admits, member_months]
+    scale: 12000
+    format: number
+  er_visits_per_1000:
+    label: ER visits per 1,000
+    description: Annualized ER visits per 1,000 members.
+    ratio: [er_visits, member_months]
+    scale: 12000
+    format: number
+  average_length_of_stay:
+    label: Average length of stay
+    description: Inpatient days / inpatient admits.
+    ratio: [inpatient_days, inpatient_admits]
+    format: number
+
+  # claims operations
+  adjudicated_claim_count:
+    label: Adjudicated claims
+    description: Claims finalized (paid or denied), excluding zero-paid encounter records.
+    entity: MedicalClaim
+    measure: >-
+      count(DISTINCT CASE WHEN {claim_status} IN ('paid', 'denied', 'adjudicated')
+                           AND NOT coalesce({encounter_record}, FALSE) THEN {id} END)
+    as_of: paid_date
+    format: count
+  denied_claim_count:
+    label: Denied claims
+    entity: MedicalClaim
+    measure: >-
+      count(DISTINCT CASE WHEN {claim_status} = 'denied' AND NOT coalesce({encounter_record}, FALSE)
+                          THEN {id} END)
+    as_of: paid_date
+    format: count
+  claim_denial_rate:
+    label: Claim denial rate
+    ratio: [denied_claim_count, adjudicated_claim_count]
+    format: percent
+  auto_adjudicated_claim_count:
+    label: Auto-adjudicated claims
+    entity: MedicalClaim
+    measure: >-
+      count(DISTINCT CASE WHEN {claim_status} IN ('paid', 'denied', 'adjudicated') AND {auto_adjudicated}
+                           AND NOT coalesce({encounter_record}, FALSE) THEN {id} END)
+    as_of: paid_date
+    format: count
+  auto_adjudication_rate:
+    label: First-pass auto-adjudication rate
+    description: Share of finalized claims adjudicated on first pass without manual touch.
+    ratio: [auto_adjudicated_claim_count, adjudicated_claim_count]
+    format: percent
+
+  # prior authorization (CMS-0057-F)
+  pa_request_count:
+    label: Prior auth requests
+    entity: PriorAuthorization
+    measure: "count(DISTINCT {id})"
+    as_of: request_date
+    format: count
+  pa_decided_count:
+    label: Prior auth decisions
+    description: Requests approved, partially approved or denied on or before the valuation date.
+    entity: PriorAuthorization
+    measure: >-
+      count(DISTINCT CASE WHEN {pa_status} IN ('approved', 'partially_approved', 'denied')
+                           AND {decision_date} <= {as_of} THEN {id} END)
+    as_of: request_date
+    format: count
+  pa_approved_count:
+    label: Prior auths approved
+    description: Approved or partially approved.
+    entity: PriorAuthorization
+    measure: >-
+      count(DISTINCT CASE WHEN {pa_status} IN ('approved', 'partially_approved')
+                           AND {decision_date} <= {as_of} THEN {id} END)
+    as_of: request_date
+    format: count
+  pa_approval_rate:
+    label: Prior auth approval rate
+    ratio: [pa_approved_count, pa_decided_count]
+    format: percent
+  pa_due_count:
+    label: Prior auths due
+    description: >-
+      Requests whose decision was due by the valuation date: decided, or still open past
+      the CMS-0057-F time frame (72 hours expedited, 7 calendar days standard).
+      Withdrawn requests are excluded.
+    entity: PriorAuthorization
+    measure: >-
+      count(DISTINCT CASE
+        WHEN {pa_status} IN ('approved', 'partially_approved', 'denied') AND {decision_date} <= {as_of} THEN {id}
+        WHEN {pa_status} <> 'withdrawn'
+         AND date_diff('hour', coalesce({request_timestamp}, CAST({request_date} AS TIMESTAMP)),
+                       CAST({as_of} + 1 AS TIMESTAMP))
+             > CASE WHEN {urgency} = 'expedited' THEN 72 ELSE 168 END THEN {id} END)
+    as_of: request_date
+    format: count
+  pa_timely_count:
+    label: Prior auths decided on time
+    description: Decided within 72 hours (expedited) or 7 calendar days (standard) of receipt.
+    entity: PriorAuthorization
+    measure: >-
+      count(DISTINCT CASE WHEN {pa_status} IN ('approved', 'partially_approved', 'denied')
+        AND {decision_date} <= {as_of}
+        AND date_diff('hour', coalesce({request_timestamp}, CAST({request_date} AS TIMESTAMP)),
+                      coalesce({decision_timestamp}, CAST({decision_date} AS TIMESTAMP)))
+            <= CASE WHEN {urgency} = 'expedited' THEN 72 ELSE 168 END THEN {id} END)
+    as_of: request_date
+    format: count
+  pa_timeliness_rate:
+    label: Prior auth decisions within CMS-0057-F time frames
+    description: >-
+      On-time decisions / decisions due. CMS-0057-F applies the 72-hour / 7-day time
+      frames to MA, Medicaid/CHIP and exchange QHP issuers from 2026; commercial group
+      business is measured to the same standard for comparability.
+    ratio: [pa_timely_count, pa_due_count]
+    format: percent
+
+  # appeals and grievances
+  appeal_count:
+    label: Appeals received
+    entity: Appeal
+    measure: "count(DISTINCT {id})"
+    as_of: received_date
+    format: count
+  appeal_decided_count:
+    label: Appeals decided
+    entity: Appeal
+    measure: >-
+      count(DISTINCT CASE WHEN {appeal_outcome} IN ('upheld', 'overturned', 'partially_overturned')
+                           AND {decision_date} <= {as_of} THEN {id} END)
+    as_of: received_date
+    format: count
+  appeal_overturned_count:
+    label: Appeals overturned
+    entity: Appeal
+    measure: >-
+      count(DISTINCT CASE WHEN {appeal_outcome} IN ('overturned', 'partially_overturned')
+                           AND {decision_date} <= {as_of} THEN {id} END)
+    as_of: received_date
+    format: count
+  appeal_overturn_rate:
+    label: Appeal overturn rate
+    ratio: [appeal_overturned_count, appeal_decided_count]
+    format: percent
+  grievance_count:
+    label: Grievances received
+    entity: Grievance
+    measure: "count(DISTINCT {id})"
+    as_of: received_date
+    format: count
+  grievances_per_1000:
+    label: Grievances per 1,000
+    description: Annualized grievances per 1,000 members.
+    ratio: [grievance_count, member_months]
+    scale: 12000
+    format: number
+
+  # risk adjustment
+  risk_scored_member_count:
+    label: Risk-scored members
+    entity: MemberRiskScore
+    measure: "count(DISTINCT {member})"
+    format: count
+  normalized_risk_score_total:
+    label: Normalized risk score (sum)
+    entity: MemberRiskScore
+    measure: "sum({normalized_risk_score})"
+    format: number
+  payment_risk_score_total:
+    label: Payment risk score (sum)
+    entity: MemberRiskScore
+    measure: "sum({payment_risk_score})"
+    format: number
+  average_risk_score:
+    label: Average risk score (normalized)
+    description: Mean normalized CMS risk score per scored member; cut by payment_year.
+    ratio: [normalized_risk_score_total, risk_scored_member_count]
+    format: number
+  average_payment_risk_score:
+    label: Average payment risk score
+    description: Mean risk score after normalization and the MA coding pattern adjustment.
+    ratio: [payment_risk_score_total, risk_scored_member_count]
+    format: number
+
+  # Star Ratings
+  star_numerator:
+    label: Star measure numerator
+    entity: StarMeasureResult
+    measure: "sum({numerator})"
+    format: count
+  star_denominator:
+    label: Star measure denominator
+    entity: StarMeasureResult
+    measure: "sum({denominator})"
+    format: count
+  star_measure_rate:
+    label: Star measure performance rate
+    description: Numerator / denominator. Meaningful per measure (cut by star_measure); some measures are lower-is-better.
+    ratio: [star_numerator, star_denominator]
+    format: percent
+  star_points:
+    label: Weighted star points
+    entity: StarMeasureResult
+    measure: "sum({star_rating} * {star_measure.measure_weight})"
+    format: number
+  star_weight:
+    label: Star measure weight (sum)
+    entity: StarMeasureResult
+    measure: "sum(CASE WHEN {star_rating} IS NOT NULL THEN {star_measure.measure_weight} ELSE 0 END)"
+    format: number
+  weighted_star_rating:
+    label: Weighted average measure stars
+    description: >-
+      Weight-averaged measure-level stars (1-5). An approximation of the summary rating
+      before the reward factor and categorical adjustment index.
+    ratio: [star_points, star_weight]
+    format: number
+
+  # pharmacy
+  script_count:
+    label: Scripts
+    description: Paid pharmacy claims.
+    entity: PharmacyClaim
+    measure: "count(DISTINCT CASE WHEN {claim_status} = 'paid' THEN {id} END)"
+    as_of: fill_date
+    format: count
+  generic_script_count:
+    label: Generic scripts
+    entity: PharmacyClaim
+    measure: "count(DISTINCT CASE WHEN {claim_status} = 'paid' AND {drug.brand_generic} = 'generic' THEN {id} END)"
+    as_of: fill_date
+    format: count
+  generic_dispensing_rate:
+    label: Generic dispensing rate
+    ratio: [generic_script_count, script_count]
+    format: percent
+  pharmacy_cost_per_script:
+    label: Pharmacy cost per script
+    ratio: [pharmacy_claims_paid, script_count]
+    format: currency

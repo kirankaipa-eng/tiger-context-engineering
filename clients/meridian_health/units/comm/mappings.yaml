@@ -1,0 +1,455 @@
+# Meridian Commercial: legacy commercial claims & enrollment platform -> ontology.
+# UPPER_CASE mainframe names, single-letter codes, 9999-12-31 "open" dates and
+# YYYYMM strings. The enterprise MDM hub (providers, pharmacies, drugs, PBMs, org
+# units, legal entities) is hosted on this platform, so COMM maps the shared
+# reference data once for the whole client (global identity: NPI / NDC keys).
+
+unit: COMM
+dialect: duckdb
+source_schema: comm_raw
+
+classes:
+  # ------------------------------------------------------- enterprise MDM hub
+  OperatingUnit:
+    query: SELECT * FROM mdm.ORG_UNIT
+    note: Org units come from MDM; segment code HP = health plan.
+    slots:
+      id: {column: UNIT_CD}
+      unit_code: {column: UNIT_CD}
+      name: {column: UNIT_NM}
+      business_segment: {expr: "CASE src.SEGMENT_CD WHEN 'HP' THEN 'health_plan' ELSE 'corporate' END"}
+
+  WritingCompany:
+    query: SELECT * FROM mdm.LEGAL_ENTITY
+    note: Both legal entities are Michigan-domiciled and admitted; the HMO entity holds the H contract.
+    slots:
+      id: {column: ENTITY_CD}
+      name: {column: ENTITY_NM}
+      naic_company_code: {column: NAIC_CD}
+      domicile_state: {column: DOM_ST}
+      admitted_status: {value: admitted}
+      tax_id: {column: FEIN}
+
+  Provider:
+    query: SELECT * FROM mdm.PROVIDER WHERE PRV_CLASS <> 'RX'
+    note: MDM is keyed by NPI, so provider ids are NPIs and never unit-qualified. Pharmacies are split out below.
+    slots:
+      id: {column: NPI}
+      npi: {column: NPI}
+      name: {column: PRV_NAME}
+      provider_type: {expr: "CASE src.ENTITY_TYPE WHEN '1' THEN 'individual' ELSE 'organization' END"}
+      specialty_taxonomy: {column: TAXONOMY}
+      address_state: {column: STATE}
+
+  Pharmacy:
+    query: SELECT * FROM mdm.PROVIDER WHERE PRV_CLASS = 'RX'
+    note: RX_CHANNEL is a one-letter channel code (R retail, M mail, S specialty, L long-term care).
+    slots:
+      id: {column: NPI}
+      npi: {column: NPI}
+      name: {column: PRV_NAME}
+      provider_type: {value: organization}
+      specialty_taxonomy: {column: TAXONOMY}
+      address_state: {column: STATE}
+      ncpdp_id: {column: NCPDP_ID}
+      pharmacy_type:
+        expr: "CASE src.RX_CHANNEL WHEN 'R' THEN 'retail' WHEN 'M' THEN 'mail_order' WHEN 'S' THEN 'specialty' WHEN 'L' THEN 'long_term_care' END"
+
+  Drug:
+    query: SELECT * FROM mdm.DRUG
+    note: >-
+      MULTI_SRC is the drug file's brand/generic flag (B/G). THERA_CLASS is a synthetic
+      label here; production loads the licensed compendium class.
+    slots:
+      id: {column: NDC11}
+      ndc: {column: NDC11}
+      name: {column: PRODUCT_NAME}
+      generic_name: {column: GENERIC_NAME}
+      brand_generic: {expr: "CASE src.MULTI_SRC WHEN 'G' THEN 'generic' ELSE 'brand' END"}
+      therapeutic_class: {column: THERA_CLASS}
+      specialty_drug: {expr: "src.SPECIALTY_IND = 'Y'"}
+
+  PharmacyBenefitManager:
+    query: SELECT * FROM mdm.PBM
+    slots:
+      id: {column: PBM_ID}
+      name: {column: PBM_NAME}
+      tax_id: {column: FEIN}
+      pbm_pricing_model: {expr: "CASE src.PRICING_CD WHEN 'PT' THEN 'pass_through' WHEN 'SPRD' THEN 'spread' ELSE 'hybrid' END"}
+
+  # ------------------------------------------------------- groups & products
+  Producer:
+    table: BRKR
+    slots:
+      id: {column: BRKR_ID}
+      name: {column: BRKR_NM}
+      producer_type: {expr: "CASE src.BRKR_TYP WHEN 'W' THEN 'wholesale_broker' ELSE 'retail_broker' END"}
+      license_state: {column: LIC_ST}
+
+  EmployerGroup:
+    table: GRP_MSTR
+    note: GRP_SEG uses SG/LG; FUND_CD FI = fully insured, ASO = self-funded, LF = level-funded.
+    slots:
+      id: {column: GRP_ID}
+      group_number: {column: GRP_NBR}
+      name: {column: GRP_NM}
+      tax_id: {column: FEIN}
+      market_segment: {expr: "CASE src.GRP_SEG WHEN 'SG' THEN 'small_group' WHEN 'LG' THEN 'large_group' END"}
+      funding_type: &comm_funding
+        expr: "CASE src.FUND_CD WHEN 'FI' THEN 'fully_insured' WHEN 'ASO' THEN 'aso' WHEN 'LF' THEN 'level_funded' END"
+      address_state: {column: ST_CD}
+      eligible_employee_count: {column: ELIG_EE_CT}
+      broker: {column: BRKR_ID}
+      effective_date: {column: EFF_DT}
+      termination_date: {column: TRM_DT}
+
+  HealthPlan:
+    table: PLAN_MSTR
+    note: >-
+      METAL_CD is blank for large group and ASO plans (no ACA metal level): decoded to
+      not_applicable. LOB_CD 'COM' is the platform's only line.
+    slots:
+      id: {column: PLAN_CD}
+      name: {column: PLAN_DESC}
+      line_of_business: {expr: "CASE src.LOB_CD WHEN 'COM' THEN 'commercial_health' END"}
+      plan_type: {expr: "lower(src.PROD_TYP)"}
+      metal_tier:
+        expr: "CASE src.METAL_CD WHEN 'B' THEN 'bronze' WHEN 'S' THEN 'silver' WHEN 'G' THEN 'gold' WHEN 'P' THEN 'platinum' ELSE 'not_applicable' END"
+      market_segment:
+        expr: "CASE src.MKT_SEG WHEN 'IND' THEN 'individual' WHEN 'SG' THEN 'small_group' WHEN 'LG' THEN 'large_group' END"
+      funding_type: *comm_funding
+      network: {column: NTWK_ID}
+      individual_deductible: {column: DED_AMT}
+      individual_oop_max: {column: OOP_AMT}
+      formulary: {column: FRMLY_ID}
+      effective_date: {column: EFF_DT}
+      termination_date: {expr: "NULLIF(src.TRM_DT, DATE '9999-12-31')"}
+
+  # -------------------------------------------------------- members & eligibility
+  Member:
+    table: MBR
+    note: >-
+      SUB_ID is the ID-card number (subscriber number + 2-digit person suffix); MBR_ID is
+      the internal key. REL_CD uses X12 individual relationship codes (18 self, 01 spouse, 19 child).
+    slots:
+      id: {column: MBR_ID}
+      member_number: {column: SUB_ID}
+      given_name: {column: FNAME}
+      family_name: {column: LNAME}
+      birth_date: {column: DOB}
+      gender: {expr: "CASE src.SEX WHEN 'F' THEN 'female' WHEN 'M' THEN 'male' ELSE 'unknown' END"}
+      subscriber: {column: SUB_MBR_ID}
+      relationship_to_subscriber:
+        expr: "CASE src.REL_CD WHEN '18' THEN 'subscriber' WHEN '01' THEN 'spouse' WHEN '19' THEN 'child' ELSE 'other_dependent' END"
+      address_state: {column: ST_CD}
+      address_zip: {column: ZIP}
+      mhp_care_program:
+        expr: >-
+          CASE src.CM_PGM WHEN 'DM' THEN 'diabetes' WHEN 'HF' THEN 'heart_failure' WHEN 'COPD' THEN 'copd'
+          WHEN 'MAT' THEN 'maternity' WHEN 'BH' THEN 'behavioral_health' WHEN 'CCM' THEN 'complex_case' ELSE 'none' END
+
+  Enrollment:
+    table: MBR_ELIG
+    note: >-
+      TERM_DT 9999-12-31 means open-ended; it is nulled so it never looks like a real date.
+      GRP_ID is blank for individual-market members.
+    slots:
+      id: {column: ELIG_ID}
+      member: {column: MBR_ID}
+      employer_group: {column: GRP_ID}
+      product: {column: PLAN_CD}
+      effective_date: {column: EFF_DT}
+      termination_date: {expr: "NULLIF(src.TERM_DT, DATE '9999-12-31')"}
+      coverage_status: {expr: "CASE WHEN src.TERM_DT = DATE '9999-12-31' THEN 'active' ELSE 'terminated' END"}
+
+  BenefitAccumulator:
+    table: ACCUM
+    slots:
+      id: {column: ACC_ID}
+      member: {column: MBR_ID}
+      plan: {column: PLAN_CD}
+      plan_year: {column: PLN_YR}
+      accumulator_type: {expr: "CASE src.ACC_TYP WHEN 'D' THEN 'deductible' WHEN 'O' THEN 'out_of_pocket' END"}
+      accumulated_amount: {column: MET_AMT}
+      limit_amount: {column: LMT_AMT}
+
+  PremiumInvoice:
+    table: PREM_BILL
+    note: >-
+      CVG_YYYYMM is a 'YYYYMM' string, parsed to the first of the month. Group bills carry
+      GRP_ID; individual-market bills carry the subscriber in MBR_ID instead.
+    slots:
+      id: {column: BILL_ID}
+      employer_group: {column: GRP_ID}
+      member: {column: MBR_ID}
+      plan: {column: PLAN_CD}
+      coverage_month: {expr: "CAST(strptime(src.CVG_YYYYMM, '%Y%m') AS DATE)"}
+      invoice_date: {column: BILL_DT}
+      billed_premium_amount: {column: BILL_AMT}
+      premium_paid_amount: {column: PAID_AMT}
+      premium_paid_date: {column: PAID_DT}
+      invoice_status:
+        expr: "CASE src.BILL_STS WHEN 'PD' THEN 'paid' WHEN 'PP' THEN 'partially_paid' WHEN 'WO' THEN 'written_off' ELSE 'open' END"
+
+  # ------------------------------------------------------------ network & contracts
+  Network:
+    table: NTWK
+    slots:
+      id: {column: NTWK_ID}
+      name: {column: NTWK_NM}
+      network_type: {expr: "CASE src.NTWK_TYP WHEN 'P' THEN 'ppo' WHEN 'H' THEN 'hmo' WHEN 'E' THEN 'epo' END"}
+
+  NetworkParticipation:
+    table: PRV_NTWK
+    slots:
+      id: {column: PN_ID}
+      provider: {column: NPI}
+      network: {column: NTWK_ID}
+      effective_date: {column: EFF_DT}
+      termination_date: {expr: "NULLIF(src.TRM_DT, DATE '9999-12-31')"}
+
+  FeeSchedule:
+    table: FEE_SCHD
+    slots:
+      id: {column: FS_ID}
+      name: {column: FS_NM}
+      fee_schedule_type: {expr: "CASE src.FS_TYP WHEN 'MCR' THEN 'medicare_based' WHEN 'DRG' THEN 'drg_based' ELSE 'custom' END"}
+      base_year: {column: BASE_YR}
+      effective_date: {column: EFF_DT}
+
+  ProviderContract:
+    table: PRV_CNTRCT
+    note: PCT_MCR is a multiplier of Medicare (1.450 = 145%). Every COMM contract is commercial business.
+    slots:
+      id: {column: CNTRCT_ID}
+      provider: {column: NPI}
+      network: {column: NTWK_ID}
+      line_of_business: {value: commercial_health}
+      reimbursement_method: {expr: "CASE src.REIMB_CD WHEN 'DRG' THEN 'drg' WHEN 'PCTM' THEN 'percent_of_medicare' ELSE 'fee_schedule' END"}
+      fee_schedule: {column: FS_ID}
+      percent_of_medicare: {column: PCT_MCR}
+      effective_date: {column: EFF_DT}
+      termination_date: {expr: "NULLIF(src.TRM_DT, DATE '9999-12-31')"}
+      contract_status: {expr: "CASE src.CNTRCT_STS WHEN 'A' THEN 'active' WHEN 'P' THEN 'pending' ELSE 'terminated' END"}
+
+  ValueBasedArrangement:
+    table: VBC_ARR
+    note: SS_PCT and MSR_PCT are whole percentages (50 = 50%); divided by 100.
+    slots:
+      id: {column: ARR_ID}
+      provider_contract: {column: CNTRCT_ID}
+      provider: {column: NPI}
+      line_of_business: {value: commercial_health}
+      arrangement_type:
+        expr: "CASE src.ARR_TYP WHEN 'SS' THEN 'shared_savings' WHEN 'SR' THEN 'shared_risk' WHEN 'P4P' THEN 'pay_for_performance' WHEN 'CAP' THEN 'primary_care_capitation' END"
+      capitation_pmpm: {column: CAP_PMPM}
+      shared_savings_rate: {expr: "src.SS_PCT / 100.0"}
+      minimum_savings_rate: {expr: "src.MSR_PCT / 100.0"}
+      quality_gate: {expr: "src.QUAL_GATE = 'Y'"}
+      effective_date: {column: EFF_DT}
+      termination_date: {expr: "NULLIF(src.TRM_DT, DATE '9999-12-31')"}
+
+  # ---------------------------------------------------------------------- pharmacy
+  Formulary:
+    table: FRMLY
+    slots:
+      id: {column: FRMLY_ID}
+      name: {column: FRMLY_NM}
+      plan_year: {column: PLN_YR}
+      pbm: {column: PBM_ID}
+      formulary_type: {expr: "CASE src.FRMLY_TYP WHEN 'CLOSED' THEN 'commercial_closed' ELSE 'commercial_open' END"}
+
+  FormularyTier:
+    table: FRMLY_TIER
+    note: COINS_PCT is a whole percentage; the commercial list has four tiers.
+    slots:
+      id: {column: TIER_ID}
+      formulary: {column: FRMLY_ID}
+      tier_number: {column: TIER_NO}
+      tier_type:
+        expr: "CASE src.TIER_TYP WHEN 'GEN' THEN 'generic' WHEN 'PB' THEN 'preferred_brand' WHEN 'NPB' THEN 'non_preferred_drug' WHEN 'SPC' THEN 'specialty' END"
+      copay_amount: {column: COPAY}
+      coinsurance_rate: {expr: "src.COINS_PCT / 100.0"}
+
+  FormularyEntry:
+    table: FRMLY_DRUG
+    slots:
+      id: {column: FD_ID}
+      formulary: {column: FRMLY_ID}
+      drug: {column: NDC}
+      formulary_tier: {column: TIER_ID}
+      prior_auth_required: {expr: "src.PA_IND = 'Y'"}
+      step_therapy: {expr: "src.ST_IND = 'Y'"}
+      quantity_limit: {expr: "src.QL_IND = 'Y'"}
+      effective_date: {column: EFF_DT}
+      termination_date: {column: TRM_DT}
+
+  PharmacyClaim:
+    table: RX_CLM
+    note: >-
+      PBM feed. RX_STS P paid, R rejected, X reversed. Point-of-sale adjudication, so the
+      fill date is also the received date. PLAN_PAID is the plan's cost.
+    slots:
+      id: {column: RX_ID}
+      member: {column: MBR_ID}
+      plan: {column: PLAN_CD}
+      pharmacy: {column: PHARM_NPI}
+      prescriber: {column: PRSCR_NPI}
+      drug: {column: NDC}
+      pbm: {column: PBM_ID}
+      fill_date: {column: FILL_DT}
+      received_date: {column: FILL_DT}
+      days_supply: {column: DAYS_SUP}
+      quantity_dispensed: {column: QTY}
+      fill_number: {column: REFILL_NO}
+      ingredient_cost: {column: INGR_COST}
+      dispensing_fee: {column: DISP_FEE}
+      total_paid_amount: {column: PLAN_PAID}
+      member_liability_amount: {column: MBR_PAID}
+      formulary_tier_number: {column: TIER_NO}
+      dispense_as_written: {column: DAW_CD}
+      claim_status: {expr: "CASE src.RX_STS WHEN 'P' THEN 'paid' WHEN 'R' THEN 'rejected' WHEN 'X' THEN 'reversed' END"}
+
+  # ------------------------------------------------------------------- medical
+  MedicalClaim:
+    table: CLM_HDR
+    note: >-
+      The legacy platform has no service-category field. It is derived: institutional
+      bill type 11x = inpatient; any claim with an ER revenue line (ER_REV_IND) = emergency;
+      other institutional = outpatient; professional claims at an ASC (POS 24) are
+      outpatient facility; lab/DME (POS 81, 12) = ancillary; the rest professional.
+      CLM_STS PD/DN/PN/VD; DENY_GRP is the platform's two-letter denial group.
+    slots:
+      id: {column: CLM_ID}
+      member: {column: MBR_ID}
+      plan: {column: PLAN_CD}
+      billing_provider: {column: BILL_NPI}
+      rendering_provider: {column: REND_NPI}
+      claim_type: {expr: "CASE src.CLM_TYP WHEN 'P' THEN 'professional' WHEN 'I' THEN 'institutional' END"}
+      claim_status:
+        expr: "CASE src.CLM_STS WHEN 'PD' THEN 'paid' WHEN 'DN' THEN 'denied' WHEN 'PN' THEN 'pended' WHEN 'VD' THEN 'voided' END"
+      service_category:
+        expr: >-
+          CASE WHEN src.CLM_TYP = 'I' AND src.BILL_TYP LIKE '11%' THEN 'inpatient'
+          WHEN src.ER_REV_IND = 'Y' THEN 'emergency' WHEN src.CLM_TYP = 'I' THEN 'outpatient'
+          WHEN src.POS_CD = '24' THEN 'outpatient' WHEN src.POS_CD IN ('81', '12') THEN 'ancillary'
+          ELSE 'professional' END
+      type_of_bill: {column: BILL_TYP}
+      place_of_service: {column: POS_CD}
+      admission_date: {column: ADMIT_DT}
+      discharge_date: {column: DISCH_DT}
+      drg_code: {column: DRG_CD}
+      service_from_date: {column: FROM_DT}
+      service_to_date: {column: THRU_DT}
+      received_date: {column: RCVD_DT}
+      paid_date: {column: PD_DT}
+      primary_diagnosis_code: {column: PRIM_DX}
+      total_billed_amount: {column: CHRG_AMT}
+      total_allowed_amount: {column: ALLOW_AMT}
+      total_paid_amount: {column: PAID_AMT}
+      member_liability_amount: {column: MBR_LIAB_AMT}
+      in_network: {expr: "src.PAR_IND = 'Y'"}
+      prior_authorization: {column: AUTH_NBR}
+      denial_category:
+        expr: >-
+          CASE src.DENY_GRP WHEN 'MN' THEN 'medical_necessity' WHEN 'NA' THEN 'no_prior_authorization'
+          WHEN 'NC' THEN 'not_covered' WHEN 'EL' THEN 'eligibility' WHEN 'DP' THEN 'duplicate'
+          WHEN 'TF' THEN 'timely_filing' WHEN 'CO' THEN 'coding_billing_error' WHEN 'CB' THEN 'coordination_of_benefits' END
+      auto_adjudicated: {expr: "src.AUTO_ADJ_IND = 'Y'"}
+      encounter_record: {value: false}
+
+  MedicalClaimLine:
+    table: CLM_DTL
+    slots:
+      id: {expr: "src.CLM_ID || '-' || CAST(src.LN_NO AS VARCHAR)"}
+      claim: {column: CLM_ID}
+      line_number: {column: LN_NO}
+      procedure_code: {column: PROC_CD}
+      procedure_modifier: {column: MOD_CD}
+      units: {column: UNITS}
+      billed_amount: {column: CHRG}
+      allowed_amount: {column: ALLOW}
+      paid_amount: {column: PAID}
+      line_status: {expr: "CASE src.LN_STS WHEN 'P' THEN 'paid' WHEN 'D' THEN 'denied' WHEN 'A' THEN 'adjusted' END"}
+      denial_reason_code: {column: CARC}
+
+  # ------------------------------------------------------------- UM & member services
+  PriorAuthorization:
+    table: UM_CASE
+    note: >-
+      RCVD_TS / DCSN_TS are full timestamps (the CMS-0057-F clock). PRIORITY URG = expedited.
+      CASE_STS A approved, PA partial, D denied, P pended for information, IR in review,
+      W withdrawn. DLGT_CD names the delegated reviewer (INH in-house, RBM radiology, MSK, ONC).
+    slots:
+      id: {column: CASE_ID}
+      member: {column: MBR_ID}
+      plan: {column: PLAN_CD}
+      requesting_provider: {column: REQ_NPI}
+      requested_procedure_code: {column: SVC_CD}
+      diagnosis_code: {column: DX_CD}
+      urgency: {expr: "CASE src.PRIORITY WHEN 'URG' THEN 'expedited' ELSE 'standard' END"}
+      request_date: {expr: "CAST(src.RCVD_TS AS DATE)"}
+      request_timestamp: {column: RCVD_TS}
+      decision_date: {expr: "CAST(src.DCSN_TS AS DATE)"}
+      decision_timestamp: {column: DCSN_TS}
+      decision_reason: {column: DCSN_RSN}
+      pa_status:
+        expr: >-
+          CASE src.CASE_STS WHEN 'A' THEN 'approved' WHEN 'PA' THEN 'partially_approved' WHEN 'D' THEN 'denied'
+          WHEN 'P' THEN 'pended_for_info' WHEN 'IR' THEN 'in_review' WHEN 'W' THEN 'withdrawn' END
+      approved_units: {column: APPR_UNITS}
+      mhp_um_delegate:
+        expr: >-
+          CASE src.DLGT_CD WHEN 'INH' THEN 'in_house' WHEN 'RBM' THEN 'radiology_benefit_manager'
+          WHEN 'MSK' THEN 'musculoskeletal_benefit_manager' WHEN 'ONC' THEN 'oncology_pathway_vendor' END
+
+  Appeal:
+    table: APPEAL
+    note: APL_LVL 1 = first-level internal appeal, EXT = state external review. OUTCOME UPH upheld, OVT overturned, POVT partial, WDR withdrawn; blank = pending.
+    slots:
+      id: {column: APL_ID}
+      member: {column: MBR_ID}
+      plan: {column: PLAN_CD}
+      claim: {column: CLM_ID}
+      prior_authorization: {column: CASE_ID}
+      appeal_level: {expr: "CASE src.APL_LVL WHEN '1' THEN 'internal_first_level' WHEN '2' THEN 'internal_second_level' WHEN 'EXT' THEN 'external_review' END"}
+      urgency: {expr: "CASE src.PRIORITY WHEN 'URG' THEN 'expedited' ELSE 'standard' END"}
+      received_date: {column: RCVD_DT}
+      decision_date: {column: DCSN_DT}
+      decision_reason: {column: RSN_TXT}
+      appeal_outcome:
+        expr: >-
+          CASE src.OUTCOME WHEN 'UPH' THEN 'upheld' WHEN 'OVT' THEN 'overturned' WHEN 'POVT' THEN 'partially_overturned'
+          WHEN 'DSM' THEN 'dismissed' WHEN 'WDR' THEN 'withdrawn' ELSE 'pending' END
+
+  Grievance:
+    table: GRIEV
+    slots:
+      id: {column: GRV_ID}
+      member: {column: MBR_ID}
+      plan: {column: PLAN_CD}
+      grievance_category:
+        expr: >-
+          CASE src.CAT_CD WHEN 'ACC' THEN 'access_to_care' WHEN 'QOC' THEN 'quality_of_care' WHEN 'SVC' THEN 'customer_service'
+          WHEN 'BIL' THEN 'billing_premium' WHEN 'ENR' THEN 'enrollment' WHEN 'RX' THEN 'pharmacy' END
+      urgency: {expr: "CASE src.PRIORITY WHEN 'URG' THEN 'expedited' ELSE 'standard' END"}
+      received_date: {column: RCVD_DT}
+      resolved_date: {column: RSLV_DT}
+      grievance_status: {expr: "CASE src.GRV_STS WHEN 'C' THEN 'resolved' ELSE 'open' END"}
+      grievance_description: {column: GRV_TXT}
+
+  # ------------------------------------------------------------------- finance
+  QualityImprovementExpense:
+    table: QI_EXP
+    note: QIA_CD HO health outcomes, RA readmission avoidance, PS patient safety, WL wellness, IT health IT.
+    slots:
+      id: {column: QI_ID}
+      line_of_business: {value: commercial_health}
+      market_segment:
+        expr: "CASE src.MKT_SEG WHEN 'IND' THEN 'individual' WHEN 'SG' THEN 'small_group' WHEN 'LG' THEN 'large_group' END"
+      expense_month: {column: EXP_MO}
+      qia_activity:
+        expr: >-
+          CASE src.QIA_CD WHEN 'HO' THEN 'improve_health_outcomes' WHEN 'RA' THEN 'prevent_readmissions'
+          WHEN 'PS' THEN 'patient_safety' WHEN 'WL' THEN 'wellness_health_promotion' WHEN 'IT' THEN 'health_it' END
+      expense_amount: {column: AMT}

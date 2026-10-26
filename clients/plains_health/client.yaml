@@ -1,0 +1,221 @@
+# Plains Health Plan: fictional regional payer used for the medical economics (MEE) demo.
+# One enterprise claims warehouse feeds a medical economics team that reports cost and
+# utilization by service category (IP / OP / Prof / Rx), state, line of business,
+# network and provider. Data: tigerclaw's synthetic payer warehouse (see
+# src/insurance_context/fixtures/mee_warehouse.py). Everything here is a diff against
+# the pinned base pack; base IRIs never move.
+
+client: plains_health
+title: Plains Health Plan
+line: health_payer
+line_version: 0.2.0
+version: 1
+prefix: plh
+namespace: https://ontology.tigeranalytics.com/clients/plains-health/
+
+units:
+  - code: PLH
+    name: Plains Health Plan
+    source_system: Enterprise claims data warehouse (claims, eligibility, pharmacy, UM, ADT, provider master)
+
+# --- the medical economics team's words -----------------------------------------
+labels:
+  classes:
+    PriorAuthorization: Prior Auth
+    PharmacyClaim: Rx Claim
+    MedicalClaimLine: Claim Line
+  slots:
+    member_number: Member ID
+
+extend:
+  enums:
+    PlhAdmitTypeEnum: [elective, emergency, urgent, observation]
+    PlhClinicalCategoryEnum: [cardiovascular, endocrine, gastrointestinal, mental_health, neurological,
+                              obstetric, oncology, orthopedic, renal, respiratory]
+  add_slots:
+    MedicalClaim:
+      plh_admit_type:
+        range: PlhAdmitTypeEnum
+        description: >-
+          How the stay began, from the hospital's admission (ADT) event. Observation
+          stays are short evaluations, usually under two midnights.
+      plh_clinical_category:
+        range: PlhClinicalCategoryEnum
+        description: Clinical grouping of the primary diagnosis used by medical economics.
+    Provider:
+      plh_peer_cohort:
+        description: >-
+          Same specialty and same state; the comparison group for provider-level
+          utilization and coding patterns.
+      plh_network:
+        description: The network the provider participates in (or Out-of-Network).
+      plh_years_in_practice:
+        range: integer
+
+restrict:
+  - class: MedicalClaim
+    slot: claim_type
+    allow: [professional, institutional]
+    reason: Pharmacy is adjudicated separately (Rx Claim); dental and vision are carved out.
+
+hide:
+  - Member.birth_date
+
+global_identity: [Provider, Drug]
+
+# --- how medical economics slices the book ---------------------------------------
+dimensions:
+  state:
+    label: State
+    description: The member's state of residence (two-letter code).
+    aliases: {Illinois: IL, Montana: MT, New Mexico: NM, Oklahoma: OK, Texas: TX}
+    paths:
+      MemberMonth: member.address_state
+      MedicalClaim: member.address_state
+      PharmacyClaim: member.address_state
+      PriorAuthorization: member.address_state
+      MedicalClaimLine: claim.member.address_state
+  quarter:
+    label: Quarter (incurred)
+    paths:
+      MemberMonth: "CAST(year({month}) AS VARCHAR) || '-Q' || CAST(quarter({month}) AS VARCHAR)"
+      MedicalClaim: "CAST(year({service_from_date}) AS VARCHAR) || '-Q' || CAST(quarter({service_from_date}) AS VARCHAR)"
+      PharmacyClaim: "CAST(year({fill_date}) AS VARCHAR) || '-Q' || CAST(quarter({fill_date}) AS VARCHAR)"
+      MedicalClaimLine: "CAST(year({claim.service_from_date}) AS VARCHAR) || '-Q' || CAST(quarter({claim.service_from_date}) AS VARCHAR)"
+  clinical_category:
+    label: Clinical category
+    paths:
+      MedicalClaim: plh_clinical_category
+      MedicalClaimLine: claim.plh_clinical_category
+  admit_type:
+    label: Admit type
+    paths:
+      MedicalClaim: plh_admit_type
+  network:
+    label: Network
+    paths:
+      MedicalClaim: rendering_provider.plh_network
+      MedicalClaimLine: claim.rendering_provider.plh_network
+  peer_cohort:
+    label: Peer cohort (specialty x state)
+    paths:
+      MedicalClaim: rendering_provider.plh_peer_cohort
+      MedicalClaimLine: claim.rendering_provider.plh_peer_cohort
+  provider:
+    label: Rendering provider
+    description: Name and provider id; names are not unique (two clinicians can share one).
+    paths:
+      MedicalClaim: "{rendering_provider.name} || ' (' || {rendering_provider} || ')'"
+      MedicalClaimLine: "{claim.rendering_provider.name} || ' (' || {claim.rendering_provider} || ')'"
+
+# --- medical economics metrics: the MEE service-category view -----------------------
+metrics:
+  medical_cost:
+    label: Medical cost
+    description: Medical claims paid. Plains pays fee-for-service only; there is no provider capitation.
+    sum_of: [medical_claims_paid]
+    format: currency
+  inpatient_claims_paid:
+    label: Inpatient paid
+    description: Plan-paid amount on inpatient facility claims, paid basis through the valuation date.
+    entity: MedicalClaim
+    measure: "sum({total_paid_amount})"
+    filter: "{claim_status} <> 'voided' AND {service_category} = 'inpatient'"
+    as_of: paid_date
+    format: currency
+  outpatient_claims_paid:
+    label: Outpatient paid
+    description: Plan-paid amount on outpatient facility claims (surgery, imaging, observation).
+    entity: MedicalClaim
+    measure: "sum({total_paid_amount})"
+    filter: "{claim_status} <> 'voided' AND {service_category} = 'outpatient'"
+    as_of: paid_date
+    format: currency
+  professional_claims_paid:
+    label: Professional paid
+    description: Plan-paid amount on professional claims, including emergency physician services.
+    entity: MedicalClaim
+    measure: "sum({total_paid_amount})"
+    filter: "{claim_status} <> 'voided' AND {service_category} IN ('professional', 'emergency')"
+    as_of: paid_date
+    format: currency
+  ip_pmpm:
+    label: IP PMPM
+    description: Inpatient paid per member per month.
+    ratio: [inpatient_claims_paid, member_months]
+    format: currency
+  op_pmpm:
+    label: OP PMPM
+    description: Outpatient facility paid per member per month.
+    ratio: [outpatient_claims_paid, member_months]
+    format: currency
+  prof_pmpm:
+    label: Prof PMPM
+    description: Professional paid per member per month.
+    ratio: [professional_claims_paid, member_months]
+    format: currency
+  paid_per_admit:
+    label: Paid per admit
+    description: Inpatient unit cost; inpatient paid over inpatient admits.
+    ratio: [inpatient_claims_paid, inpatient_admits]
+    format: currency
+  professional_visits:
+    label: Professional visits
+    description: Professional claims received and not denied (one claim is one visit).
+    entity: MedicalClaim
+    measure: >-
+      count(DISTINCT CASE WHEN {service_category} IN ('professional', 'emergency')
+                           AND {claim_status} NOT IN ('denied', 'voided') THEN {id} END)
+    as_of: received_date
+    format: count
+  professional_visits_per_1000:
+    label: Prof visits per 1,000
+    description: Annualized professional visits per 1,000 members.
+    ratio: [professional_visits, member_months]
+    scale: 12000
+    format: number
+  paid_per_professional_visit:
+    label: Paid per prof visit
+    description: Professional unit cost.
+    ratio: [professional_claims_paid, professional_visits]
+    format: currency
+  coded_professional_claims:
+    label: Professional claims with lines
+    description: Distinct professional claims, counted from their lines (the modifier-rate denominator).
+    entity: MedicalClaimLine
+    measure: "count(DISTINCT {claim})"
+    as_of: claim.received_date
+    format: count
+  modifier_25_claims:
+    label: Claims with modifier 25
+    description: Professional claims billed with modifier 25 (significant, separately identifiable E/M service).
+    entity: MedicalClaimLine
+    measure: "count(DISTINCT CASE WHEN {procedure_modifier} = '25' THEN {claim} END)"
+    as_of: claim.received_date
+    format: count
+  modifier_59_claims:
+    label: Claims with modifier 59
+    description: Professional claims billed with modifier 59 (distinct procedural service).
+    entity: MedicalClaimLine
+    measure: "count(DISTINCT CASE WHEN {procedure_modifier} = '59' THEN {claim} END)"
+    as_of: claim.received_date
+    format: count
+  modifier_25_rate:
+    label: Modifier 25 rate
+    description: Share of professional claims billed with modifier 25.
+    ratio: [modifier_25_claims, coded_professional_claims]
+    format: percent
+  modifier_59_rate:
+    label: Modifier 59 rate
+    description: Share of professional claims billed with modifier 59.
+    ratio: [modifier_59_claims, coded_professional_claims]
+    format: percent
+
+# Pack metrics the warehouse cannot support: listed with the reason, kept out of the
+# catalog, and refused with that reason if asked for.
+withhold:
+  generic_script_count: The PBM feed carries no brand/generic flag.
+  generic_dispensing_rate: The PBM feed carries no brand/generic flag.
+
+agent_policy:
+  redact: [pii, phi]

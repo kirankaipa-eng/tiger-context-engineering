@@ -1,0 +1,141 @@
+# Ontology -> Acme's physical warehouse (legacy names, as found in the wild).
+# Compiled to: SQL views (u_core.*, ont.*, ont_agent.*) and W3C R2RML.
+# `expr` is a SQL expression over the source table (alias `src`), for when a
+# column needs decoding. `column` is shorthand for a direct column reference.
+
+unit: CORE
+dialect: duckdb
+source_schema: acme_raw
+
+classes:
+  Member:
+    table: MBR_MSTR
+    slots:
+      id: {column: MBR_SK}
+      member_number: {column: SUBSCR_ID}
+      given_name: {column: FRST_NM}
+      family_name: {column: LST_NM}
+      birth_date: {column: BRTH_DT}
+      gender:
+        expr: "CASE src.GNDR_CD WHEN 'F' THEN 'female' WHEN 'M' THEN 'male' WHEN 'U' THEN 'unknown' ELSE 'other' END"
+      subscriber: {column: SUBSCR_MBR_SK}
+      relationship_to_subscriber:
+        expr: "CASE src.REL_CD WHEN '18' THEN 'subscriber' WHEN '01' THEN 'spouse' WHEN '19' THEN 'child' ELSE 'other_dependent' END"
+      address_state: {column: ST_CD}
+      address_zip: {column: ZIP5}
+      acme_risk_tier: {column: RISK_TIER}
+      acme_care_program: {column: CM_PGM}
+
+  Provider:
+    table: PRV_DIM
+    slots:
+      id: {column: PRV_SK}
+      name: {column: PRV_NM}
+      npi: {column: NPI_NBR}
+      provider_type:
+        expr: "CASE src.ENTY_TYP WHEN '1' THEN 'individual' ELSE 'organization' END"
+      specialty_taxonomy: {column: TXNMY_CD}
+      address_state: {column: ST_CD}
+
+  Network:
+    table: NTWK_REF
+    slots:
+      id: {column: NTWK_ID}
+      name: {column: NTWK_DESC}
+      network_type: {expr: "lower(src.NTWK_TYP)"}
+
+  NetworkParticipation:
+    table: PRV_NTWK_XREF
+    slots:
+      id: {column: XREF_ID}
+      provider: {column: PRV_SK}
+      network: {column: NTWK_ID}
+      effective_date: {column: EFF_DT}
+      termination_date: {column: TRM_DT}
+
+  HealthPlan:
+    table: PLN_BNFT_PKG
+    slots:
+      id: {column: PLN_CD}
+      name: {column: PLN_NM}
+      line_of_business: {column: LOB}
+      plan_type: {expr: "lower(src.PLN_TYP)"}
+      metal_tier: {expr: "coalesce(lower(src.MTL_LVL), 'not_applicable')"}
+      network: {column: NTWK_ID}
+      individual_deductible: {column: IND_DED_AMT}
+      individual_oop_max: {column: IND_OOP_AMT}
+      effective_date: {column: EFF_DT}
+      termination_date: {column: TRM_DT}
+
+  Enrollment:
+    table: ELIG_SPAN
+    slots:
+      id: {column: ELIG_SK}
+      member: {column: MBR_SK}
+      product: {column: PLN_CD}
+      effective_date: {column: ELIG_EFF_DT}
+      termination_date: {column: ELIG_TRM_DT}
+      coverage_status:
+        expr: "CASE WHEN src.ELIG_TRM_DT IS NULL OR src.ELIG_TRM_DT >= current_date THEN 'active' ELSE 'terminated' END"
+
+  BenefitAccumulator:
+    table: ACCUM_BAL
+    slots:
+      id: {column: ACCUM_ID}
+      member: {column: MBR_SK}
+      plan: {column: PLN_CD}
+      plan_year: {column: PLN_YR}
+      accumulator_type: {expr: "CASE src.ACCUM_TYP WHEN 'DED' THEN 'deductible' ELSE 'out_of_pocket' END"}
+      accumulated_amount: {column: MET_AMT}
+      limit_amount: {column: LMT_AMT}
+
+  MedicalClaim:
+    table: CLM_HDR
+    slots:
+      id: {column: CLM_ID}
+      member: {column: MBR_SK}
+      billing_provider: {column: BILL_PRV_SK}
+      rendering_provider: {column: REND_PRV_SK}
+      claim_type: {expr: "CASE src.CLM_FORM WHEN 'P' THEN 'professional' WHEN 'I' THEN 'institutional' ELSE lower(src.CLM_FORM) END"}
+      claim_status: {expr: "lower(src.CLM_STS)"}
+      received_date: {column: RCVD_DT}
+      service_from_date: {column: SVC_FROM_DT}
+      service_to_date: {column: SVC_TO_DT}
+      primary_diagnosis_code: {column: PRIM_DX}
+      total_billed_amount: {column: TOT_CHRG_AMT}
+      total_allowed_amount: {column: TOT_ALLW_AMT}
+      total_paid_amount: {column: TOT_PD_AMT}
+      member_liability_amount: {column: MBR_RESP_AMT}
+      in_network: {expr: "src.PAR_IND = 'Y'"}
+      prior_authorization: {column: AUTH_ID}
+
+  MedicalClaimLine:
+    table: CLM_LN
+    slots:
+      id: {expr: "src.CLM_ID || '-' || CAST(src.LN_NBR AS VARCHAR)"}
+      claim: {column: CLM_ID}
+      line_number: {column: LN_NBR}
+      procedure_code: {column: PROC_CD}
+      procedure_modifier: {column: MOD1}
+      units: {column: SVC_UNITS}
+      billed_amount: {column: CHRG_AMT}
+      allowed_amount: {column: ALLW_AMT}
+      paid_amount: {column: PD_AMT}
+      line_status: {expr: "lower(src.LN_STS)"}
+      denial_reason_code: {column: CARC_CD}
+
+  PriorAuthorization:
+    table: UM_AUTH
+    slots:
+      id: {column: AUTH_ID}
+      member: {column: MBR_SK}
+      requesting_provider: {column: REQ_PRV_SK}
+      requested_procedure_code: {column: PROC_CD}
+      diagnosis_code: {column: DX_CD}
+      urgency: {expr: "CASE src.URG_IND WHEN 'E' THEN 'expedited' ELSE 'standard' END"}
+      request_date: {column: RQST_DT}
+      decision_date: {column: DCSN_DT}
+      decision_reason: {column: DCSN_RSN_TXT}
+      pa_status: {expr: "lower(src.AUTH_STS)"}
+      approved_units: {column: APRV_UNITS}
+      acme_reviewer_queue: {column: WRK_QUEUE}

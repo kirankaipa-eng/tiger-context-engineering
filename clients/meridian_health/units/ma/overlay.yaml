@@ -1,0 +1,17 @@
+# Meridian Medicare Advantage unit overlay: MA vocabulary and an MMR detail only
+# this platform carries. Extensions here stay in the u_ma views.
+
+labels:
+  classes:
+    Member: Beneficiary
+    CapitationPayment: MMR Payment
+    Enrollment: Election
+
+extend:
+  add_slots:
+    CapitationPayment:
+      ma_mmr_adjustment_reason:
+        description: Raw MMR adjustment reason code on retroactive payment rows.
+    Enrollment:
+      ma_election_type:
+        description: CMS election period the enrollment came through (AEP, OEP, SEP, IEP).

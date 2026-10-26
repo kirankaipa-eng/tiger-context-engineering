@@ -1,0 +1,214 @@
+# Plains Health Plan: enterprise claims warehouse -> ontology.
+# snake_case tables, text codes, one row per claim (no claim lines except the CPT modifier
+# feed), one eligibility span per member. The provider master (with peer cohorts and
+# networks) lives in the same warehouse; facilities appear only on claims and admissions.
+
+unit: PLH
+dialect: duckdb
+source_schema: plh_src
+
+classes:
+  # ------------------------------------------------------- members & eligibility
+  Member:
+    table: member_enrollment
+    slots:
+      id: {column: member_id}
+      member_number: {column: member_id}
+      given_name: {column: first_name}
+      family_name: {column: last_name}
+      name: {expr: "src.first_name || ' ' || src.last_name"}
+      birth_date: {column: date_of_birth}
+      gender: {expr: "CASE src.gender WHEN 'F' THEN 'female' WHEN 'M' THEN 'male' ELSE 'unknown' END"}
+      address_state: {column: state}
+
+  Enrollment:
+    table: member_enrollment
+    note: >-
+      One eligibility span per member. enrollment_end is empty while the member is
+      still enrolled.
+    slots:
+      id: {expr: "src.member_id || '-E1'"}
+      member: {column: member_id}
+      product: {column: plan_id}
+      effective_date: {column: enrollment_start}
+      termination_date: {column: enrollment_end}
+      coverage_status: {expr: "CASE WHEN src.enrollment_end IS NULL THEN 'active' ELSE 'terminated' END"}
+
+  HealthPlan:
+    query: >-
+      SELECT plan_id, any_value(plan_type) AS plan_type, any_value(state) AS state
+      FROM plh_src.member_enrollment GROUP BY plan_id
+    note: >-
+      The warehouse has no plan master: plans are read from eligibility. plan_type is the
+      line of business (Commercial, Individual, Medicaid, Medicare_Advantage); all plans
+      are fully insured.
+    slots:
+      id: {column: plan_id}
+      name: {column: plan_id}
+      line_of_business:
+        expr: >-
+          CASE src.plan_type WHEN 'Commercial' THEN 'commercial_health' WHEN 'Individual' THEN 'commercial_health'
+          WHEN 'Medicaid' THEN 'medicaid_managed_care' WHEN 'Medicare_Advantage' THEN 'medicare_advantage' END
+      market_segment:
+        expr: >-
+          CASE src.plan_type WHEN 'Commercial' THEN 'large_group' WHEN 'Individual' THEN 'individual'
+          WHEN 'Medicare_Advantage' THEN 'medicare_individual' END
+      metal_tier: {value: not_applicable}
+      funding_type: {value: fully_insured}
+
+  # ------------------------------------------------------------ providers & drugs
+  Provider:
+    query: >-
+      SELECT provider_id AS id, provider_name AS name, 'individual' AS provider_type, specialty,
+             primary_state AS state, peer_cohort_id, network, years_in_practice
+      FROM plh_src.providers
+      UNION ALL
+      SELECT facility_id, any_value(facility_name), 'organization', 'Facility',
+             substr(facility_id, 5, 2), NULL, NULL, NULL
+      FROM plh_src.medical_claims WHERE facility_id IS NOT NULL GROUP BY facility_id
+      UNION ALL
+      SELECT prescribing_provider_id, any_value(prescribing_provider_name), 'individual', NULL,
+             any_value(state), NULL, NULL, NULL
+      FROM plh_src.pharmacy_claims
+      WHERE prescribing_provider_id NOT IN (SELECT provider_id FROM plh_src.providers)
+      GROUP BY prescribing_provider_id
+    note: >-
+      Clinicians come from the provider master (with peer cohort and network); facilities
+      exist only on claims and admissions, keyed FAC-<state><nn>; prescribers on pharmacy
+      claims who are not in the master come from the PBM feed, without specialty or cohort.
+    slots:
+      id: {column: id}
+      name: {column: name}
+      provider_type: {column: provider_type}
+      specialty_taxonomy: {column: specialty}
+      address_state: {column: state}
+      plh_peer_cohort: {column: peer_cohort_id}
+      plh_network: {column: network}
+      plh_years_in_practice: {column: years_in_practice}
+
+  Drug:
+    query: >-
+      SELECT ndc_code, any_value(drug_name) AS drug_name, any_value(therapeutic_class) AS therapeutic_class,
+             bool_or(is_specialty = 1) AS is_specialty
+      FROM plh_src.pharmacy_claims GROUP BY ndc_code
+    note: NDCs are stored with dashes (5-4-2); the ontology keeps the 11-digit form.
+    slots:
+      id: {expr: "replace(src.ndc_code, '-', '')"}
+      ndc: {expr: "replace(src.ndc_code, '-', '')"}
+      name: {column: drug_name}
+      therapeutic_class: {column: therapeutic_class}
+      specialty_drug: {column: is_specialty}
+
+  # ------------------------------------------------------------------- medical
+  MedicalClaim:
+    query: >-
+      SELECT c.*, e.plan_id, a.admit_type, a.admit_date, a.discharge_date AS adt_discharge_date
+      FROM plh_src.medical_claims c
+      JOIN plh_src.member_enrollment e USING (member_id)
+      LEFT JOIN plh_src.adt_events a ON a.event_id = c.source_adt_id
+    note: >-
+      The warehouse flags every institutional claim with a DRG as inpatient. Professional
+      claims for emergency department visits (CPT 99281-99285) are emergency; the rest are
+      professional. status 'ibnr' rows are claims submitted after the reporting cut-off:
+      they are received, not paid. Plan comes from the member's eligibility span.
+    slots:
+      id: {column: claim_id}
+      member: {column: member_id}
+      plan: {column: plan_id}
+      billing_provider: {expr: "coalesce(src.facility_id, src.provider_id)"}
+      rendering_provider: {column: provider_id}
+      claim_type: {column: claim_type}
+      claim_status:
+        expr: >-
+          CASE src.status WHEN 'paid' THEN 'paid' WHEN 'denied' THEN 'denied' WHEN 'pending' THEN 'pended'
+          WHEN 'in_review' THEN 'pended' WHEN 'ibnr' THEN 'received' END
+      service_category:
+        expr: >-
+          CASE WHEN src.claim_type = 'institutional' THEN 'inpatient'
+          WHEN src.cpt_code IN ('99281', '99282', '99283', '99284', '99285') THEN 'emergency'
+          ELSE 'professional' END
+      plh_admit_type: {column: admit_type}
+      plh_clinical_category: {column: clinical_category}
+      admission_date: {column: admit_date}
+      discharge_date: {column: adt_discharge_date}
+      drg_code: {column: drg_code}
+      service_from_date: {column: service_date}
+      service_to_date: {expr: "coalesce(src.adt_discharge_date, src.service_date)"}
+      received_date: {column: submission_date}
+      paid_date: {column: paid_date}
+      primary_diagnosis_code: {column: icd10_primary}
+      total_billed_amount: {column: billed_amount}
+      total_allowed_amount: {column: allowed_amount}
+      total_paid_amount: {expr: "CASE WHEN src.status = 'paid' THEN src.paid_amount ELSE 0 END"}
+      member_liability_amount: {column: member_liability}
+      in_network: {expr: "src.provider_id NOT IN (SELECT provider_id FROM plh_src.providers WHERE network = 'Out-of-Network')"}
+      prior_authorization: {column: source_auth_id}
+      denial_category:
+        expr: >-
+          CASE src.denial_reason WHEN 'Coding error - invalid modifier' THEN 'coding_billing_error'
+          WHEN 'Invalid diagnosis/procedure combination' THEN 'coding_billing_error'
+          WHEN 'Coordination of benefits issue' THEN 'coordination_of_benefits' WHEN 'Duplicate claim' THEN 'duplicate'
+          WHEN 'Missing authorization' THEN 'no_prior_authorization' WHEN 'Untimely filing' THEN 'timely_filing'
+          WHEN 'Non-covered service' THEN 'not_covered' WHEN 'Exceeded benefit maximum' THEN 'not_covered'
+          WHEN 'Out-of-network without referral' THEN 'not_covered' END
+
+  MedicalClaimLine:
+    query: >-
+      SELECT c.claim_id, c.cpt_code, m.modifier_code,
+             row_number() OVER (PARTITION BY c.claim_id ORDER BY m.position, m.modifier_code) AS line_no
+      FROM plh_src.medical_claims c LEFT JOIN plh_src.claim_modifiers m USING (claim_id)
+      WHERE c.claim_type = 'professional'
+    note: >-
+      The warehouse keeps one row per claim plus a CPT modifier feed. Lines are rebuilt as
+      one line per modifier (or one unmodified line), so modifier rates count claims, not
+      amounts; amounts stay on the claim.
+    slots:
+      id: {expr: "src.claim_id || '-' || CAST(src.line_no AS VARCHAR)"}
+      claim: {column: claim_id}
+      line_number: {column: line_no}
+      procedure_code: {column: cpt_code}
+      procedure_modifier: {column: modifier_code}
+
+  PharmacyClaim:
+    query: >-
+      SELECT r.*, e.plan_id FROM plh_src.pharmacy_claims r JOIN plh_src.member_enrollment e USING (member_id)
+    note: The PBM feed carries paid fills only; reversals and rejections are not loaded.
+    slots:
+      id: {column: rx_claim_id}
+      member: {column: member_id}
+      plan: {column: plan_id}
+      prescriber: {column: prescribing_provider_id}
+      drug: {expr: "replace(src.ndc_code, '-', '')"}
+      fill_date: {column: fill_date}
+      received_date: {column: submission_date}
+      days_supply: {column: days_supply}
+      quantity_dispensed: {column: quantity}
+      fill_number: {column: refill_number}
+      ingredient_cost: {column: ingredient_cost}
+      dispensing_fee: {column: dispensing_fee}
+      total_paid_amount: {column: paid_amount}
+      member_liability_amount: {column: copay}
+      claim_status: {value: paid}
+
+  PriorAuthorization:
+    query: >-
+      SELECT a.*, e.plan_id FROM plh_src.prior_authorizations a JOIN plh_src.member_enrollment e USING (member_id)
+    note: >-
+      Urgency routine is standard; urgent and emergent are expedited. pending is in review.
+      status expired (an approval not used in time) passes through as-is: the ontology has
+      no value for it yet. Only dates are kept, so timestamps are midnight.
+    slots:
+      id: {column: auth_id}
+      member: {column: member_id}
+      plan: {column: plan_id}
+      requesting_provider: {column: requesting_provider_id}
+      requested_procedure_code: {column: procedure_code}
+      urgency: {expr: "CASE src.urgency WHEN 'routine' THEN 'standard' ELSE 'expedited' END"}
+      request_date: {column: request_date}
+      request_timestamp: {expr: "CAST(src.request_date AS TIMESTAMP)"}
+      decision_date: {column: decision_date}
+      decision_timestamp: {expr: "CAST(src.decision_date AS TIMESTAMP)"}
+      pa_status:
+        expr: >-
+          CASE src.status WHEN 'approved' THEN 'approved' WHEN 'denied' THEN 'denied'
+          WHEN 'pending' THEN 'in_review' ELSE src.status END

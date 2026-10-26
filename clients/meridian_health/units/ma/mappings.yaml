@@ -1,0 +1,508 @@
+# Meridian Medicare Advantage: MA administration platform -> ontology.
+# A newer system with snake_case names, real booleans and CMS-style codes. It
+# carries the MA revenue cycle (MMR, risk scores, encounter data, Star results,
+# bids). Providers, pharmacies and drugs are referenced by NPI / NDC and resolve
+# to the shared MDM directory that COMM maps.
+
+unit: MA
+dialect: duckdb
+source_schema: ma_src
+
+classes:
+  # --------------------------------------------------------- CMS contract & plans
+  MedicareAdvantageContract:
+    table: contract
+    note: contract_kind HMO / LPPO (local PPO) / RPPO (regional PPO).
+    slots:
+      id: {column: contract_id}
+      contract_number: {column: contract_id}
+      name: {column: contract_name}
+      contract_type:
+        expr: "CASE src.contract_kind WHEN 'HMO' THEN 'local_hmo' WHEN 'LPPO' THEN 'local_ppo' WHEN 'RPPO' THEN 'regional_ppo' WHEN 'PFFS' THEN 'pffs' END"
+
+  PlanBenefitPackage:
+    table: pbp
+    note: snp_code is blank for non-SNP plans and 'D' for the D-SNP.
+    slots:
+      id: {column: pbp_key}
+      ma_contract: {column: contract_id}
+      pbp_number: {column: pbp_id}
+      segment_number: {column: segment_id}
+      plan_year: {column: plan_year}
+      snp_type:
+        expr: "CASE src.snp_code WHEN 'D' THEN 'dual_eligible' WHEN 'C' THEN 'chronic_condition' WHEN 'I' THEN 'institutional' ELSE 'none' END"
+      part_d_included: {column: mapd_flag}
+      name: {column: pbp_name}
+
+  HealthPlan:
+    table: pbp
+    note: >-
+      The MA platform has no separate product table: each PBP segment is the plan
+      members enroll in, so HealthPlan is read from the same rows. MA plans have no
+      metal tier. The member premium in monthly_premium is billed through member_premium.
+    slots:
+      id: {column: pbp_key}
+      name: {column: pbp_name}
+      line_of_business: {value: medicare_advantage}
+      plan_type: {expr: "lower(src.plan_type)"}
+      metal_tier: {value: not_applicable}
+      market_segment: {value: medicare_individual}
+      funding_type: {value: fully_insured}
+      plan_benefit_package: {column: pbp_key}
+      network: {column: network_id}
+      individual_deductible: {column: deductible}
+      individual_oop_max: {column: moop}
+      formulary: {column: formulary_id}
+      effective_date: {column: effective_date}
+      termination_date: {column: end_date}
+
+  MedicareAdvantageBid:
+    table: bid
+    slots:
+      id: {column: bid_id}
+      ma_contract: {column: contract_id}
+      plan_benefit_package: {column: pbp_key}
+      contract_year: {column: contract_year}
+      projected_member_months: {column: proj_member_months}
+      bid_amount_pmpm: {column: bid_pmpm}
+      benchmark_pmpm: {column: benchmark_pmpm}
+      rebate_pmpm: {column: rebate_pmpm}
+      projected_mlr: {column: proj_mlr}
+      submitted_date: {column: submitted_date}
+
+  # ------------------------------------------------------ beneficiaries & elections
+  Member:
+    table: beneficiary
+    note: >-
+      sex_code follows the CMS convention (1 male, 2 female, 0 unknown), not M/F.
+      Every MA member is their own subscriber. card_id is the Meridian ID card number.
+    slots:
+      id: {column: bene_id}
+      member_number: {column: card_id}
+      medicare_beneficiary_identifier: {column: mbi}
+      given_name: {column: first_name}
+      family_name: {column: last_name}
+      birth_date: {column: birth_date}
+      gender: {expr: "CASE src.sex_code WHEN '1' THEN 'male' WHEN '2' THEN 'female' ELSE 'unknown' END"}
+      subscriber: {column: bene_id}
+      relationship_to_subscriber: {value: subscriber}
+      address_state: {column: state}
+      address_zip: {column: zip5}
+      mhp_care_program: {expr: "coalesce(src.care_program, 'none')"}
+
+  Enrollment:
+    table: enrollment
+    note: >-
+      dual_code N/F/P = non-dual / full-benefit / partial-benefit dual. lis_pct is the
+      Part D low-income subsidy percentage: 100 = full, 25-75 = partial, 0 = none.
+    slots:
+      id: {column: enrollment_id}
+      member: {column: bene_id}
+      product: {column: pbp_key}
+      effective_date: {column: start_date}
+      termination_date: {column: end_date}
+      coverage_status:
+        expr: "CASE WHEN src.end_date IS NULL THEN 'active' ELSE 'terminated' END"
+      dual_status:
+        expr: "CASE src.dual_code WHEN 'F' THEN 'full_benefit_dual' WHEN 'P' THEN 'partial_benefit_dual' ELSE 'non_dual' END"
+      lis_level:
+        expr: "CASE WHEN src.lis_pct >= 100 THEN 'full' WHEN src.lis_pct > 0 THEN 'partial' ELSE 'none' END"
+      esrd: {column: esrd}
+      institutional: {column: institutional}
+      ma_election_type: {column: election_type}
+
+  PremiumInvoice:
+    table: member_premium
+    note: Member (Part C/D) plan premium; only the PPO charges one. No separate invoice date is kept.
+    slots:
+      id: {column: invoice_id}
+      member: {column: bene_id}
+      plan: {column: pbp_key}
+      coverage_month: {column: premium_month}
+      billed_premium_amount: {column: billed}
+      premium_paid_amount: {column: collected}
+      premium_paid_date: {column: collected_date}
+      invoice_status: {expr: "lower(src.status)"}
+
+  # --------------------------------------------------------------- CMS revenue
+  CapitationPayment:
+    table: mmr
+    note: >-
+      One row per member-month from the MMR, plus retroactive adjustment rows
+      (adjustment = true) that restate a prior month. total = part_c + part_d + rebate.
+    slots:
+      id: {column: mmr_id}
+      member: {column: bene_id}
+      ma_contract: {column: contract_id}
+      plan_benefit_package: {column: pbp_key}
+      plan: {column: pbp_key}
+      payment_month: {column: payment_month}
+      risk_score_applied: {column: risk_score}
+      part_c_amount: {column: part_c}
+      part_d_amount: {column: part_d}
+      rebate_amount: {column: rebate}
+      total_payment_amount: {column: total}
+      retroactive_adjustment: {column: adjustment}
+      ma_mmr_adjustment_reason: {column: adj_reason}
+
+  RiskAdjustmentModel:
+    table: ra_model
+    note: blend_pct is a whole percentage of the payment-year score (67 = 67%).
+    slots:
+      id: {column: model_key}
+      model_version: &ma_model {expr: "CASE src.model_ver WHEN 'V24' THEN 'cms_hcc_v24' WHEN 'V28' THEN 'cms_hcc_v28' WHEN 'RX' THEN 'rx_hcc' END"}
+      payment_year: {column: payment_year}
+      blend_weight: {expr: "src.blend_pct / 100.0"}
+      normalization_factor: {column: norm_factor}
+      coding_intensity_adjustment: {column: coding_adj}
+
+  HierarchicalConditionCategory:
+    table: hcc_ref
+    slots:
+      id: {column: hcc_key}
+      model_version: *ma_model
+      hcc_number: {column: hcc_nbr}
+      name: {column: hcc_label}
+      relative_factor: {column: factor}
+
+  MemberRiskScore:
+    table: risk_score
+    note: >-
+      model_ver says how the score was built: V24 (single model), BLND (V24/V28 phase-in
+      blend) or ESRD. run_type I/M/F = initial, mid-year, final sweep. segment_code is the
+      risk model segment (CND/CPD/CFD community non/partial/full dual, INS, NE, ESRD).
+    slots:
+      id: {column: score_id}
+      member: {column: bene_id}
+      plan: {column: pbp_key}
+      payment_year: {column: payment_year}
+      risk_score_basis:
+        expr: >-
+          CASE src.model_ver WHEN 'V24' THEN 'cms_hcc_v24' WHEN 'BLND' THEN 'cms_hcc_v24_v28_blend'
+          WHEN 'ESRD' THEN 'esrd' ELSE lower(src.model_ver) END
+      score_run: {expr: "CASE src.run_type WHEN 'I' THEN 'initial' WHEN 'M' THEN 'midyear' WHEN 'F' THEN 'final' END"}
+      risk_segment:
+        expr: >-
+          CASE src.segment_code WHEN 'CND' THEN 'community_non_dual' WHEN 'CPD' THEN 'community_partial_dual'
+          WHEN 'CFD' THEN 'community_full_dual' WHEN 'INS' THEN 'institutional' WHEN 'NE' THEN 'new_enrollee'
+          WHEN 'ESRD' THEN 'esrd' END
+      raw_risk_score: {column: raw_score}
+      normalized_risk_score: {column: norm_score}
+      payment_risk_score: {column: pay_score}
+
+  DiagnosisSubmission:
+    table: dx_submission
+    note: >-
+      source_type EDS encounter data, RAPS, CRA / CRD chart-review add / delete. status
+      ACC / REJ is the CMS front-end response. hcc_key is the HCC the diagnosis maps to
+      under the payment-year model, when it maps to one.
+    slots:
+      id: {column: submission_id}
+      member: {column: bene_id}
+      rendering_provider: {column: rendering_npi}
+      diagnosis_code: {column: icd10}
+      service_from_date: {column: from_date}
+      service_to_date: {column: thru_date}
+      submission_type:
+        expr: "CASE src.source_type WHEN 'EDS' THEN 'encounter_data' WHEN 'RAPS' THEN 'raps' WHEN 'CRA' THEN 'chart_review_add' WHEN 'CRD' THEN 'chart_review_delete' END"
+      submitted_date: {column: submitted_date}
+      submission_status: {expr: "CASE src.status WHEN 'ACC' THEN 'accepted' WHEN 'REJ' THEN 'rejected' END"}
+      risk_adjustment_eligible: {column: ra_eligible}
+      claim: {column: claim_id}
+      payment_year: {column: payment_year}
+      hcc: {column: hcc_key}
+
+  # ------------------------------------------------------------------ Star Ratings
+  StarMeasure:
+    table: star_measure
+    note: data_source PDE = Part D prescription drug event measures; ADMIN = CMS administrative data.
+    slots:
+      id: {column: measure_key}
+      measure_code: {column: measure_key}
+      name: {column: measure_name}
+      measure_source:
+        expr: "CASE src.data_source WHEN 'HEDIS' THEN 'hedis' WHEN 'CAHPS' THEN 'cahps' WHEN 'HOS' THEN 'hos' WHEN 'PDE' THEN 'part_d' WHEN 'ADMIN' THEN 'administrative' END"
+      measure_weight: {column: weight}
+      higher_is_better: {column: higher_better}
+
+  StarMeasureResult:
+    table: star_result
+    slots:
+      id: {column: result_id}
+      ma_contract: {column: contract_id}
+      star_measure: {column: measure_key}
+      measurement_year: {column: measurement_year}
+      star_year: {column: star_year}
+      numerator: {column: num}
+      denominator: {column: den}
+      measure_rate: {column: rate}
+      star_rating: {column: stars}
+
+  # ----------------------------------------------------------- network & contracts
+  Network:
+    table: network
+    slots:
+      id: {column: network_id}
+      name: {column: network_name}
+      network_type: {column: network_kind}
+
+  NetworkParticipation:
+    table: network_provider
+    slots:
+      id: {column: row_id}
+      provider: {column: npi}
+      network: {column: network_id}
+      effective_date: {column: start_date}
+      termination_date: {column: end_date}
+
+  FeeSchedule:
+    table: fee_schedule
+    slots:
+      id: {column: fee_schedule_id}
+      name: {column: description}
+      fee_schedule_type: {column: basis}
+      base_year: {column: base_year}
+      effective_date: {column: start_date}
+
+  ProviderContract:
+    table: provider_contract
+    note: pct_medicare is a multiplier of Medicare rates (1.020 = 102%). CAP contracts are paid by capitation only.
+    slots:
+      id: {column: contract_id}
+      provider: {column: npi}
+      network: {column: network_id}
+      line_of_business: {value: medicare_advantage}
+      reimbursement_method:
+        expr: "CASE src.pay_method WHEN 'CAP' THEN 'capitation' WHEN 'DRG' THEN 'drg' WHEN 'PCT_MCR' THEN 'percent_of_medicare' ELSE 'fee_schedule' END"
+      fee_schedule: {column: fee_schedule_id}
+      percent_of_medicare: {column: pct_medicare}
+      effective_date: {column: start_date}
+      termination_date: {column: end_date}
+      contract_status: {expr: "lower(src.status)"}
+
+  ValueBasedArrangement:
+    table: vbc_arrangement
+    slots:
+      id: {column: arrangement_id}
+      provider_contract: {column: contract_id}
+      provider: {column: npi}
+      line_of_business: {value: medicare_advantage}
+      arrangement_type: {column: kind}
+      capitation_pmpm: {column: cap_pmpm}
+      shared_savings_rate: {column: savings_share}
+      minimum_savings_rate: {column: min_savings}
+      quality_gate: {column: quality_gate}
+      effective_date: {column: start_date}
+      termination_date: {column: end_date}
+
+  ProviderCapitationPayment:
+    table: cap_payment
+    note: Member-level capitation roster payments to the capitated primary care group.
+    slots:
+      id: {column: cap_id}
+      value_based_arrangement: {column: arrangement_id}
+      provider: {column: npi}
+      member: {column: bene_id}
+      plan: {column: pbp_key}
+      payment_month: {column: cap_month}
+      capitation_amount: {column: amount}
+
+  # ---------------------------------------------------------------------- pharmacy
+  Formulary:
+    table: formulary
+    slots:
+      id: {column: formulary_id}
+      name: {column: formulary_name}
+      plan_year: {column: contract_year}
+      pbm: {column: pbm_id}
+      formulary_type: {value: medicare_part_d}
+
+  FormularyTier:
+    table: formulary_tier
+    note: tier_label is display text ('Non-Preferred Drug'); normalized to the enum by lowercasing and replacing spaces and hyphens.
+    slots:
+      id: {column: tier_key}
+      formulary: {column: formulary_id}
+      tier_number: {column: tier}
+      tier_type: {expr: "lower(replace(replace(src.tier_label, ' ', '_'), '-', '_'))"}
+      copay_amount: {column: copay}
+      coinsurance_rate: {column: coinsurance}
+
+  FormularyEntry:
+    table: formulary_drug
+    note: The platform stores the tier number only; the tier key is formulary_id + '-' + tier.
+    slots:
+      id: {column: row_id}
+      formulary: {column: formulary_id}
+      drug: {column: ndc}
+      formulary_tier: {expr: "src.formulary_id || '-' || CAST(src.tier AS VARCHAR)"}
+      prior_auth_required: {column: pa}
+      step_therapy: {column: step}
+      quantity_limit: {column: ql}
+      effective_date: {column: start_date}
+      termination_date: {column: end_date}
+
+  PharmacyClaim:
+    table: rx_pde
+    note: Part D claims as reported on the PDE. status PAID / REJ / REV (reversed).
+    slots:
+      id: {column: pde_id}
+      member: {column: bene_id}
+      plan: {column: pbp_key}
+      pharmacy: {column: pharmacy_npi}
+      prescriber: {column: prescriber_npi}
+      drug: {column: ndc}
+      pbm: {column: pbm_id}
+      fill_date: {column: fill_date}
+      received_date: {column: fill_date}
+      days_supply: {column: days_supply}
+      quantity_dispensed: {column: quantity}
+      fill_number: {column: fill_number}
+      ingredient_cost: {column: ingredient_cost}
+      dispensing_fee: {column: dispensing_fee}
+      total_paid_amount: {column: plan_paid}
+      member_liability_amount: {column: patient_pay}
+      formulary_tier_number: {column: tier}
+      dispense_as_written: {column: daw}
+      claim_status: {expr: "CASE src.status WHEN 'PAID' THEN 'paid' WHEN 'REJ' THEN 'rejected' WHEN 'REV' THEN 'reversed' END"}
+
+  # ----------------------------------------------------------------------- medical
+  MedicalClaim:
+    table: claim
+    note: >-
+      setting is native on this platform (IP/ER/OP/PROF/ANC). Capitated primary care
+      arrives as zero-paid encounters (encounter = true). status APPROVED = paid. The
+      denial group is decoded to the pack's categories; codes the decode does not know
+      pass through lower-cased so the conformance check surfaces them.
+    slots:
+      id: {column: claim_id}
+      member: {column: bene_id}
+      plan: {column: pbp_key}
+      billing_provider: {column: billing_npi}
+      rendering_provider: {column: rendering_npi}
+      claim_type: {expr: "CASE src.form_type WHEN '837P' THEN 'professional' WHEN '837I' THEN 'institutional' END"}
+      claim_status:
+        expr: "CASE src.status WHEN 'APPROVED' THEN 'paid' WHEN 'DENIED' THEN 'denied' WHEN 'PENDING' THEN 'pended' WHEN 'VOID' THEN 'voided' END"
+      service_category:
+        expr: >-
+          CASE src.setting WHEN 'IP' THEN 'inpatient' WHEN 'ER' THEN 'emergency' WHEN 'OP' THEN 'outpatient'
+          WHEN 'PROF' THEN 'professional' WHEN 'ANC' THEN 'ancillary' END
+      type_of_bill: {column: type_of_bill}
+      place_of_service: {column: pos}
+      admission_date: {column: admit_date}
+      discharge_date: {column: discharge_date}
+      drg_code: {column: ms_drg}
+      service_from_date: {column: from_date}
+      service_to_date: {column: thru_date}
+      received_date: {column: received_date}
+      paid_date: {column: finalized_date}
+      primary_diagnosis_code: {column: primary_icd10}
+      total_billed_amount: {column: billed}
+      total_allowed_amount: {column: allowed}
+      total_paid_amount: {column: plan_paid}
+      member_liability_amount: {column: bene_liability}
+      in_network: {column: in_network}
+      prior_authorization: {column: auth_id}
+      denial_category:
+        expr: >-
+          CASE src.denial_group WHEN 'MED_NEC' THEN 'medical_necessity' WHEN 'NO_AUTH' THEN 'no_prior_authorization'
+          WHEN 'NOT_COVERED' THEN 'not_covered' WHEN 'ELIGIBILITY' THEN 'eligibility' WHEN 'DUPLICATE' THEN 'duplicate'
+          WHEN 'TIMELY_FILING' THEN 'timely_filing' WHEN 'CODING' THEN 'coding_billing_error'
+          WHEN 'COB' THEN 'coordination_of_benefits' ELSE lower(src.denial_group) END
+      auto_adjudicated: {column: auto_adjudicated}
+      encounter_record: {column: encounter}
+
+  MedicalClaimLine:
+    table: claim_line
+    slots:
+      id: {expr: "src.claim_id || '-' || CAST(src.line_seq AS VARCHAR)"}
+      claim: {column: claim_id}
+      line_number: {column: line_seq}
+      procedure_code: {column: hcpcs}
+      procedure_modifier: {column: modifier1}
+      units: {column: units}
+      billed_amount: {column: billed}
+      allowed_amount: {column: allowed}
+      paid_amount: {column: paid}
+      line_status: {expr: "lower(src.line_status)"}
+      denial_reason_code: {column: carc}
+
+  # ------------------------------------------------------------ UM & member services
+  PriorAuthorization:
+    table: auth
+    note: >-
+      received_at / decided_at are timestamps (the CMS-0057-F clock). outcome ADVERSE =
+      denied, PARTIAL = partially approved. delegate is the reviewing entity.
+    slots:
+      id: {column: auth_id}
+      member: {column: bene_id}
+      plan: {column: pbp_key}
+      requesting_provider: {column: requesting_npi}
+      requested_procedure_code: {column: service_code}
+      diagnosis_code: {column: icd10}
+      urgency: {expr: "lower(src.review_type)"}
+      request_date: {expr: "CAST(src.received_at AS DATE)"}
+      request_timestamp: {column: received_at}
+      decision_date: {expr: "CAST(src.decided_at AS DATE)"}
+      decision_timestamp: {column: decided_at}
+      decision_reason: {column: outcome_reason}
+      pa_status:
+        expr: >-
+          CASE src.outcome WHEN 'APPROVED' THEN 'approved' WHEN 'PARTIAL' THEN 'partially_approved'
+          WHEN 'ADVERSE' THEN 'denied' WHEN 'PENDING_INFO' THEN 'pended_for_info' WHEN 'IN_REVIEW' THEN 'in_review'
+          WHEN 'WITHDRAWN' THEN 'withdrawn' END
+      approved_units: {column: approved_units}
+      mhp_um_delegate:
+        expr: >-
+          CASE src.delegate WHEN 'IN_HOUSE' THEN 'in_house' WHEN 'RAD_BM' THEN 'radiology_benefit_manager'
+          WHEN 'MSK_BM' THEN 'musculoskeletal_benefit_manager' WHEN 'ONC_PATHWAYS' THEN 'oncology_pathway_vendor' END
+
+  Appeal:
+    table: appeal
+    note: >-
+      member_outcome is recorded from the member's side: FAVORABLE = the plan's decision
+      was overturned, UNFAVORABLE = upheld. RECON = plan reconsideration; upheld Part C
+      reconsiderations are auto-forwarded to the IRE.
+    slots:
+      id: {column: appeal_id}
+      member: {column: bene_id}
+      plan: {column: pbp_key}
+      claim: {column: claim_id}
+      prior_authorization: {column: auth_id}
+      appeal_level: {expr: "CASE src.appeal_level WHEN 'RECON' THEN 'internal_first_level' WHEN 'IRE' THEN 'independent_review_entity' WHEN 'ALJ' THEN 'administrative_law_judge' END"}
+      urgency: {expr: "CASE WHEN src.expedited THEN 'expedited' ELSE 'standard' END"}
+      received_date: {column: received_date}
+      decision_date: {column: decision_date}
+      decision_reason: {column: rationale}
+      appeal_outcome:
+        expr: >-
+          CASE src.member_outcome WHEN 'FAVORABLE' THEN 'overturned' WHEN 'PARTIALLY_FAVORABLE' THEN 'partially_overturned'
+          WHEN 'UNFAVORABLE' THEN 'upheld' WHEN 'DISMISSED' THEN 'dismissed' WHEN 'WITHDRAWN' THEN 'withdrawn' ELSE 'pending' END
+
+  Grievance:
+    table: grievance
+    note: No status column; a grievance is open until resolved_date is set.
+    slots:
+      id: {column: grievance_id}
+      member: {column: bene_id}
+      plan: {column: pbp_key}
+      grievance_category:
+        expr: >-
+          CASE src.category WHEN 'ACCESS' THEN 'access_to_care' WHEN 'QOC' THEN 'quality_of_care' WHEN 'CS' THEN 'customer_service'
+          WHEN 'BILLING' THEN 'billing_premium' WHEN 'ENROLL' THEN 'enrollment' WHEN 'RX' THEN 'pharmacy' END
+      urgency: {expr: "CASE WHEN src.expedited THEN 'expedited' ELSE 'standard' END"}
+      received_date: {column: received_date}
+      resolved_date: {column: resolved_date}
+      grievance_status: {expr: "CASE WHEN src.resolved_date IS NULL THEN 'open' ELSE 'resolved' END"}
+      grievance_description: {column: summary}
+
+  # ------------------------------------------------------------------------ finance
+  QualityImprovementExpense:
+    table: qi_expense
+    slots:
+      id: {column: qi_id}
+      line_of_business: {value: medicare_advantage}
+      market_segment: {value: medicare_individual}
+      expense_month: {column: expense_month}
+      qia_activity: {column: activity}
+      expense_amount: {column: amount}

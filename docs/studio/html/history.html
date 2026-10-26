@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Context Studio: history</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400&amp;display=swap">
+<style>
+body{margin:0;font-family:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;color:#1c1c1a;background:#f4f3ef}
+a{color:#1f4fbf;text-decoration:none}a:hover{color:#163a8c}
+.nav{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:6px;color:#3d3c38;font-size:14px}
+.nav.on{background:#e3e7f3;color:#163a8c;font-weight:600}
+.badge{margin-left:auto;background:#1f4fbf;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px}
+.lbl{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#6b6960;font-weight:600}
+.box{border:1px solid #d3d0c7;border-radius:8px;background:#fff}
+.pill{font-size:12px;padding:3px 9px;border-radius:12px;border:1px solid #d3d0c7;color:#3d3c38;background:#faf9f6}
+.btn{font:inherit;font-size:14px;padding:10px 16px;border-radius:6px;border:1px solid #bdb9ae;background:#fff;color:#1c1c1a;min-height:44px}
+.btn.primary{background:#1f4fbf;border-color:#1f4fbf;color:#fff;font-weight:600}
+.muted{color:#6b6960}
+.ev{display:grid;grid-template-columns:96px 16px minmax(0,1fr) auto;gap:14px;padding:14px 16px;border-top:1px solid #ece9e2;align-items:start}
+.dot{width:10px;height:10px;border-radius:5px;background:#1f4fbf;margin-top:5px}
+.ver{padding:8px 16px;border-top:1px solid #ece9e2;background:#faf9f6;font-size:12px;font-weight:600;color:#3d3c38}
+</style>
+</head>
+<body>
+<div style="width: 1440px; height: 900px; display: flex; flex-direction: column; overflow: hidden">
+  <header style="height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 16px; padding: 0 20px; background: #fff; border-bottom: 1px solid #d3d0c7">
+    <div style="font-weight: 600; font-size: 16px; width: 176px">Context Studio</div>
+    <button class="btn" style="min-height: 36px; padding: 6px 12px">Summit Group · Commercial P&amp;C</button>
+    <label style="flex-grow: 1; max-width: 520px"><span style="position: absolute; left: -9999px">Search</span><input type="search" placeholder="Search concepts, metrics, proposals" style="width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 8px 12px; border: 1px solid #d3d0c7; border-radius: 6px; background: #faf9f6"></label>
+    <div style="margin-left: auto; font-size: 14px" class="muted">Signed in as <b style="color: #1c1c1a">Pack steward</b></div>
+  </header>
+  <div style="flex-grow: 1; display: flex; min-height: 0">
+    <nav style="width: 216px; flex-shrink: 0; padding: 16px 12px; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid #d3d0c7">
+      <a class="nav" href="inbox.html">Inbox</a>
+      <a class="nav" href="map.html">Map</a>
+      <a class="nav" href="concept.html">Concepts</a>
+      <a class="nav" href="metric.html">Metrics</a>
+      <a class="nav" href="mapping.html">Mappings</a>
+      <a class="nav on" href="history.html">History</a>
+    </nav>
+
+    <main style="flex-grow: 1; min-width: 0; padding: 20px 28px; display: flex; flex-direction: column; gap: 14px; overflow: hidden">
+      <div style="display: flex; align-items: center; gap: 12px">
+        <h1 style="margin: 0; font-size: 28px; font-weight: 600">History</h1>
+        <span class="muted" style="font-size: 14px">Every approved change, who approved it, and why</span>
+      </div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap">
+        <button class="pill" style="background: #e3e7f3; color: #163a8c; border-color: #b8c4e6">All areas</button>
+        <button class="pill">Pack concepts</button><button class="pill">Client vocabulary</button><button class="pill">Metrics</button><button class="pill">Unit mappings</button><button class="pill">Privacy</button>
+        <button class="pill" style="margin-left: auto">Compare two dates</button>
+      </div>
+
+      <div class="box" style="overflow: hidden">
+        <div class="ver">Today · version 14</div>
+        <div class="ev" style="background: #f3f6fc">
+          <span class="muted" style="font-size: 13px">30 Sep</span><span class="dot"></span>
+          <div style="display: flex; flex-direction: column; gap: 4px"><b style="font-size: 14px">Added PFAS as a cause of loss</b><span class="muted" style="font-size: 13px">Pack concepts · approved by Pack steward · source: DOI Bulletin 2026-14, p.3</span></div>
+          <div style="display: flex; gap: 8px"><button class="btn" style="min-height: 36px; padding: 6px 12px">View</button><button class="btn" style="min-height: 36px; padding: 6px 12px">Undo</button></div>
+        </div>
+        <div class="ver">12 Sep · version 13</div>
+        <div class="ev">
+          <span class="muted" style="font-size: 13px">12 Sep</span><span class="dot" style="background: #6b6960"></span>
+          <div style="display: flex; flex-direction: column; gap: 4px"><b style="font-size: 14px">Claim is called “Claim File” at Summit</b><span class="muted" style="font-size: 13px">Client vocabulary · approved by Summit data steward</span></div>
+          <div style="display: flex; gap: 8px"><button class="btn" style="min-height: 36px; padding: 6px 12px">View</button><button class="btn" style="min-height: 36px; padding: 6px 12px">Undo</button></div>
+        </div>
+        <div class="ev">
+          <span class="muted" style="font-size: 13px">12 Sep</span><span class="dot" style="background: #6b6960"></span>
+          <div style="display: flex; flex-direction: column; gap: 4px"><b style="font-size: 14px">Producers and programs shared across all units</b><span class="muted" style="font-size: 13px">Client vocabulary · approved by Summit data steward</span></div>
+          <div style="display: flex; gap: 8px"><button class="btn" style="min-height: 36px; padding: 6px 12px">View</button><button class="btn" style="min-height: 36px; padding: 6px 12px">Undo</button></div>
+        </div>
+        <div class="ver">28 Aug · version 12</div>
+        <div class="ev">
+          <span class="muted" style="font-size: 13px">28 Aug</span><span class="dot" style="background: #6b6960"></span>
+          <div style="display: flex; flex-direction: column; gap: 4px"><b style="font-size: 14px">HPG bordereau mapped (spec v3.1)</b><span class="muted" style="font-size: 13px">Unit mappings · approved by HPG data engineer</span></div>
+          <div style="display: flex; gap: 8px"><button class="btn" style="min-height: 36px; padding: 6px 12px">View</button><button class="btn" style="min-height: 36px; padding: 6px 12px">Undo</button></div>
+        </div>
+      </div>
+
+      <div class="box" style="padding: 16px; display: flex; gap: 16px; align-items: center; border-color: #b8c4e6; background: #f3f6fc">
+        <div style="display: flex; flex-direction: column; gap: 4px; flex-grow: 1">
+          <b style="font-size: 14px">Undo “Added PFAS as a cause of loss”?</b>
+          <span style="font-size: 13px; line-height: 1.5">This opens a proposal to remove it. Pack steward approves it like any other change. 5 HPG claims would go back to “unknown cause”.</span>
+        </div>
+        <button class="btn primary">Propose undo</button>
+        <button class="btn">Cancel</button>
+      </div>
+    </main>
+
+    <aside style="width: 320px; flex-shrink: 0; border-left: 1px solid #d3d0c7; background: #fff; display: flex; flex-direction: column">
+      <div style="padding: 16px; border-bottom: 1px solid #e6e3db"><div style="font-weight: 600; font-size: 14px">Curator</div><div class="muted" style="font-size: 12px">About: History</div></div>
+      <div style="flex-grow: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px; font-size: 13px; line-height: 1.5">
+        <div style="align-self: flex-end; max-width: 240px; background: #e3e7f3; padding: 10px 12px; border-radius: 8px">What changed since the Q2 close?</div>
+        <div style="max-width: 260px; background: #f4f3ef; padding: 10px 12px; border-radius: 8px">Four changes since 30 Jun. Only one moves a reported number: the HPG mapping, which changes HPG paid expense. The rest are vocabulary and a new code.</div>
+      </div>
+      <label style="padding: 12px 16px; border-top: 1px solid #e6e3db"><span style="position: absolute; left: -9999px">Ask the curator</span><input placeholder="Ask about the history" style="width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 10px 12px; border: 1px solid #d3d0c7; border-radius: 6px"></label>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

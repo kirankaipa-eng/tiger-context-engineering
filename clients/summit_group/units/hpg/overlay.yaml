@@ -1,0 +1,12 @@
+# Harbor Program Group unit overlay: bordereau lineage.
+
+extend:
+  add_slots:
+    PolicyTransaction:
+      hpg_bordereau_month:
+        range: date
+        description: Month of the premium bordereau the transaction was reported on.
+    ClaimFinancialTransaction:
+      hpg_claim_bordereau_month:
+        range: date
+        description: Month of the claims bordereau whose snapshot delta produced this transaction.

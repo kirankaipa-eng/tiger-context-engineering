@@ -1,0 +1,80 @@
+# Power BI models -> captured metrics, on every merge request and every merge to main.
+#   capture-mr  merge requests: convert .pbix -> TMDL, capture the DAX as metrics, diff against the
+#               published version, verify each metric compiles for Databricks and runs; the report is
+#               kept as one note on the merge request (needs GITLAB_TOKEN)
+#   capture     main: the same, versioned v<N>, then released as capture-v<N> in the same job (one job in a
+#               resource group, so two merges cannot take the same number); artifacts kept forever
+#               (releases link to them); the metrics MCP server picks the release up
+#   drift       scheduled (or "Run pipeline" with PBI_DRIFT=true): the latest release's tables and
+#               columns still exist in the warehouse; opens / updates / closes a warehouse-drift issue
+#
+# CI/CD variables (Settings > CI/CD > Variables; mask the secrets):
+#   GITLAB_TOKEN                  project access token, api scope, Developer+: MR note, releases, issues
+#   CAPTURE_IMAGE                 the pbi-capture image (default below; set your registry's tag)
+#   GITLAB_API                    only when jobs reach GitLab at another address than CI_API_V4_URL
+#   DATABRICKS_SERVER_HOSTNAME, DATABRICKS_HTTP_PATH, and DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET
+#   (or DATABRICKS_TOKEN)         verify and drift run on Databricks too; without them, the stand-in only
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $PBI_DRIFT == "true"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+variables:
+  CAPTURE_IMAGE: pbi-capture:dev
+
+default:
+  image: $CAPTURE_IMAGE
+
+stages: [capture, drift]
+
+.capture:
+  stage: capture
+  script:
+    - ictx pbi ci models --out public
+  artifacts:
+    name: capture-$CI_PIPELINE_IID
+    paths: [public/]
+    expose_as: capture report
+    when: always
+
+capture-mr:
+  extends: .capture
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  artifacts:
+    expire_in: 30 days
+
+# On main, capture and release are one job in a resource group: jobs of two merges run one after the
+# other, so each numbers its version after the previous one has released.
+capture:
+  extends: .capture
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" || $PBI_DRIFT == "true"
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  resource_group: capture-release
+  interruptible: false
+  script:
+    - ictx pbi ci models --out public
+    - ictx pbi publish public
+  artifacts:
+    name: capture-$CI_PIPELINE_IID
+    paths: [public/]
+    expose_as: capture report
+    when: always
+    expire_in: never
+
+drift:
+  stage: drift
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $PBI_DRIFT == "true"
+  needs: []
+  script:
+    - ictx pbi drift --release latest --out drift.md --issue
+  artifacts:
+    paths: [drift.md]
+    when: always
+    expire_in: 90 days

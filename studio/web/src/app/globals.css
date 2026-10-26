@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+
+  --color-ground: #f4f3ef;
+  --color-panel: #ffffff;
+  --color-sunk: #faf9f6;
+  --color-line: #d3d0c7;
+  --color-line-soft: #e6e3db;
+  --color-ink: #1c1c1a;
+  --color-ink-2: #3d3c38;
+  --color-muted: #6b6960;
+  --color-accent: #1f4fbf;
+  --color-accent-ink: #163a8c;
+  --color-accent-soft: #e3e7f3;
+  --color-accent-line: #b8c4e6;
+  --color-ok: #23603a;
+  --color-ok-soft: #eef6f0;
+  --color-ok-line: #9cc3a6;
+  --color-warn: #7a5410;
+  --color-warn-soft: #fcf4e3;
+  --color-warn-line: #e0b25c;
+  --color-bad: #9b2c2c;
+  --color-bad-soft: #fbeaea;
+  --color-bad-line: #e3a6a6;
+}
+
+html, body { height: 100%; }
+body { background: var(--color-ground); color: var(--color-ink); }
+
+.lbl { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--color-muted); font-weight: 600; }
+
+.prose-studio { font-size: 14px; line-height: 1.55; }
+.prose-studio p { margin: 0 0 .6em; }
+.prose-studio ul, .prose-studio ol { margin: .2em 0 .6em 1.2em; }
+.prose-studio ul { list-style: disc; }
+.prose-studio ol { list-style: decimal; }
+.prose-studio li { margin: .15em 0; }
+.prose-studio strong { font-weight: 600; }
+.prose-studio h1, .prose-studio h2, .prose-studio h3 { font-weight: 600; margin: .8em 0 .3em; }
+.prose-studio code { font-family: var(--font-mono); font-size: 12px; background: var(--color-sunk); padding: 1px 4px; border-radius: 4px; }
+.prose-studio table { border-collapse: collapse; margin: .4em 0 .8em; font-size: 13px; }
+.prose-studio th, .prose-studio td { border: 1px solid var(--color-line-soft); padding: 4px 8px; text-align: left; }
+.prose-studio th { background: var(--color-sunk); font-weight: 600; }
+
+@keyframes pulse-soft { 0%, 100% { opacity: 1 } 50% { opacity: .45 } }
+.pulse-soft { animation: pulse-soft 1.4s ease-in-out infinite; }
+
+/* ---------------------------------------------------------------- the desk (business view) */
+.desk {
+  --d-navy: #142338;      /* conversation rail, ink */
+  --d-navy-2: #1d3150;
+  --d-rail-ink: #e6edf5;
+  --d-rail-muted: #92a3bb;
+  --d-paper: #edf1f5;     /* canvas */
+  --d-sheet: #ffffff;     /* exhibit */
+  --d-rule: #d4dce6;
+  --d-ink: #142338;
+  --d-ink-2: #3d4d63;
+  --d-muted: #6a7a90;
+  --d-teal: #0f7b78;      /* governed, trust */
+  --d-teal-soft: #e2f1f0;
+  --d-rise: #c97c06;      /* cost up */
+  --d-fall: #3f6fa3;      /* cost down */
+  --d-slate: #9aabbf;
+  color: var(--d-ink);
+}
+.desk .num { font-family: var(--font-plex-cond), var(--font-plex-sans), sans-serif; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.desk .cond { font-family: var(--font-plex-cond), var(--font-plex-sans), sans-serif; }
+.desk .rail-prose { font-size: 14px; line-height: 1.6; color: var(--d-rail-ink); }
+.desk .rail-prose p { margin: 0 0 .55em; }
+.desk .rail-prose strong { color: #fff; font-weight: 600; }
+.desk .rail-prose ul { list-style: disc; margin: .2em 0 .6em 1.1em; }
+.desk :focus-visible { outline: 2px solid var(--d-teal); outline-offset: 2px; }
+@keyframes exhibit-land { from { box-shadow: 0 0 0 3px rgba(15,123,120,.55); } to { box-shadow: 0 0 0 0 rgba(15,123,120,0); } }
+.desk .landed { animation: exhibit-land 2.4s ease-out 1; }
+@media (prefers-reduced-motion: reduce) { .desk .landed { animation: none; } }

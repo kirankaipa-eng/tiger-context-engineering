@@ -1,0 +1,9 @@
+# Summit E&S unit overlay: what only this unit tracks.
+# Extensions here stay in the u_ses views; they do not leak into the group layer.
+
+extend:
+  add_slots:
+    Policy:
+      ses_surplus_lines_tax_state:
+        pattern: "^[A-Z]{2}$"
+        description: Home state for surplus lines premium tax filing.

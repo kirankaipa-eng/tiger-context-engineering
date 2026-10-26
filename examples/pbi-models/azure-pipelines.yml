@@ -1,0 +1,101 @@
+# UNTESTED: a starting point for a models repo on Azure DevOps. It has not been run on Azure
+# DevOps; the GitLab pipeline (.gitlab-ci.yml) is the tested one. Expect to adjust the service
+# connection, pool and variable group names.
+#
+# The same stages as on GitLab, with what Azure DevOps lacks spelled out:
+#   capture  every PR and every merge to main: `ictx pbi ci` (convert, capture, diff against the
+#            last main build's capture, verify); report.md is in the pipeline artifact. No PR
+#            comment is posted (bici only talks to GitLab).
+#   release  there is no `ictx pbi publish` here: the `capture` pipeline artifact of a main build
+#            IS the release. Serve it with `ictx pbi serve --dir <downloaded folder>`; pin a build
+#            by downloading that build's artifact instead of the latest.
+#   drift    nightly: `ictx pbi drift` on the latest main capture; the job fails on drift (wire
+#            pipeline failure notifications to the model owners; no work item is opened).
+#
+# Variables: a variable group `pbi-capture` holding DATABRICKS_SERVER_HOSTNAME, DATABRICKS_HTTP_PATH
+# and DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET (or DATABRICKS_TOKEN) as secrets, mapped
+# into the steps' env below (Azure DevOps does not expose secrets to scripts otherwise).
+# Delete the env lines of the auth you do not use: an undefined $(VAR) is passed as that literal text.
+
+trigger:
+  branches:
+    include: [main]
+pr:
+  branches:
+    include: [main]
+schedules:
+  - cron: "0 5 * * *"
+    displayName: nightly warehouse drift
+    branches:
+      include: [main]
+    always: true
+
+variables:
+  - group: pbi-capture
+  - name: CAPTURE_IMAGE
+    value: myregistry.azurecr.io/pbi-capture:dev   # the image built from ci/pbi-capture.Dockerfile
+
+resources:
+  containers:
+    - container: capture
+      image: $(CAPTURE_IMAGE)
+      endpoint: acr-connection   # a Docker registry service connection to that registry
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+  - job: capture
+    condition: ne(variables['Build.Reason'], 'Schedule')
+    container: capture
+    steps:
+      - checkout: self
+        lfs: true
+      - task: DownloadPipelineArtifact@2
+        displayName: last capture from main (to diff against)
+        continueOnError: true
+        inputs:
+          source: specific
+          project: $(System.TeamProjectId)
+          pipeline: $(System.DefinitionId)
+          runVersion: latestFromBranch
+          runBranch: refs/heads/main
+          artifact: capture
+          path: $(Pipeline.Workspace)/previous
+      - script: ictx pbi ci models --out public --previous $(Pipeline.Workspace)/previous
+        displayName: convert, capture, diff, verify
+        env:
+          DATABRICKS_SERVER_HOSTNAME: $(DATABRICKS_SERVER_HOSTNAME)
+          DATABRICKS_HTTP_PATH: $(DATABRICKS_HTTP_PATH)
+          DATABRICKS_CLIENT_ID: $(DATABRICKS_CLIENT_ID)
+          DATABRICKS_CLIENT_SECRET: $(DATABRICKS_CLIENT_SECRET)
+          DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+      - publish: public
+        artifact: capture
+        condition: always()
+
+  - job: drift
+    condition: eq(variables['Build.Reason'], 'Schedule')
+    container: capture
+    steps:
+      - checkout: none
+      - task: DownloadPipelineArtifact@2
+        inputs:
+          source: specific
+          project: $(System.TeamProjectId)
+          pipeline: $(System.DefinitionId)
+          runVersion: latestFromBranch
+          runBranch: refs/heads/main
+          artifact: capture
+          path: $(Pipeline.Workspace)/capture
+      - script: ictx pbi drift $(Pipeline.Workspace)/capture --out drift.md
+        displayName: warehouse drift
+        env:
+          DATABRICKS_SERVER_HOSTNAME: $(DATABRICKS_SERVER_HOSTNAME)
+          DATABRICKS_HTTP_PATH: $(DATABRICKS_HTTP_PATH)
+          DATABRICKS_CLIENT_ID: $(DATABRICKS_CLIENT_ID)
+          DATABRICKS_CLIENT_SECRET: $(DATABRICKS_CLIENT_SECRET)
+          DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+      - publish: drift.md
+        artifact: drift
+        condition: always()

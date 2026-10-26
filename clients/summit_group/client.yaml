@@ -1,0 +1,55 @@
+# Summit Specialty Group: fictional decentralized specialty carrier used as the
+# reference deployment for the commercial P&C pack. Three units, three systems,
+# one context layer.
+
+client: summit_group
+title: Summit Specialty Group
+line: commercial_pc
+line_version: 0.1.0
+version: 1
+prefix: ssg
+namespace: https://ontology.tigeranalytics.com/clients/summit-group/
+
+units:
+  - code: CORP
+    name: Group Corporate & Actuarial
+    source_system: Group finance / actuarial warehouse
+  - code: SES
+    name: Summit Excess & Surplus
+    source_system: Transactional policy, billing & claims platform
+  - code: HPG
+    name: Harbor Program Group
+    source_system: Program administrator bordereaux (monthly)
+
+# --- group overlay: vocabulary and rules every unit shares -------------------
+
+labels:
+  classes:
+    Producer: Broker
+    Submission: Account Submission
+    CommercialClaim: Claim File
+    ReserveEstimate: IBNR Selection
+  slots:
+    self_insured_retention: SIR
+    written_premium_change: Premium Change
+
+extend:
+  add_slots:
+    Policy:
+      ssg_underwriting_region:
+        range: SsgRegionEnum
+        description: Summit's internal underwriting region used for authority and reporting.
+  enums:
+    SsgRegionEnum: [northeast, southeast, central, west]
+
+require:
+  - class: CommercialClaim
+    slot: coverage_line
+    reason: Group reserving segments every claim by coverage line.
+
+# Producers are resolved to the group broker master, so broker performance can be
+# measured across units.
+global_identity: [Producer, Program]
+
+agent_policy:
+  redact: [pii, phi]

@@ -1,0 +1,128 @@
+# Who owns what. CI turns this into CODEOWNERS; the Studio routes proposals with it.
+#
+# A change goes to every area whose paths it touches (`file#key` = only when that top-level
+# YAML key changes) and to an area whose `contains` text appears in the changed lines. Each area needs `min_approvals` from its owners.
+# People are ids; in production they map to SSO users or groups.
+
+people:
+  pack-steward:          {name: Pack steward, role: Tiger ontology lead}
+  actuarial-lead:        {name: Actuarial lead, role: Chief actuary's office}
+  privacy-officer:       {name: Privacy officer, role: Compliance}
+  summit-data-steward:   {name: Summit data steward, role: Summit Group data office}
+  ses-data-engineer:     {name: SES data engineer, role: Specialty E&S unit}
+  hpg-data-engineer:     {name: HPG data engineer, role: Program unit (MGA bordereaux)}
+  corp-data-engineer:    {name: CORP data engineer, role: Corporate claims warehouse}
+  meridian-data-steward: {name: Meridian data steward, role: Meridian Health data office}
+  meridian-comm-engineer: {name: Meridian commercial engineer, role: Commercial platform}
+  meridian-ma-engineer:  {name: Meridian MA engineer, role: Medicare Advantage platform}
+  acme-data-steward:     {name: Acme data steward, role: Acme Health data office}
+  northwind-data-steward: {name: Northwind data steward, role: Northwind Life data office}
+  northwind-life-engineer: {name: Northwind life engineer, role: Individual life admin platform}
+  northwind-annuity-engineer: {name: Northwind annuity engineer, role: Annuity platform}
+  plains-medecon-lead:   {name: Plains medical economics lead, role: Plains Medical Economics}
+  plains-data-steward:   {name: Plains data steward, role: Plains data office}
+  plains-edw-engineer:   {name: Plains EDW engineer, role: Enterprise claims warehouse}
+
+areas:
+  pack-concepts:
+    title: Industry pack concepts
+    paths: ["ontology/core/**", "ontology/lines/**"]
+    owners: [pack-steward]
+    min_approvals: 1
+  metrics:
+    title: Governed metrics
+    paths: ["ontology/metrics/**", "clients/*/client.yaml#metrics"]
+    owners: [actuarial-lead]
+    min_approvals: 1
+  privacy:
+    title: Sensitive data
+    contains: ["sensitivity:", "hide:", "redact"]
+    owners: [privacy-officer]
+    min_approvals: 1
+
+  summit-vocabulary:
+    title: Summit Group vocabulary
+    paths: ["clients/summit_group/client.yaml", "clients/summit_group/okf/**"]
+    owners: [summit-data-steward]
+    min_approvals: 1
+  summit-ses-mappings:
+    title: Summit SES mappings
+    paths: ["clients/summit_group/units/ses/**"]
+    owners: [ses-data-engineer]
+    min_approvals: 1
+  summit-hpg-mappings:
+    title: Summit HPG mappings
+    paths: ["clients/summit_group/units/hpg/**"]
+    owners: [hpg-data-engineer]
+    min_approvals: 1
+  summit-corp-mappings:
+    title: Summit CORP mappings
+    paths: ["clients/summit_group/units/corp/**"]
+    owners: [corp-data-engineer]
+    min_approvals: 1
+
+  meridian-vocabulary:
+    title: Meridian Health vocabulary
+    paths: ["clients/meridian_health/client.yaml", "clients/meridian_health/okf/**"]
+    owners: [meridian-data-steward]
+    min_approvals: 1
+  meridian-comm-mappings:
+    title: Meridian commercial mappings
+    paths: ["clients/meridian_health/units/comm/**"]
+    owners: [meridian-comm-engineer]
+    min_approvals: 1
+  meridian-ma-mappings:
+    title: Meridian Medicare Advantage mappings
+    paths: ["clients/meridian_health/units/ma/**"]
+    owners: [meridian-ma-engineer]
+    min_approvals: 1
+
+  northwind-vocabulary:
+    title: Northwind Life vocabulary
+    paths: ["clients/northwind_life/client.yaml", "clients/northwind_life/okf/**"]
+    owners: [northwind-data-steward]
+    min_approvals: 1
+  northwind-life-mappings:
+    title: Northwind life mappings
+    paths: ["clients/northwind_life/units/life/**"]
+    owners: [northwind-life-engineer]
+    min_approvals: 1
+  northwind-annuity-mappings:
+    title: Northwind annuity mappings
+    paths: ["clients/northwind_life/units/ann/**"]
+    owners: [northwind-annuity-engineer]
+    min_approvals: 1
+
+  plains-vocabulary:
+    title: Plains vocabulary
+    paths: ["clients/plains_health/client.yaml"]
+    owners: [plains-data-steward]
+    min_approvals: 1
+  plains-medecon:
+    title: Plains medical economics measures
+    paths: ["clients/plains_health/client.yaml#metrics", "clients/plains_health/client.yaml#dimensions",
+            "clients/plains_health/powerbi/**"]
+    owners: [plains-medecon-lead]
+    min_approvals: 1
+  plains-mappings:
+    title: Plains warehouse mappings
+    paths: ["clients/plains_health/units/plh/**"]
+    owners: [plains-edw-engineer]
+    min_approvals: 1
+
+  acme:
+    title: Acme Health (sample payer)
+    paths: ["clients/acme_health/**"]
+    owners: [acme-data-steward]
+    min_approvals: 1
+
+  documents:
+    title: Curator documents
+    paths: ["clients/*/corpus/**"]
+    owners: [pack-steward]
+    min_approvals: 1
+  studio:
+    title: Ownership and repo settings
+    paths: ["owners.yaml", "README.md"]
+    owners: [pack-steward]
+    min_approvals: 1

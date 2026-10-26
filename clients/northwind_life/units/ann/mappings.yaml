@@ -1,0 +1,266 @@
+# Northwind Annuities: deferred annuity administration platform -> ontology.
+# A newer system with snake_case names, real dates, booleans and rates stored as
+# fractions, and its own codes (MYGA / FIA / RILA, APTP / MPTP, NQ / IRA). Products
+# and advisors resolve to the enterprise product catalog and producer master that
+# LIFE maps (global identity), so the platform's product_id and advisor_id are used as-is.
+
+unit: ANN
+dialect: duckdb
+source_schema: ann_src
+
+classes:
+  # ------------------------------------------------------------------ products
+  AnnuityProduct:
+    table: product
+    note: product_kind MYGA multi-year guaranteed, FIA fixed indexed, RILA registered index-linked. close_date is empty while on sale.
+    slots:
+      id: {column: product_id}
+      name: {column: product_name}
+      line_of_business: {value: individual_annuity}
+      annuity_product_type:
+        expr: "CASE src.product_kind WHEN 'MYGA' THEN 'fixed_deferred' WHEN 'FIA' THEN 'fixed_indexed' WHEN 'RILA' THEN 'registered_index_linked' WHEN 'VA' THEN 'variable' END"
+      writing_company: {column: company_code}
+      surrender_charge_years: {column: surrender_years}
+      effective_date: {column: launch_date}
+      termination_date: {column: close_date}
+
+  CreditingStrategy:
+    table: crediting_option
+    note: >-
+      One row per option per rate sheet (effective_date). method APTP annual
+      point-to-point (with a cap, or uncapped with a participation rate on the risk-control
+      index), MPTP monthly point-to-point (monthly cap), MAVG monthly average, MSC monthly
+      sum cap, FIXED declared rate (the MYGA guarantee or the FIA fixed account). Rates are
+      fractions. buffer is the RILA loss buffer. Codes the decode does not know pass
+      through lower-cased so the conformance check surfaces them.
+    slots:
+      id: {column: option_id}
+      product: {column: product_id}
+      index_name: {column: index_name}
+      crediting_method:
+        expr: >-
+          CASE src.method WHEN 'APTP' THEN 'annual_point_to_point' WHEN 'MPTP' THEN 'monthly_point_to_point'
+          WHEN 'MAVG' THEN 'monthly_average' WHEN 'MSC' THEN 'monthly_sum_cap' WHEN 'FIXED' THEN 'declared_rate'
+          ELSE lower(src.method) END
+      term_years: {column: term_years}
+      cap_rate: {column: cap}
+      participation_rate: {column: participation}
+      spread_rate: {column: spread}
+      floor_rate: {column: floor}
+      buffer_rate: {column: buffer}
+      declared_rate: {column: declared_rate}
+      rate_effective_date: {column: effective_date}
+
+  # ----------------------------------------------------------------- customers
+  InsuredPerson:
+    table: customer
+    where: "customer_type = 'PERSON'"
+    note: >-
+      Owners, annuitants and beneficiaries share one customer table; customer_type
+      PERSON or TRUST. The platform does not capture tobacco use (annuities are not
+      underwritten). gender F / M.
+    slots:
+      id: {column: customer_id}
+      name: {expr: "src.first_name || ' ' || src.last_name"}
+      given_name: {column: first_name}
+      family_name: {column: last_name}
+      birth_date: {column: dob}
+      gender: {expr: "CASE src.gender WHEN 'F' THEN 'female' WHEN 'M' THEN 'male' ELSE 'unknown' END"}
+      smoker_status: {value: unknown}
+      address_state: {column: state}
+
+  ContractParty:
+    table: customer
+    note: org_name holds the name of a trust. ssn_tin is an SSN or EIN.
+    slots:
+      id: {column: customer_id}
+      name: {expr: "coalesce(src.org_name, src.first_name || ' ' || src.last_name)"}
+      party_kind: {expr: "CASE src.customer_type WHEN 'PERSON' THEN 'individual' WHEN 'TRUST' THEN 'trust' WHEN 'ESTATE' THEN 'estate' WHEN 'ENTITY' THEN 'business' END"}
+      birth_date: {column: dob}
+      tax_id: {column: ssn_tin}
+      address_state: {column: state}
+
+  # -------------------------------------------------------------- new business
+  Application:
+    table: application
+    note: >-
+      status SUBMITTED, APPROVED (review passed, contract not yet funded), ISSUED,
+      DECLINED (best-interest review rejected the sale), WITHDRAWN. An annuity is funded
+      at issue, so ISSUED is placed. channel uses the enterprise codes (IBGA, CAREER, BD, BANK).
+    slots:
+      id: {column: app_id}
+      product: {column: product_id}
+      applicant: {column: applicant_id}
+      producer: {column: advisor_id}
+      application_date: {column: signed_date}
+      state_of_issue: {column: state}
+      replacement_indicator: {column: replacement}
+      line_of_business: {value: individual_annuity}
+      distribution_channel: &ann_chnl
+        expr: >-
+          CASE src.channel WHEN 'IBGA' THEN 'independent_bga' WHEN 'CAREER' THEN 'career_agency'
+          WHEN 'BD' THEN 'broker_dealer' WHEN 'BANK' THEN 'bank' WHEN 'DTC' THEN 'direct_to_consumer' END
+      application_status:
+        expr: >-
+          CASE src.status WHEN 'SUBMITTED' THEN 'submitted' WHEN 'APPROVED' THEN 'approved' WHEN 'ISSUED' THEN 'placed'
+          WHEN 'DECLINED' THEN 'declined' WHEN 'WITHDRAWN' THEN 'withdrawn' END
+
+  SuitabilityReview:
+    table: suitability
+    note: >-
+      The home-office best-interest review of every sale. outcome APPROVED, CONDITIONAL
+      (approved after the advisor supplied more documentation), REJECTED, PENDING.
+      reviewed_on is empty while pending.
+    slots:
+      id: {column: review_id}
+      application: {column: app_id}
+      review_outcome:
+        expr: >-
+          CASE src.outcome WHEN 'APPROVED' THEN 'approved' WHEN 'CONDITIONAL' THEN 'approved_with_conditions'
+          WHEN 'REJECTED' THEN 'rejected' WHEN 'PENDING' THEN 'pending_info' END
+      replacement_indicator: {column: replacement}
+      consumer_profile_complete: {column: profile_complete}
+      decision_date: {column: reviewed_on}
+      decision_reason: {column: reviewer_note}
+
+  # ----------------------------------------------------------------- contracts
+  AnnuityContract:
+    table: contract
+    note: >-
+      status ACTIVE, SURRENDERED, EXCHANGED (1035 exchange out), DEATH_CLAIM; status_date
+      is the termination date. phase ACCUM / PAYOUT (annuitized). tax_type NQ, IRA
+      (traditional), ROTH, 401K (qualified plan rollover). option_id is the primary
+      crediting option. single_premium is the initial deposit (cash or 1035 transfer).
+    slots:
+      id: {column: contract_id}
+      contract_number: {column: contract_id}
+      product: {column: product_id}
+      writing_company: {column: company_code}
+      application: {column: app_id}
+      owner: {column: owner_id}
+      annuitant: {column: annuitant_id}
+      producer: {column: advisor_id}
+      issue_date: {column: issue_date}
+      effective_date: {column: issue_date}
+      termination_date: {column: status_date}
+      coverage_status: {expr: "CASE src.status WHEN 'ACTIVE' THEN 'active' ELSE 'terminated' END"}
+      termination_reason:
+        expr: "CASE src.status WHEN 'SURRENDERED' THEN 'surrender' WHEN 'EXCHANGED' THEN 'exchange_1035_out' WHEN 'DEATH_CLAIM' THEN 'death' END"
+      issue_age: {column: issue_age}
+      state_of_issue: {column: issue_state}
+      tax_qualification:
+        expr: "CASE src.tax_type WHEN 'NQ' THEN 'non_qualified' WHEN 'IRA' THEN 'traditional_ira' WHEN 'ROTH' THEN 'roth_ira' WHEN '401K' THEN 'qualified_plan' END"
+      contract_phase: {expr: "CASE src.phase WHEN 'ACCUM' THEN 'accumulation' WHEN 'PAYOUT' THEN 'payout' END"}
+      initial_premium: {column: single_premium}
+      distribution_channel: *ann_chnl
+      crediting_strategy: {column: option_id}
+      operating_unit: {value: ANN}
+      nwl_rate_lock_date: {column: rate_lock_date}
+
+  Rider:
+    table: rider
+    note: >-
+      rider_code GLWB guaranteed lifetime withdrawal benefit, EDB enhanced death benefit,
+      RDB return-of-premium death benefit (RILA). Annuity riders carry a benefit base,
+      not a face amount, so rider_amount stays empty and the base is a unit extension.
+    slots:
+      id: {column: rider_id}
+      contract: {column: contract_id}
+      rider_type:
+        expr: >-
+          CASE src.rider_code WHEN 'GLWB' THEN 'guaranteed_lifetime_withdrawal' WHEN 'EDB' THEN 'guaranteed_minimum_death_benefit'
+          WHEN 'RDB' THEN 'guaranteed_minimum_death_benefit' ELSE lower(src.rider_code) END
+      rider_charge_rate: {column: fee_rate}
+      effective_date: {column: start_date}
+      ann_benefit_base: {column: benefit_base}
+
+  Beneficiary:
+    table: beneficiary
+    note: designation PRIMARY / CONTINGENT; pct is a whole percentage.
+    slots:
+      id: {expr: "src.contract_id || '-' || CAST(src.seq AS VARCHAR)"}
+      contract: {column: contract_id}
+      beneficiary_party: {column: customer_id}
+      beneficiary_designation: {expr: "lower(src.designation)"}
+      share_percent: {column: pct}
+
+  AccountValueSnapshot:
+    table: account_value
+    note: >-
+      Quarter-end values (as_of_date). credited_rate is the rate credited at the last
+      contract anniversary (the declared rate on fixed money); negative when a RILA
+      loss exceeded the buffer. surrender_value is after the surrender charge.
+    slots:
+      id: {expr: "src.contract_id || '-' || CAST(src.as_of_date AS VARCHAR)"}
+      contract: {column: contract_id}
+      valuation_date: {column: as_of_date}
+      account_value: {column: account_value}
+      cash_surrender_value: {column: surrender_value}
+      surrender_charge_amount: {column: surrender_charge}
+      credited_rate: {column: credited_rate}
+
+  ContractTransaction:
+    table: txn
+    note: >-
+      txn_type DEPOSIT, WITHDRAWAL, SURRENDER, 1035_IN, 1035_OUT, RIDER_FEE, ANNUITIZE
+      (account value applied to income), INCOME (annual income payment).
+    slots:
+      id: {column: txn_id}
+      contract: {column: contract_id}
+      transaction_type:
+        expr: >-
+          CASE src.txn_type WHEN 'DEPOSIT' THEN 'premium' WHEN 'WITHDRAWAL' THEN 'partial_withdrawal'
+          WHEN 'SURRENDER' THEN 'full_surrender' WHEN '1035_IN' THEN 'exchange_1035_in' WHEN '1035_OUT' THEN 'exchange_1035_out'
+          WHEN 'RIDER_FEE' THEN 'rider_charge' WHEN 'ANNUITIZE' THEN 'annuitization' WHEN 'INCOME' THEN 'income_payment' END
+      transaction_date: {column: txn_date}
+      transaction_amount: {column: amount}
+
+  CommissionPayment:
+    table: commission
+    note: comm_type UPFRONT (on premium at issue), TRAIL (bank channel, on account value), BONUS, CHARGEBACK (negative).
+    slots:
+      id: {column: comm_id}
+      contract: {column: contract_id}
+      producer: {column: advisor_id}
+      commission_type: {expr: "lower(src.comm_type)"}
+      payment_date: {column: paid_on}
+      commission_amount: {column: amount}
+
+  # --------------------------------------------------------------------- claims
+  DeathClaim:
+    table: death_claim
+    note: >-
+      Claims on the death of the annuitant. status OPEN, REVIEW, APPROVED, PAID, DENIED.
+      Annuities have no contestable period. The benefit is the account value, or the
+      return-of-premium amount when an RDB rider applies.
+    slots:
+      id: {column: claim_id}
+      contract: {column: contract_id}
+      date_of_death: {column: date_of_death}
+      cause_of_death: {column: cause}
+      received_date: {column: notified_on}
+      claim_status:
+        expr: >-
+          CASE src.status WHEN 'OPEN' THEN 'reported' WHEN 'REVIEW' THEN 'in_review' WHEN 'APPROVED' THEN 'approved'
+          WHEN 'PAID' THEN 'paid' WHEN 'DENIED' THEN 'denied' END
+      contestable: {column: contestable}
+      death_benefit_amount: {column: benefit_amount}
+      total_paid_amount: {column: paid_amount}
+      paid_date: {column: paid_on}
+      claimant: {column: claimant_id}
+
+  # -------------------------------------------------------------------- finance
+  StatutoryReserve:
+    table: reserve
+    note: >-
+      Year-end and 2026 quarter-end statutory reserves. method CARVM (accumulation),
+      VM22 (annuitized contracts valued at the Valuation Manual section 22 maximum
+      valuation interest rates). mortality_basis 12IAM. Codes the decode does not know
+      pass through lower-cased so the conformance check surfaces them.
+    slots:
+      id: {expr: "src.contract_id || '-' || CAST(src.valuation_date AS VARCHAR)"}
+      contract: {column: contract_id}
+      valuation_date: {column: valuation_date}
+      reserve_method: {expr: "CASE src.method WHEN 'CARVM' THEN 'carvm' WHEN 'VM22' THEN 'vm22' ELSE lower(src.method) END"}
+      mortality_table: {expr: "CASE src.mortality_basis WHEN '12IAM' THEN 'annuity_2012_iam' ELSE lower(src.mortality_basis) END"}
+      reserve_amount: {column: reserve}

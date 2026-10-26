@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Context Studio: walkthrough</title>
+<style>
+  :root { --ink:#1c1c1a; --ink2:#3d3c38; --muted:#6b6960; --line:#d9d6cd; --ground:#f6f5f1; --panel:#fff;
+          --accent:#1f4fbf; --accentSoft:#e6ebf7; --ok:#23603a; --okSoft:#eaf5ee; --warn:#8a5a12; --warnSoft:#fcf3e2; --raw:#c76a1d; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font: 16px/1.6 "IBM Plex Sans", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  header { background: #15233f; color: #fff; padding: 56px 0 48px; }
+  header .kicker { letter-spacing: .14em; text-transform: uppercase; font-size: 12px; color: #a9b8db; font-weight: 600; }
+  header h1 { font-size: 40px; line-height: 1.15; margin: 10px 0 14px; font-weight: 600; max-width: 820px; }
+  header p { font-size: 18px; color: #d7deee; max-width: 760px; margin: 0; }
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+  .pills span { border: 1px solid #3c4f7a; color: #d7deee; border-radius: 999px; padding: 4px 12px; font-size: 13px; }
+  section { padding: 48px 0 8px; }
+  h2 { font-size: 28px; margin: 0 0 6px; font-weight: 600; }
+  h2 .n { display: inline-flex; width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 17px; align-items: center; justify-content: center; margin-right: 10px; vertical-align: 3px; }
+  .lede { color: var(--ink2); font-size: 17px; max-width: 820px; margin: 0 0 22px; }
+  figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  figure img { display: block; width: 100%; height: auto; }
+  figcaption { padding: 10px 16px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); }
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin: 22px 0 0; padding: 0; list-style: none; counter-reset: s; }
+  .steps li { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; font-size: 14.5px; color: var(--ink2); counter-increment: s; }
+  .steps li b { display: block; color: var(--ink); font-size: 15px; margin-bottom: 2px; }
+  .steps li b::before { content: counter(s) ". "; color: var(--accent); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 22px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+  .card h3 { margin: 0 0 4px; font-size: 16px; }
+  .card .big { font-size: 34px; font-weight: 600; font-variant-numeric: tabular-nums; margin: 6px 0 2px; }
+  .tag { display: inline-block; border-radius: 999px; font-size: 12.5px; padding: 2px 10px; font-weight: 500; }
+  .tag.ok { background: var(--okSoft); color: var(--ok); } .tag.bad { background: #fbe9e7; color: #9b2c2c; }
+  .runs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .runs span { font-variant-numeric: tabular-nums; font-size: 13px; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
+  .gov { border-top: 4px solid var(--accent); } .raw { border-top: 4px solid var(--raw); }
+  .why { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 16px; }
+  .why .card ul { margin: 8px 0 0; padding-left: 18px; color: var(--ink2); font-size: 14.5px; }
+  pre { background: #f2f1ec; border-radius: 8px; padding: 12px 14px; font: 12.5px/1.5 "IBM Plex Mono", ui-monospace, Menlo, monospace; overflow-x: auto; margin: 10px 0 0; color: var(--ink2); }
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-top: 1px solid var(--line); }
+  th { background: #f2f1ec; font-weight: 600; border-top: 0; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .layers { display: grid; gap: 8px; margin-top: 18px; }
+  .layer { display: grid; grid-template-columns: 210px 1fr; gap: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; font-size: 14.5px; }
+  .layer b { display: flex; align-items: center; gap: 8px; } .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .note { background: var(--warnSoft); color: var(--warn); border-radius: 10px; padding: 14px 18px; font-size: 14px; margin-top: 26px; }
+  footer { padding: 40px 0 56px; color: var(--muted); font-size: 13px; }
+  @media (max-width: 640px) { header h1 { font-size: 30px; } .layer { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="kicker">Tiger Analytics · Enterprise context layer</div>
+    <h1>Context Studio: keep the business's definitions right, and get the same governed answer every time</h1>
+    <p>A curator agent reads the company's documents and data, finds what changed, proves it, and asks the right owner to approve. Business owners review in plain language; every change is versioned and reversible. AI agents then answer through the approved ontology and governed metrics, so the same question gets the same number.</p>
+    <div class="pills"><span>Ontology</span><span>Semantic layer</span><span>Agentic curator</span><span>Owner approvals</span><span>Built on tiger-agent</span></div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <h2><span class="n">1</span>How the curator works</h2>
+    <p class="lede">The curator reads every document once, links what it finds to the ontology, checks it against the data, and decides: draft a change, ask an owner, or set it aside with a reason. Here it finds one sentence on page 3 of a regulatory bulletin among 12 documents.</p>
+    <figure><img alt="The curator reads documents, drafts the PFAS proposal, the owner reviews and approves it" src="data:image/webp;base64,{{CURATOR}}"><figcaption>Recorded in Context Studio on synthetic data (Summit Specialty Group, a fictional carrier).</figcaption></figure>
+    <ol class="steps">
+      <li><b>Reads the documents</b>12 documents: bulletins, manuals, a treaty, a bordereau spec, plus decoys such as news and an underwriting rule.</li>
+      <li><b>Finds the needle</b>"Insurers shall code PFAS claims under a separate cause-of-loss code" on page 3 of a state bulletin.</li>
+      <li><b>Proves it in the data</b>5 claims in one unit already carry the code PFAS that the ontology does not recognise.</li>
+      <li><b>Drafts and checks</b>The change is drafted and every check runs: the ontology builds, metrics resolve, SQL compiles on all platforms, totals reconcile.</li>
+      <li><b>Routes to the owner</b>A regulator's rule applies industry-wide, so it goes to the industry pack's owner, who can ask the curator why before approving.</li>
+      <li><b>Goes live, with history</b>Approved changes go live with who approved them and the source page. Any change can be undone, through another approval.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2><span class="n">2</span>How a business owner uses it</h2>
+    <p class="lede">Owners never see the plumbing. They see proposals in their inbox, with the source quote, the proof in the data and the impact on governed numbers, and they approve, ask for changes or answer the curator's questions. They can also suggest changes themselves.</p>
+    <figure><img alt="A data steward approves a claim-status proposal, answers a curator question and suggests a new definition" src="data:image/webp;base64,{{SME}}"><figcaption>Signed in as the client's data steward: approve, answer, suggest.</figcaption></figure>
+    <ol class="steps">
+      <li><b>Approves a proposal</b>A new claim status (suspended, litigation hold) from the claims manual, with every check green.</li>
+      <li><b>Answers a question</b>The curator did not guess on a treaty change (wildfire 72 hours to 168 hours, page 41). It asked; the owner answers.</li>
+      <li><b>Suggests a change</b>The steward rewrites the business definition of Claim File; it becomes a proposal, checked and routed like any other.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2><span class="n">3</span>Same question, same answer, every time</h2>
+    <p class="lede">Two LangGraph agents, with the same model, answer the same question five times each. The governed agent resolves business words through the ontology and computes through the semantic layer. The raw-data agent writes its own SQL over the source tables.</p>
+    <figure><img alt="Consistency lab: the governed agent returns 57.1 percent five times; the raw-data agent returns three different answers" src="data:image/webp;base64,{{LAB}}"><figcaption>"What is our loss and ALAE ratio for the Harbor Program Group unit?", asked 5 times to each agent.</figcaption></figure>
+    <div class="cards">
+      <div class="card gov"><h3>Governed agent</h3><div class="big">57.1%</div><span class="tag ok">1 distinct answer in 5 runs</span>
+        <div class="runs">{{GOV_RUNS}}</div></div>
+      <div class="card raw"><h3>Raw-data agent</h3><div class="big">93.2% – 374.9%</div><span class="tag bad">3 distinct answers in 5 runs</span>
+        <div class="runs">{{RAW_RUNS}}</div></div>
+    </div>
+    <div class="why">
+      <div class="card"><h3>Why the governed answer repeats</h3><ul>
+        <li>The ontology resolves "Harbor Program Group" and "loss and ALAE" to one concept, one unit and one set of joins.</li>
+        <li>The semantic layer computes one governed definition (reported incurred loss and ALAE over earned premium) at the governed valuation date, 2026-06-30. It is never re-derived in SQL.</li>
+        <li>Definitions are pinned to the approved content version. Change a definition and the answer changes for everyone, through an approved proposal.</li>
+      </ul></div>
+      <div class="card"><h3>Why the raw answers drift</h3><ul>
+        <li>The program administrator sends a cumulative monthly bordereau. Summing it across months counts the same claims many times.</li>
+        <li>Each run picks its own premium (written versus earned), joins and date logic.</li>
+        <li>Nothing tells it which definition the business signed off.</li>
+      </ul>
+      <pre>SELECT SUM(PAID_TD), SUM(EXP_PAID_TD) ...
+FROM hpg.BDX_CLAIMS            -- cumulative snapshots, summed
+WHERE BDX_MONTH &lt;= '2026-06-30'</pre></div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">4</span>What sits underneath</h2>
+    <p class="lede">Every client's ontology is built in four layers. Each layer only adds or narrows, never renames, so everything built on a lower layer keeps working.</p>
+    <div class="layers">
+      <div class="layer"><b><span class="dot" style="background:#2b2a27"></span>Kernel</b>What every insurance line shares: party, product, coverage, claim, decision.</div>
+      <div class="layer"><b><span class="dot" style="background:#6f8fdc"></span>Industry pack</b>Commercial P&amp;C, health (commercial and Medicare Advantage), life and annuity, each with its concepts and governed metrics.</div>
+      <div class="layer"><b><span class="dot" style="background:#23806e"></span>Client overlay</b>The company's own words and rules, as a short reviewable list of differences.</div>
+      <div class="layer"><b><span class="dot" style="background:#b8433b"></span>Units</b>Each operating unit maps its own source system onto the shared concepts.</div>
+    </div>
+    <p class="lede" style="margin-top:22px">The curator, measured against answer keys of planted changes and decoys, on three reference clients:</p>
+    <table>
+      <thead><tr><th>Reference client</th><th>Line</th><th>Real changes found</th><th>Decoys acted on</th></tr></thead>
+      <tbody>
+        <tr><td>Summit Specialty Group</td><td>Commercial P&amp;C</td><td class="num">7 of 7</td><td class="num">0</td></tr>
+        <tr><td>Meridian Health Plan</td><td>Healthcare (commercial and Medicare Advantage)</td><td class="num">8 of 8</td><td class="num">0</td></tr>
+        <tr><td>Northwind Life &amp; Annuity</td><td>Life and annuity</td><td class="num">9 of 9</td><td class="num">0</td></tr>
+      </tbody>
+    </table>
+    <div class="note">All companies, people, documents and data shown here are fictional and synthetic, generated by Tiger Analytics for demonstration. Regulatory references (for example CMS-0057-F and the CMS-HCC V28 transition) are real; the documents that cite them are not. Each curator result above is from a single run, and LLM output can vary between runs.</div>
+  </section>
+</main>
+<footer><div class="wrap">Tiger Analytics · Context Studio walkthrough · {{DATE}}</div></footer>
+</body>
+</html>

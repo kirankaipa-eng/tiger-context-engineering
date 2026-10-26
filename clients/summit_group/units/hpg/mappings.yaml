@@ -1,0 +1,175 @@
+# Harbor Program Group: program business known ONLY through monthly bordereaux.
+#
+# There is no policy system here. Policies, coverage parts and premium
+# transactions are derived from the premium bordereau; claims are derived from
+# cumulative monthly claim snapshots, and financial transactions are the
+# month-over-month deltas of paid / outstanding / recovered, so the unit reconciles
+# with the transactional units on the same definitions.
+
+unit: HPG
+dialect: duckdb
+source_schema: hpg
+
+classes:
+  Program:
+    table: PGM_MASTER
+    slots:
+      id: {column: PGM_CD}
+      name: {column: PGM_NM}
+      program_administrator: {column: PA_ID}
+      operating_unit: {value: HPG}
+      class_focus: {column: CLASS_FOCUS}
+      binding_authority: {expr: "CASE src.AUTH WHEN 'FULL' THEN 'full' WHEN 'LTD' THEN 'limited' ELSE 'quote_only' END"}
+      commission_rate: {column: COMM_PCT}
+      effective_date: {column: START_DT}
+      termination_date: {column: END_DT}
+
+  Insured:
+    note: Insureds de-duplicated from certificate numbers on the premium bordereau (one insured across renewal terms).
+    query: |
+      SELECT regexp_replace(CERT_NO, '-[0-9]+$', '') AS INS_ID,
+             max(INSURED_NM) AS INSURED_NM, max(INSURED_ST) AS INSURED_ST, max(NAICS) AS NAICS
+      FROM hpg.BDX_PREMIUM
+      GROUP BY 1
+    slots:
+      id: {column: INS_ID}
+      name: {column: INSURED_NM}
+      naics_code: {column: NAICS}
+      mailing_state: {column: INSURED_ST}
+
+  Policy:
+    note: One policy term per bordereau certificate; renewal chain rebuilt from the certificate term index.
+    query: |
+      SELECT b.CERT_NO, b.PGM_CD, m.PA_ID,
+             regexp_replace(b.CERT_NO, '-[0-9]+$', '') AS INS_ID,
+             CAST(regexp_extract(b.CERT_NO, '-([0-9]+)$', 1) AS INTEGER) AS TERM_IDX,
+             min(b.POL_EFF) AS POL_EFF, max(b.POL_EXP) AS POL_EXP,
+             sum(b.GROSS_PREM) AS WRITTEN
+      FROM hpg.BDX_PREMIUM b JOIN hpg.PGM_MASTER m ON m.PGM_CD = b.PGM_CD
+      GROUP BY b.CERT_NO, b.PGM_CD, m.PA_ID
+    query_postgres: |
+      SELECT b.CERT_NO, b.PGM_CD, m.PA_ID,
+             regexp_replace(b.CERT_NO, '-[0-9]+$', '') AS INS_ID,
+             CAST(substring(b.CERT_NO from '-([0-9]+)$') AS INTEGER) AS TERM_IDX,
+             min(b.POL_EFF) AS POL_EFF, max(b.POL_EXP) AS POL_EXP,
+             sum(b.GROSS_PREM) AS WRITTEN
+      FROM hpg.BDX_PREMIUM b JOIN hpg.PGM_MASTER m ON m.PGM_CD = b.PGM_CD
+      GROUP BY b.CERT_NO, b.PGM_CD, m.PA_ID
+    slots:
+      id: {column: CERT_NO}
+      policy_number: {column: CERT_NO}
+      insured: {column: INS_ID}
+      producer: {column: PA_ID}
+      operating_unit: {value: HPG}
+      writing_company: {value: SNIC}
+      program: {column: PGM_CD}
+      effective_date: {column: POL_EFF}
+      termination_date: {column: POL_EXP}
+      coverage_status:
+        expr: "CASE WHEN src.POL_EFF > current_date THEN 'pending' WHEN src.POL_EXP <= current_date THEN 'expired' ELSE 'active' END"
+      market_type: {value: admitted}
+      policy_form: {value: occurrence}
+      new_renewal: {expr: "CASE WHEN src.TERM_IDX = 0 THEN 'new' ELSE 'renewal' END"}
+      renewal_of:
+        expr: "CASE WHEN src.TERM_IDX > 0 THEN src.INS_ID || '-' || CAST(src.TERM_IDX - 1 AS VARCHAR) END"
+      written_premium: {column: WRITTEN}
+
+  CoveragePart:
+    note: Coverage parts aggregated from premium bordereau rows per certificate and coverage.
+    query: |
+      SELECT CERT_NO, COVERAGE, max(LIMIT_OCC) AS LIMIT_OCC, max(LIMIT_AGG) AS LIMIT_AGG, max(DED) AS DED,
+             sum(GROSS_PREM) AS PREM, max(INSURED_ST) AS ST, max(NAICS) AS NAICS
+      FROM hpg.BDX_PREMIUM
+      GROUP BY CERT_NO, COVERAGE
+    slots:
+      id: {expr: "src.CERT_NO || '-' || src.COVERAGE"}
+      policy: {column: CERT_NO}
+      coverage_line: &hpg_cov
+        expr: "CASE src.COVERAGE WHEN 'GL' THEN 'general_liability' WHEN 'PROP' THEN 'commercial_property' WHEN 'AUTO' THEN 'commercial_auto' END"
+      class_code: {column: NAICS}
+      class_code_system: {value: naics}
+      occurrence_limit: {column: LIMIT_OCC}
+      aggregate_limit: {column: LIMIT_AGG}
+      deductible: {column: DED}
+      written_premium: {column: PREM}
+      rating_state: {column: ST}
+
+  PolicyTransaction:
+    note: Each premium bordereau row becomes a premium transaction, booked at bordereau month-end.
+    query: |
+      SELECT *, row_number() OVER (PARTITION BY CERT_NO ORDER BY TRANS_EFF, TRANS_TYPE, GROSS_PREM) AS SEQ
+      FROM hpg.BDX_PREMIUM
+    slots:
+      id: {expr: "src.CERT_NO || '-T' || CAST(src.SEQ AS VARCHAR)"}
+      policy: {column: CERT_NO}
+      coverage_part: {expr: "src.CERT_NO || '-' || src.COVERAGE"}
+      transaction_type:
+        expr: "CASE src.TRANS_TYPE WHEN 'NEW' THEN 'new_business' WHEN 'REN' THEN 'renewal' WHEN 'MTA' THEN 'endorsement' WHEN 'CXL' THEN 'cancellation' END"
+      transaction_effective_date: {column: TRANS_EFF}
+      booked_date: {expr: "last_day(src.BDX_MONTH)"}
+      written_premium_change: {column: GROSS_PREM}
+      hpg_bordereau_month: {column: BDX_MONTH}
+
+  CommercialClaim:
+    note: Claims bordereau is cumulative monthly snapshots; the claim record is the latest snapshot per claim, including claims that have since dropped off the bordereau.
+    query: |
+      SELECT * FROM (
+        SELECT c.*, row_number() OVER (PARTITION BY c.CLAIM_REF ORDER BY c.BDX_MONTH DESC) AS RN
+        FROM hpg.BDX_CLAIMS c
+      ) latest WHERE RN = 1
+    slots:
+      id: {column: CLAIM_REF}
+      claim_number: {column: CLAIM_REF}
+      policy: {column: CERT_NO}
+      coverage_line:
+        expr: "CASE src.PGM_CD WHEN 'CRP' THEN 'general_liability' WHEN 'HAB' THEN 'commercial_property' WHEN 'TRN' THEN 'commercial_auto' END"
+      loss_date: {column: LOSS_DT}
+      received_date: {column: REPORTED_DT}
+      cause_of_loss:
+        expr: >-
+          CASE src.CAUSE_CD WHEN 'BI' THEN 'bodily_injury' WHEN 'PD' THEN 'property_damage_liability'
+          WHEN 'FIRE' THEN 'fire' WHEN 'WATER' THEN 'water_damage' WHEN 'WIND' THEN 'wind_hail'
+          WHEN 'HAIL' THEN 'wind_hail' WHEN 'SCS' THEN 'wind_hail' WHEN 'COLL' THEN 'auto_collision'
+          ELSE lower(src.CAUSE_CD) END
+      loss_state: {column: LOSS_ST}
+      catastrophe_event: {column: CAT_CD}
+      litigated: {expr: "src.IN_LITIGATION = 'Y'"}
+      handling_type: {value: program_administrator}
+      claim_status:
+        expr: "CASE WHEN src.STATUS = 'OPEN' THEN 'open' WHEN src.PAID_TD = 0 THEN 'closed_without_payment' ELSE 'closed' END"
+      closed_date: {expr: "CASE WHEN src.STATUS = 'CLOSED' THEN last_day(src.BDX_MONTH) END"}
+      total_paid_amount: {column: PAID_TD}
+
+  Claimant:
+    query: |
+      SELECT DISTINCT CLAIM_REF, CLAIMANT FROM hpg.BDX_CLAIMS
+    slots:
+      id: {expr: "src.CLAIM_REF || '-1'"}
+      name: {column: CLAIMANT}
+
+  ClaimFinancialTransaction:
+    note: Cumulative snapshots converted to incremental transactions (month-over-month deltas of paid, outstanding and recoveries), so closed claims keep their full history.
+    query: |
+      WITH snap AS (
+        SELECT CLAIM_REF, BDX_MONTH,
+               PAID_TD     - coalesce(lag(PAID_TD)     OVER (PARTITION BY CLAIM_REF ORDER BY BDX_MONTH), 0) AS D_PAID,
+               OS_RESERVE  - coalesce(lag(OS_RESERVE)  OVER (PARTITION BY CLAIM_REF ORDER BY BDX_MONTH), 0) AS D_OS,
+               EXP_PAID_TD - coalesce(lag(EXP_PAID_TD) OVER (PARTITION BY CLAIM_REF ORDER BY BDX_MONTH), 0) AS D_EPAID,
+               EXP_OS      - coalesce(lag(EXP_OS)      OVER (PARTITION BY CLAIM_REF ORDER BY BDX_MONTH), 0) AS D_EOS,
+               RECOVERY_TD - coalesce(lag(RECOVERY_TD) OVER (PARTITION BY CLAIM_REF ORDER BY BDX_MONTH), 0) AS D_REC
+        FROM hpg.BDX_CLAIMS
+      )
+      SELECT CLAIM_REF, BDX_MONTH, 'PMT' AS TYP, 'LOSS' AS COST, D_PAID  AS AMT FROM snap WHERE D_PAID  <> 0
+      UNION ALL SELECT CLAIM_REF, BDX_MONTH, 'RSV', 'LOSS', D_OS    FROM snap WHERE D_OS    <> 0
+      UNION ALL SELECT CLAIM_REF, BDX_MONTH, 'PMT', 'EXP',  D_EPAID FROM snap WHERE D_EPAID <> 0
+      UNION ALL SELECT CLAIM_REF, BDX_MONTH, 'RSV', 'EXP',  D_EOS   FROM snap WHERE D_EOS   <> 0
+      UNION ALL SELECT CLAIM_REF, BDX_MONTH, 'REC', 'LOSS', D_REC   FROM snap WHERE D_REC   <> 0
+    slots:
+      id: {expr: "src.CLAIM_REF || '-' || strftime(src.BDX_MONTH, '%Y%m') || '-' || src.TYP || '-' || src.COST"}
+      claim: {column: CLAIM_REF}
+      transaction_date: {expr: "last_day(src.BDX_MONTH)"}
+      financial_type: {expr: "CASE src.TYP WHEN 'RSV' THEN 'reserve_change' WHEN 'PMT' THEN 'payment' ELSE 'recovery' END"}
+      cost_category: {expr: "CASE src.COST WHEN 'LOSS' THEN 'loss' ELSE 'alae' END"}
+      recovery_type: {expr: "CASE WHEN src.TYP = 'REC' THEN 'salvage' END"}
+      amount: {column: AMT}
+      hpg_claim_bordereau_month: {column: BDX_MONTH}

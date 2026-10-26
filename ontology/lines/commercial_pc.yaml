@@ -1,0 +1,1023 @@
+id: https://ontology.tigeranalytics.com/insurance/commercial-pc
+name: commercial_pc
+title: Commercial & Specialty P&C Pack (L2)
+description: >-
+  Commercial and specialty property & casualty: submission-to-bind underwriting,
+  policy and coverage-part structure (limits, retentions, attachment points,
+  exposure bases), premium transactions, claims with exposures (features) and
+  financial transactions, catastrophe events, program business, reinsurance
+  cessions, and reserve (IBNR) estimates. Built for decentralized carriers:
+  every record carries its operating unit and source system. Form references
+  (ACORD 125/126/140) are recorded as annotations only; ACORD content is licensed.
+version: 0.1.0
+license: Apache-2.0
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ins: https://ontology.tigeranalytics.com/insurance/core/
+  pc: https://ontology.tigeranalytics.com/insurance/commercial-pc/
+  schema: http://schema.org/
+  fhir: http://hl7.org/fhir/
+default_prefix: pc
+default_range: string
+
+imports:
+  - linkml:types
+  - ../core/core
+
+classes:
+
+  # ================================================================ parties
+
+  Insured:
+    is_a: Organization
+    description: The business being insured (the named insured).
+    aliases: [named insured, account, risk]
+    annotations:
+      form_reference: "ACORD 125 applicant section"
+    slots:
+      - dba_name
+      - naics_code
+      - years_in_business
+      - annual_revenue
+      - employee_count
+      - operations_description
+      - mailing_state
+
+  Claimant:
+    is_a: Person
+    description: A person or business asserting a loss against a policy.
+    slots:
+      - claimant_type
+      - represented_by_counsel
+
+  # ============================================================ underwriting
+
+  Program:
+    is_a: Entity
+    description: >-
+      A book of homogeneous business written through a program administrator or
+      MGA under delegated authority, typically reported by bordereau.
+    aliases: [program business, delegated authority program]
+    slots:
+      - name
+      - program_administrator
+      - operating_unit
+      - class_focus
+      - binding_authority
+      - commission_rate
+      - effective_date
+      - termination_date
+
+  Submission:
+    is_a: Entity
+    description: >-
+      A request from a producer to quote a risk. Enters intake, is cleared
+      against existing submissions, screened against the unit's appetite, and
+      either declined, quoted, or bound.
+    annotations:
+      form_reference: "ACORD 125 / 126 / 140 plus SOV and loss runs"
+    slots:
+      - insured
+      - producer
+      - operating_unit
+      - program
+      - received_date
+      - requested_effective_date
+      - requested_lines
+      - submission_status
+      - clearance_status
+      - appetite_verdict
+      - decline_reason
+      - total_insured_value
+      - target_premium
+      - prior_carrier
+      - renewal_of
+    slot_usage:
+      received_date:
+        required: true
+      operating_unit:
+        required: true
+      submission_status:
+        required: true
+
+  Quote:
+    is_a: Entity
+    description: A priced offer for a submission.
+    slots:
+      - submission
+      - quote_date
+      - coverage_line
+      - quoted_premium
+      - quote_status
+    slot_usage:
+      submission:
+        required: true
+
+  UnderwritingDecision:
+    is_a: Decision
+    description: >-
+      A recorded underwriting determination on a submission (clearance,
+      appetite, referral, authority, pricing) with the rule that fired and the
+      authority it was taken under. The audit trail regulators and reinsurers ask for.
+    slots:
+      - submission
+      - decision_type
+      - decision_outcome
+      - rule_id
+      - rule_pack_version
+      - authority_level
+      - decided_by_role
+    slot_usage:
+      submission:
+        required: true
+      decision_outcome:
+        required: true
+
+  PriorLossExperience:
+    is_a: Entity
+    description: >-
+      One policy year of an insured's loss history as reported on a prior
+      carrier's loss run.
+    aliases: [loss run year, loss history]
+    slots:
+      - insured
+      - submission
+      - policy_year
+      - prior_carrier
+      - claim_count
+      - paid_amount
+      - reserved_amount
+      - valuation_date
+
+  RiskLocation:
+    is_a: Entity
+    description: >-
+      A scheduled location with insured values and property characteristics
+      (one row of a statement of values).
+    aliases: [SOV row, schedule of locations, premises]
+    annotations:
+      form_reference: "ACORD 140 / statement of values"
+    slots:
+      - insured
+      - policy
+      - submission
+      - location_number
+      - address_state
+      - postal_code
+      - construction_class
+      - occupancy
+      - year_built
+      - sprinklered
+      - protection_class
+      - building_value
+      - contents_value
+      - business_income_value
+      - total_insured_value
+      - cat_peril_zone
+
+  # ======================================================== policy admin
+
+  CommercialProduct:
+    is_a: Product
+    description: A filed or unfiled commercial insurance product.
+    slots:
+      - market_type
+      - coverage_lines
+
+  Policy:
+    is_a: Coverage
+    description: >-
+      A policy term issued to an insured. Inherits product, effective and
+      termination (expiration) dates, and status from Coverage.
+    aliases: [policy term, contract]
+    slots:
+      - policy_number
+      - insured
+      - producer
+      - operating_unit
+      - writing_company
+      - program
+      - market_type
+      - policy_form
+      - retroactive_date
+      - new_renewal
+      - renewal_of
+      - written_premium
+      - audit_basis
+      - cancellation_reason
+    slot_usage:
+      policy_number:
+        required: true
+      insured:
+        required: true
+      operating_unit:
+        required: true
+      effective_date:
+        required: true
+      termination_date:
+        required: true
+        description: Policy expiration date.
+
+  CoveragePart:
+    is_a: Entity
+    description: >-
+      One line of coverage on a policy with its limits, retention, exposure and
+      rating basis. Package and multi-line policies have several.
+    aliases: [coverage, policy line, coverage section]
+    slots:
+      - policy
+      - coverage_line
+      - class_code
+      - class_code_system
+      - exposure_basis
+      - exposure_amount
+      - rate
+      - occurrence_limit
+      - aggregate_limit
+      - deductible
+      - self_insured_retention
+      - attachment_point
+      - written_premium
+      - rating_state
+    slot_usage:
+      policy:
+        required: true
+      coverage_line:
+        required: true
+
+  PolicyTransaction:
+    is_a: Entity
+    description: >-
+      A premium-bearing change to a policy: new business, renewal, endorsement,
+      cancellation, reinstatement, or premium audit. Written premium is the sum
+      of these; earned premium is derived by earning each one over the term.
+    aliases: [premium transaction, endorsement, booking]
+    slots:
+      - policy
+      - coverage_part
+      - transaction_type
+      - transaction_effective_date
+      - booked_date
+      - written_premium_change
+    slot_usage:
+      policy:
+        required: true
+      transaction_type:
+        required: true
+      transaction_effective_date:
+        required: true
+      written_premium_change:
+        required: true
+
+  # ================================================================ claims
+
+  CommercialClaim:
+    is_a: Claim
+    description: >-
+      A reported loss under a commercial policy. Financials live on
+      ClaimFinancialTransaction; exposures (features) split the claim by
+      claimant and coverage.
+    aliases: [claim, loss, file]
+    exact_mappings:
+      - fhir:Claim
+    slots:
+      - claim_number
+      - policy
+      - coverage_line
+      - loss_date
+      - loss_description
+      - cause_of_loss
+      - loss_state
+      - catastrophe_event
+      - litigated
+      - coverage_position
+      - claim_handler
+      - handling_type
+      - closed_date
+    slot_usage:
+      received_date:
+        description: Date the loss was reported to the carrier.
+        required: true
+      claim_status:
+        range: PCClaimStatusEnum
+        required: true
+      policy:
+        required: true
+      loss_date:
+        required: true
+
+  ClaimExposure:
+    is_a: Entity
+    description: >-
+      A feature of a claim: one claimant x one coverage x one type of damage,
+      reserved and paid independently.
+    aliases: [feature, exposure, coverage line on claim]
+    slots:
+      - claim
+      - claimant
+      - coverage_line
+      - exposure_type
+      - exposure_status
+    slot_usage:
+      claim:
+        required: true
+
+  ClaimFinancialTransaction:
+    is_a: Entity
+    description: >-
+      A movement on a claim: a change to the case reserve, a payment, or a
+      recovery. Case reserve outstanding = sum of reserve changes; incurred =
+      paid + outstanding - recoveries.
+    aliases: [claim transaction, reserve change, claim payment]
+    slots:
+      - claim
+      - claim_exposure
+      - transaction_date
+      - financial_type
+      - cost_category
+      - recovery_type
+      - amount
+    slot_usage:
+      claim:
+        required: true
+      transaction_date:
+        required: true
+      financial_type:
+        required: true
+      cost_category:
+        required: true
+      amount:
+        required: true
+
+  CatastropheEvent:
+    is_a: Entity
+    description: A designated catastrophe event that losses are coded to.
+    annotations:
+      identity_scope: global
+    slots:
+      - event_code
+      - name
+      - peril
+      - event_start_date
+      - event_end_date
+      - affected_states
+
+  # =================================================== reinsurance & reserving
+
+  ReinsuranceTreaty:
+    is_a: Entity
+    description: A reinsurance contract ceding part of a portfolio's risk.
+    annotations:
+      identity_scope: global
+    slots:
+      - name
+      - treaty_type
+      - operating_unit
+      - effective_date
+      - termination_date
+      - retention_amount
+      - limit_amount
+      - cession_rate
+      - covered_lines
+      - reinsurers
+
+  Cession:
+    is_a: Entity
+    description: Premium or loss ceded from a policy or claim to a treaty.
+    slots:
+      - treaty
+      - policy
+      - claim
+      - cession_date
+      - ceded_premium
+      - ceded_loss
+
+  ReserveEstimate:
+    is_a: Entity
+    description: >-
+      An actuarial IBNR estimate for a reserving segment (operating unit x
+      coverage line x accident year) at a valuation date.
+    aliases: [IBNR, bulk reserve, actuarial reserve]
+    annotations:
+      identity_scope: global
+    slots:
+      - operating_unit
+      - coverage_line
+      - accident_year
+      - valuation_date
+      - ibnr_amount
+      - reserving_method
+      - selected
+    slot_usage:
+      accident_year:
+        required: true
+      valuation_date:
+        required: true
+      ibnr_amount:
+        required: true
+
+slots:
+  # ---------------------------------------------------------------- parties
+  dba_name:
+  naics_code:
+    description: 2022 NAICS industry code (2-6 digits).
+    pattern: "^[0-9]{2,6}$"
+  years_in_business:
+    range: integer
+    minimum_value: 0
+  annual_revenue:
+    range: decimal
+    minimum_value: 0
+  employee_count:
+    range: integer
+    minimum_value: 0
+  operations_description:
+    description: Free-text description of operations from the application.
+  mailing_state:
+    pattern: "^[A-Z]{2}$"
+  claimant_type:
+    range: ClaimantTypeEnum
+  represented_by_counsel:
+    range: boolean
+    description: Claimant has retained an attorney (a leading severity indicator).
+
+  # ------------------------------------------------------------ references
+  insured:
+    range: Insured
+  producer:
+    range: Producer
+  program_administrator:
+    range: Producer
+  operating_unit:
+    range: OperatingUnit
+  writing_company:
+    range: WritingCompany
+  program:
+    range: Program
+  submission:
+    range: Submission
+  policy:
+    range: Policy
+  renewal_of:
+    range: Policy
+    description: The expiring policy this one renews.
+  coverage_part:
+    range: CoveragePart
+  claim:
+    range: CommercialClaim
+  claim_exposure:
+    range: ClaimExposure
+  claimant:
+    range: Claimant
+  catastrophe_event:
+    range: CatastropheEvent
+  treaty:
+    range: ReinsuranceTreaty
+
+  # ---------------------------------------------------------- underwriting
+  class_focus:
+    description: Classes of business the program targets.
+  binding_authority:
+    range: BindingAuthorityEnum
+  commission_rate:
+    range: decimal
+    minimum_value: 0
+    maximum_value: 1
+  requested_effective_date:
+    range: date
+  requested_lines:
+    range: CoverageLineEnum
+    multivalued: true
+  submission_status:
+    range: SubmissionStatusEnum
+  clearance_status:
+    range: ClearanceStatusEnum
+  appetite_verdict:
+    range: AppetiteVerdictEnum
+  decline_reason:
+  total_insured_value:
+    range: decimal
+    minimum_value: 0
+  target_premium:
+    range: decimal
+    minimum_value: 0
+  prior_carrier:
+  quote_date:
+    range: date
+  quoted_premium:
+    range: decimal
+    minimum_value: 0
+  quote_status:
+    range: QuoteStatusEnum
+  decision_type:
+    range: UWDecisionTypeEnum
+  decision_outcome:
+    range: UWDecisionOutcomeEnum
+  rule_id:
+    description: Identifier of the appetite/guideline rule that fired.
+  rule_pack_version:
+    description: Version of the unit's rule pack the decision was taken under.
+  authority_level:
+    range: integer
+    minimum_value: 0
+    description: Underwriting authority tier required for the decision.
+  decided_by_role:
+  policy_year:
+    range: integer
+  claim_count:
+    range: integer
+    minimum_value: 0
+  paid_amount:
+    range: decimal
+  reserved_amount:
+    range: decimal
+    minimum_value: 0
+  valuation_date:
+    range: date
+  location_number:
+    range: integer
+    minimum_value: 1
+  address_state:
+    pattern: "^[A-Z]{2}$"
+  postal_code:
+    pattern: "^[0-9]{5}$"
+  construction_class:
+    range: ConstructionClassEnum
+  occupancy:
+  year_built:
+    range: integer
+    minimum_value: 1800
+  sprinklered:
+    range: boolean
+  protection_class:
+    description: Public protection classification (1 best - 10 unprotected).
+  building_value:
+    range: decimal
+    minimum_value: 0
+  contents_value:
+    range: decimal
+    minimum_value: 0
+  business_income_value:
+    range: decimal
+    minimum_value: 0
+  cat_peril_zone:
+    range: CatPerilZoneEnum
+    multivalued: true
+
+  # ---------------------------------------------------------- policy admin
+  market_type:
+    range: AdmittedStatusEnum
+  coverage_lines:
+    range: CoverageLineEnum
+    multivalued: true
+  covered_lines:
+    range: CoverageLineEnum
+    multivalued: true
+  policy_number:
+  policy_form:
+    range: PolicyFormEnum
+  retroactive_date:
+    range: date
+    description: Claims-made retroactive date; losses before it are not covered.
+  new_renewal:
+    range: NewRenewalEnum
+  written_premium:
+    range: decimal
+    annotations:
+      sensitivity: financial
+  audit_basis:
+    range: AuditBasisEnum
+  cancellation_reason:
+  coverage_line:
+    range: CoverageLineEnum
+  class_code:
+    description: Rating classification code in the named class_code_system.
+  class_code_system:
+    range: ClassCodeSystemEnum
+  exposure_basis:
+    range: ExposureBasisEnum
+  exposure_amount:
+    range: decimal
+    minimum_value: 0
+  rate:
+    range: decimal
+    minimum_value: 0
+    description: Rate per exposure unit.
+  occurrence_limit:
+    range: decimal
+    minimum_value: 0
+  aggregate_limit:
+    range: decimal
+    minimum_value: 0
+  deductible:
+    range: decimal
+    minimum_value: 0
+  self_insured_retention:
+    range: decimal
+    minimum_value: 0
+  attachment_point:
+    range: decimal
+    minimum_value: 0
+    description: For excess/umbrella, the underlying limit this layer attaches above.
+  rating_state:
+    pattern: "^[A-Z]{2}$"
+  transaction_type:
+    range: PolicyTransactionTypeEnum
+  transaction_effective_date:
+    range: date
+  booked_date:
+    range: date
+    description: Accounting date the transaction was booked (drives calendar-period written premium).
+  written_premium_change:
+    range: decimal
+    description: Signed change to written premium (negative for cancellations and return premium).
+    annotations:
+      sensitivity: financial
+
+  # ---------------------------------------------------------------- claims
+  claim_number:
+  loss_date:
+    range: date
+    description: Date of loss / occurrence (drives accident year).
+  loss_description:
+    description: Free-text loss narrative.
+    annotations:
+      sensitivity: pii
+  cause_of_loss:
+    range: CauseOfLossEnum
+  loss_state:
+    pattern: "^[A-Z]{2}$"
+  litigated:
+    range: boolean
+  coverage_position:
+    range: CoveragePositionEnum
+  claim_handler:
+  handling_type:
+    range: HandlingTypeEnum
+  closed_date:
+    range: date
+  exposure_type:
+    range: ExposureTypeEnum
+  exposure_status:
+    range: ExposureStatusEnum
+  transaction_date:
+    range: date
+  financial_type:
+    range: ClaimFinancialTypeEnum
+  cost_category:
+    range: CostCategoryEnum
+  recovery_type:
+    range: RecoveryTypeEnum
+  amount:
+    range: decimal
+    description: Signed amount. Reserve changes may be negative (takedowns).
+    annotations:
+      sensitivity: financial
+  event_code:
+    description: Catastrophe event identifier (e.g. an industry cat serial number).
+  peril:
+    range: PerilEnum
+  event_start_date:
+    range: date
+  event_end_date:
+    range: date
+  affected_states:
+    multivalued: true
+
+  # --------------------------------------------------- reinsurance/reserving
+  treaty_type:
+    range: TreatyTypeEnum
+  retention_amount:
+    range: decimal
+    minimum_value: 0
+  limit_amount:
+    range: decimal
+    minimum_value: 0
+  cession_rate:
+    range: decimal
+    minimum_value: 0
+    maximum_value: 1
+  reinsurers:
+    multivalued: true
+  cession_date:
+    range: date
+  ceded_premium:
+    range: decimal
+  ceded_loss:
+    range: decimal
+  accident_year:
+    range: integer
+    minimum_value: 1900
+  ibnr_amount:
+    range: decimal
+    annotations:
+      sensitivity: financial
+  reserving_method:
+    range: ReservingMethodEnum
+  selected:
+    range: boolean
+    description: This is the selected (booked) estimate for the segment and valuation.
+
+enums:
+  CoverageLineEnum:
+    description: >-
+      Commercial lines of coverage. Each value carries a `line_group` annotation
+      (casualty, property, workers_compensation, professional_and_management,
+      specialty_other) used for portfolio-level reporting.
+    permissible_values:
+      general_liability:
+        description: Commercial general liability (premises/operations, products/completed ops).
+        annotations:
+          line_group: casualty
+      products_liability:
+        annotations:
+          line_group: casualty
+      commercial_property:
+        annotations:
+          line_group: property
+      business_interruption:
+        annotations:
+          line_group: property
+      commercial_auto:
+        annotations:
+          line_group: casualty
+      workers_compensation:
+        annotations:
+          line_group: workers_compensation
+      employers_liability:
+        annotations:
+          line_group: workers_compensation
+      umbrella_excess:
+        annotations:
+          line_group: casualty
+      professional_liability:
+        description: Errors & omissions / miscellaneous professional liability.
+        annotations:
+          line_group: professional_and_management
+      medical_professional_liability:
+        annotations:
+          line_group: professional_and_management
+      directors_and_officers:
+        annotations:
+          line_group: professional_and_management
+      employment_practices_liability:
+        annotations:
+          line_group: professional_and_management
+      cyber:
+        annotations:
+          line_group: professional_and_management
+      inland_marine:
+        annotations:
+          line_group: property
+      ocean_marine:
+        annotations:
+          line_group: specialty_other
+      environmental:
+        description: Pollution legal liability / contractors pollution.
+        annotations:
+          line_group: casualty
+      surety:
+        annotations:
+          line_group: specialty_other
+      fidelity_crime:
+        annotations:
+          line_group: specialty_other
+      excess_casualty:
+        annotations:
+          line_group: casualty
+      specialty_other:
+        annotations:
+          line_group: specialty_other
+  ClaimantTypeEnum:
+    permissible_values:
+      first_party:
+      third_party:
+      injured_worker:
+  BindingAuthorityEnum:
+    permissible_values:
+      full:
+      limited:
+        description: Binds within guidelines; referrals above limits.
+      quote_only:
+      none:
+  SubmissionStatusEnum:
+    permissible_values:
+      received:
+      in_clearance:
+      in_review:
+      declined:
+      quoted:
+      bound:
+      not_taken_up:
+        description: Quoted, broker/insured did not accept.
+      withdrawn:
+  ClearanceStatusEnum:
+    permissible_values:
+      clear:
+      duplicate_same_broker:
+      blocked_other_broker:
+        description: Another producer already has the account; broker-of-record rules apply.
+      insufficient_data:
+  AppetiteVerdictEnum:
+    permissible_values:
+      accept:
+      refer:
+      decline:
+      insufficient_data:
+  QuoteStatusEnum:
+    permissible_values:
+      issued:
+      revised:
+      accepted:
+      not_taken_up:
+      expired:
+  UWDecisionTypeEnum:
+    permissible_values:
+      clearance:
+      appetite:
+      referral:
+      authority:
+      pricing:
+      terms_and_conditions:
+  UWDecisionOutcomeEnum:
+    permissible_values:
+      accept:
+      refer:
+      decline:
+      approve_with_modifications:
+  ConstructionClassEnum:
+    description: ISO construction classes 1-6.
+    permissible_values:
+      frame:
+        description: ISO 1
+      joisted_masonry:
+        description: ISO 2
+      non_combustible:
+        description: ISO 3
+      masonry_non_combustible:
+        description: ISO 4
+      modified_fire_resistive:
+        description: ISO 5
+      fire_resistive:
+        description: ISO 6
+  CatPerilZoneEnum:
+    permissible_values:
+      named_storm_tier1:
+      named_storm_tier2:
+      earthquake:
+      wildfire:
+      flood_sfha:
+        description: FEMA special flood hazard area.
+      severe_convective_storm:
+  PolicyFormEnum:
+    permissible_values:
+      occurrence:
+      claims_made:
+      claims_made_and_reported:
+  NewRenewalEnum:
+    permissible_values:
+      new:
+      renewal:
+      rewrite:
+  AuditBasisEnum:
+    permissible_values:
+      none:
+      annual:
+      semi_annual:
+      monthly_self_report:
+  ClassCodeSystemEnum:
+    permissible_values:
+      iso_gl:
+      ncci:
+        description: Workers compensation classification.
+      iso_auto:
+      naics:
+      carrier_internal:
+  ExposureBasisEnum:
+    permissible_values:
+      payroll:
+        description: Per $100 of payroll (WC, some GL).
+      gross_sales:
+        description: Per $1,000 of revenue.
+      area:
+        description: Per 1,000 sq ft.
+      units:
+      vehicles:
+      total_insured_value:
+      flat:
+      employees:
+  PolicyTransactionTypeEnum:
+    permissible_values:
+      new_business:
+      renewal:
+      endorsement:
+      cancellation:
+      reinstatement:
+      premium_audit:
+      rewrite:
+  PCClaimStatusEnum:
+    description: Commercial claim lifecycle.
+    permissible_values:
+      open:
+      closed:
+        description: Closed with payment.
+      closed_without_payment:
+      reopened:
+  CauseOfLossEnum:
+    permissible_values:
+      fire:
+      wind_hail:
+      named_storm:
+      flood:
+      earthquake:
+      wildfire:
+      theft_crime:
+      water_damage:
+      equipment_breakdown:
+      bodily_injury:
+      property_damage_liability:
+      products_defect:
+      professional_error:
+      employment_practice:
+      cyber_breach:
+      ransomware:
+      auto_collision:
+      workplace_injury:
+      occupational_disease:
+      pollution:
+      other:
+  CoveragePositionEnum:
+    permissible_values:
+      under_investigation:
+      accepted:
+      reservation_of_rights:
+      denied:
+  HandlingTypeEnum:
+    permissible_values:
+      in_house:
+      tpa:
+        description: Third-party administrator.
+      program_administrator:
+  ExposureTypeEnum:
+    permissible_values:
+      bodily_injury:
+      property_damage:
+      medical_payments:
+      first_party_property:
+      business_interruption:
+      indemnity:
+        description: WC wage replacement.
+      medical:
+        description: WC medical.
+      defense_only:
+      cyber_first_party:
+      cyber_third_party:
+  ExposureStatusEnum:
+    permissible_values:
+      open:
+      closed:
+  ClaimFinancialTypeEnum:
+    permissible_values:
+      reserve_change:
+      payment:
+      recovery:
+  CostCategoryEnum:
+    permissible_values:
+      loss:
+        description: Indemnity / loss payments to or for the claimant.
+      alae:
+        description: Allocated loss adjustment expense (DCC) - defense, experts.
+      ulae:
+        description: Unallocated LAE (adjusting & other).
+  RecoveryTypeEnum:
+    permissible_values:
+      subrogation:
+      salvage:
+      deductible_reimbursement:
+      contribution:
+  PerilEnum:
+    permissible_values:
+      hurricane:
+      severe_convective_storm:
+      winter_storm:
+      earthquake:
+      wildfire:
+      flood:
+      civil_unrest:
+  TreatyTypeEnum:
+    permissible_values:
+      quota_share:
+      surplus_share:
+      per_risk_xol:
+      per_occurrence_xol:
+      catastrophe_xol:
+      aggregate_stop_loss:
+      facultative:
+  ReservingMethodEnum:
+    permissible_values:
+      chain_ladder:
+      bornhuetter_ferguson:
+      expected_loss_ratio:
+      cape_cod:
+      actuarial_judgment:

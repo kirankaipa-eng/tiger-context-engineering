@@ -1,0 +1,83 @@
+# Group corporate & actuarial warehouse -> ontology.
+# Owns the group-wide reference data (identity_scope: global) the units point at.
+
+unit: CORP
+dialect: duckdb
+source_schema: corp
+
+classes:
+  OperatingUnit:
+    table: ORG_UNIT
+    slots:
+      id: {column: UNIT_CD}
+      unit_code: {column: UNIT_CD}
+      name: {column: UNIT_NM}
+      parent_unit: {column: PARENT_CD}
+      business_segment: {expr: "lower(src.SEGMENT)"}
+
+  WritingCompany:
+    table: LEGAL_ENTITY
+    slots:
+      id: {column: CO_CD}
+      name: {column: CO_NM}
+      naic_company_code: {column: NAIC_CD}
+      domicile_state: {column: DOM_ST}
+      admitted_status: {expr: "CASE src.ADMITTED WHEN 'Y' THEN 'admitted' ELSE 'non_admitted' END"}
+
+  Producer:
+    table: BROKER_MASTER
+    note: Group broker master; brokers carry one identity across all units.
+    slots:
+      id: {column: GRP_PRODUCER_ID}
+      name: {column: BROKER_NM}
+      producer_type:
+        expr: "CASE src.BROKER_TYPE WHEN 'WHS' THEN 'wholesale_broker' WHEN 'PA' THEN 'program_administrator' WHEN 'RTL' THEN 'retail_broker' ELSE 'direct' END"
+      license_state: {column: HQ_ST}
+
+  CatastropheEvent:
+    table: CAT_EVENT
+    slots:
+      id: {column: CAT_CD}
+      event_code: {column: CAT_CD}
+      name: {column: CAT_NM}
+      peril:
+        expr: "CASE src.PERIL WHEN 'HU' THEN 'hurricane' WHEN 'SCS' THEN 'severe_convective_storm' WHEN 'WF' THEN 'wildfire' WHEN 'EQ' THEN 'earthquake' WHEN 'FL' THEN 'flood' WHEN 'WS' THEN 'winter_storm' END"
+      event_start_date: {column: START_DT}
+      event_end_date: {column: END_DT}
+      affected_states:
+        expr: "string_split(src.STATES, ',')"
+        postgres: "string_to_array(src.STATES, ',')"
+
+  ReinsuranceTreaty:
+    table: RI_TREATY
+    slots:
+      id: {column: TREATY_ID}
+      name: {column: TREATY_NM}
+      treaty_type:
+        expr: "CASE src.TREATY_TYP WHEN 'QS' THEN 'quota_share' WHEN 'PER_OCC_XOL' THEN 'per_occurrence_xol' WHEN 'CAT_XOL' THEN 'catastrophe_xol' WHEN 'PER_RISK_XOL' THEN 'per_risk_xol' WHEN 'STOP_LOSS' THEN 'aggregate_stop_loss' END"
+      operating_unit: {column: UNIT_CD}
+      effective_date: {column: INCEPT}
+      termination_date: {column: EXPIRY}
+      retention_amount: {column: RETENTION}
+      limit_amount: {column: LMT}
+      cession_rate: {column: CEDE_PCT}
+      covered_lines:
+        expr: "string_split(src.LOBS, ',')"
+        postgres: "string_to_array(src.LOBS, ',')"
+      reinsurers:
+        expr: "string_split(src.PANEL, ';')"
+        postgres: "string_to_array(src.PANEL, ';')"
+
+  ReserveEstimate:
+    table: ACT_IBNR
+    note: Actuarial IBNR selections (bornhuetter-ferguson selected, chain-ladder shown for comparison) by unit x line x accident year.
+    slots:
+      id: {expr: "src.UNIT_CD || '-' || src.LOB || '-' || CAST(src.AY AS VARCHAR) || '-' || CAST(src.VAL_DT AS VARCHAR) || '-' || src.METHOD"}
+      operating_unit: {column: UNIT_CD}
+      coverage_line: {column: LOB}
+      accident_year: {column: AY}
+      valuation_date: {column: VAL_DT}
+      ibnr_amount: {column: IBNR}
+      reserving_method:
+        expr: "CASE src.METHOD WHEN 'BF' THEN 'bornhuetter_ferguson' WHEN 'CL' THEN 'chain_ladder' WHEN 'ELR' THEN 'expected_loss_ratio' ELSE 'actuarial_judgment' END"
+      selected: {expr: "src.SELECTED = 'Y'"}

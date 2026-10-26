@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Context Studio: metric</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400&amp;display=swap">
+<style>
+body{margin:0;font-family:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;color:#1c1c1a;background:#f4f3ef}
+a{color:#1f4fbf;text-decoration:none}a:hover{color:#163a8c}
+.nav{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:6px;color:#3d3c38;font-size:14px}
+.nav.on{background:#e3e7f3;color:#163a8c;font-weight:600}
+.badge{margin-left:auto;background:#1f4fbf;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px}
+.lbl{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#6b6960;font-weight:600}
+.box{border:1px solid #d3d0c7;border-radius:8px;background:#fff}
+.pill{font-size:12px;padding:3px 9px;border-radius:12px;border:1px solid #d3d0c7;color:#3d3c38;background:#faf9f6}
+.draft{border-color:#e0b25c;color:#7a5410;background:#fcf4e3}
+.btn{font:inherit;font-size:14px;padding:10px 16px;border-radius:6px;border:1px solid #bdb9ae;background:#fff;color:#1c1c1a;min-height:44px}
+.btn.primary{background:#1f4fbf;border-color:#1f4fbf;color:#fff;font-weight:600}
+.muted{color:#6b6960}
+.chip{padding:12px 14px;border:1px solid #bdb9ae;border-radius:8px;background:#faf9f6;font-size:14px}
+.op{font-size:22px;color:#6b6960}
+.row{display:grid;grid-template-columns:minmax(0,1fr) 150px 170px 120px;gap:12px;padding:11px 16px;border-top:1px solid #ece9e2;font-size:14px}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div style="width: 1440px; height: 900px; display: flex; flex-direction: column; overflow: hidden">
+  <header style="height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 16px; padding: 0 20px; background: #fff; border-bottom: 1px solid #d3d0c7">
+    <div style="font-weight: 600; font-size: 16px; width: 176px">Context Studio</div>
+    <button class="btn" style="min-height: 36px; padding: 6px 12px">Summit Group · Commercial P&amp;C</button>
+    <label style="flex-grow: 1; max-width: 520px"><span style="position: absolute; left: -9999px">Search</span><input type="search" placeholder="Search concepts, metrics, proposals" style="width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 8px 12px; border: 1px solid #d3d0c7; border-radius: 6px; background: #faf9f6"></label>
+    <div style="margin-left: auto; font-size: 14px" class="muted">Signed in as <b style="color: #1c1c1a">Actuarial lead</b></div>
+  </header>
+  <div style="flex-grow: 1; display: flex; min-height: 0">
+    <nav style="width: 216px; flex-shrink: 0; padding: 16px 12px; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid #d3d0c7">
+      <a class="nav" href="inbox.html">Inbox</a>
+      <a class="nav" href="map.html">Map</a>
+      <a class="nav" href="concept.html">Concepts</a>
+      <a class="nav on" href="metric.html">Metrics</a>
+      <a class="nav" href="mapping.html">Mappings</a>
+      <a class="nav" href="history.html">History</a>
+    </nav>
+
+    <main style="flex-grow: 1; min-width: 0; padding: 20px 28px; display: flex; flex-direction: column; gap: 16px; overflow: hidden">
+      <div class="muted" style="font-size: 13px"><a href="#">Metrics</a> › Loss ratios › Program loss ratio</div>
+      <div style="display: flex; align-items: center; gap: 12px">
+        <h1 style="margin: 0; font-size: 28px; font-weight: 600">Program loss ratio</h1>
+        <span class="pill draft">Your draft · not live</span>
+      </div>
+
+      <div class="box" style="padding: 16px; display: flex; flex-direction: column; gap: 14px">
+        <div class="lbl">Definition</div>
+        <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap">
+          <span class="chip">Ultimate loss &amp; ALAE</span>
+          <span class="op">÷</span>
+          <span class="chip" style="border-color: #e0b25c; background: #fcf4e3">Earned premium <b>net of commission</b></span>
+          <span class="muted" style="font-size: 13px">for program business · as of the valuation date</span>
+        </div>
+        <div style="font-size: 13px; line-height: 1.5"><span class="muted">Changed from:</span> earned premium (gross). <span class="muted">Reason:</span> actuarial memo, p.1: “program results are reviewed net of program administrator commission.” <a href="#">Open the memo</a></div>
+      </div>
+
+      <div class="box" style="overflow: hidden">
+        <div style="padding: 12px 16px; display: flex; align-items: center; gap: 12px">
+          <div class="lbl">Before and after</div>
+          <span class="muted" style="font-size: 13px">Valuation date</span>
+          <button class="btn" style="min-height: 32px; padding: 4px 10px; font-size: 13px">30 Jun 2026</button>
+          <span class="muted" style="font-size: 12px; margin-left: auto">Computed on your draft and on the live definition</span>
+        </div>
+        <div class="row" style="background: #faf9f6; font-weight: 600"><span>Program</span><span class="num">Live today</span><span class="num">With your draft</span><span class="num">Change</span></div>
+        <div class="row"><span>[Program A]</span><span class="num">[xx.x%]</span><span class="num">[xx.x%]</span><span class="num">[+x.x pts]</span></div>
+        <div class="row"><span>[Program B]</span><span class="num">[xx.x%]</span><span class="num">[xx.x%]</span><span class="num">[+x.x pts]</span></div>
+        <div class="row"><span>[Program C]</span><span class="num">[xx.x%]</span><span class="num">[xx.x%]</span><span class="num">[+x.x pts]</span></div>
+        <div class="row" style="font-weight: 600"><span>All programs</span><span class="num">[xx.x%]</span><span class="num">[xx.x%]</span><span class="num">[+x.x pts]</span></div>
+      </div>
+
+      <div style="font-size: 13px" class="muted">Also affects: 2 dashboards, 1 agent skill (broker ultimate loss ratio). Owners of those are told, not asked.</div>
+
+      <div style="display: flex; gap: 10px; margin-top: auto; padding-top: 16px; border-top: 1px solid #e6e3db; align-items: center">
+        <button class="btn primary">Submit for approval</button>
+        <button class="btn">Save draft</button>
+        <button class="btn">Discard</button>
+        <span class="muted" style="margin-left: auto; font-size: 13px">Goes to: Actuarial lead (metrics) · Summit data steward (client)</span>
+      </div>
+    </main>
+
+    <aside style="width: 320px; flex-shrink: 0; border-left: 1px solid #d3d0c7; background: #fff; display: flex; flex-direction: column">
+      <div style="padding: 16px; border-bottom: 1px solid #e6e3db"><div style="font-weight: 600; font-size: 14px">Curator</div><div class="muted" style="font-size: 12px">About: Program loss ratio (draft)</div></div>
+      <div style="flex-grow: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px; font-size: 13px; line-height: 1.5">
+        <div style="align-self: flex-end; max-width: 240px; background: #e3e7f3; padding: 10px 12px; border-radius: 8px">Should this apply to all business?</div>
+        <div style="max-width: 260px; background: #f4f3ef; padding: 10px 12px; border-radius: 8px">The memo only covers program business. I kept the change to programs, so the group loss ratio is unchanged.</div>
+      </div>
+      <label style="padding: 12px 16px; border-top: 1px solid #e6e3db"><span style="position: absolute; left: -9999px">Ask the curator</span><input placeholder="Ask about this metric" style="width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 10px 12px; border: 1px solid #d3d0c7; border-radius: 6px"></label>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

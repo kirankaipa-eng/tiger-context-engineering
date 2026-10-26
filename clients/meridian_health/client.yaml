@@ -1,0 +1,90 @@
+# Meridian Health Plan: fictional regional payer used as the reference deployment
+# for the health payer pack. Two units on two platforms, one context layer:
+#   COMM  commercial (individual, small/large group, ASO) on a legacy claims platform
+#         that also hosts the enterprise MDM hub (providers, pharmacies, drugs, PBMs)
+#   MA    Medicare Advantage on a separate, newer platform with its own codes
+# Everything here is a diff against the pinned base pack; base IRIs never move.
+
+client: meridian_health
+title: Meridian Health Plan
+line: health_payer
+line_version: 0.2.0
+version: 1
+prefix: mhp
+namespace: https://ontology.tigeranalytics.com/clients/meridian-health/
+
+units:
+  - code: COMM
+    name: Meridian Commercial
+    source_system: Legacy commercial claims & enrollment platform (+ enterprise MDM hub)
+  - code: MA
+    name: Meridian Medicare Advantage
+    source_system: Medicare Advantage administration platform
+
+# --- group overlay: vocabulary and rules both units share ---------------------
+
+# Meridian's words. The MA unit overlay adds its own (Member -> Beneficiary).
+labels:
+  classes:
+    EmployerGroup: Account
+    PriorAuthorization: Service Authorization
+    PremiumInvoice: Premium Bill
+    ValueBasedArrangement: Risk Contract
+    PharmacyClaim: Rx Claim
+  slots:
+    member_number: Member ID
+    denial_category: Denial Reason Group
+    group_number: Account Number
+
+extend:
+  enums:
+    MhpUmDelegateEnum: [in_house, radiology_benefit_manager, musculoskeletal_benefit_manager, oncology_pathway_vendor]
+    MhpCareProgramEnum: [none, diabetes, heart_failure, copd, maternity, behavioral_health, complex_case]
+  add_slots:
+    PriorAuthorization:
+      mhp_um_delegate:
+        range: MhpUmDelegateEnum
+        description: >-
+          Who performs the review. Meridian delegates high-tech imaging, MSK and
+          oncology requests to specialty benefit managers; timeliness is still
+          Meridian's obligation.
+    Member:
+      mhp_care_program:
+        range: MhpCareProgramEnum
+        description: Care-management program the member is enrolled in.
+
+restrict:
+  - class: MedicalClaim
+    slot: claim_type
+    allow: [professional, institutional]
+    reason: Meridian carves dental out to a delegated vendor; pharmacy is adjudicated by the PBM (PharmacyClaim).
+  - class: PlanBenefitPackage
+    slot: snp_type
+    allow: [none, dual_eligible]
+    reason: Meridian offers a D-SNP but no chronic-condition or institutional SNPs.
+
+require:
+  - class: MedicalClaim
+    slot: plan
+    reason: Every claim is stamped with the plan it adjudicated under; PMPM and MLR by plan depend on it.
+  - class: PriorAuthorization
+    slot: request_timestamp
+    reason: CMS-0057-F time frames are measured in hours from receipt.
+
+hide:
+  - Member.birth_date
+  - Member.medicare_beneficiary_identifier
+
+# Shared reference data: one provider directory, drug file and PBM list for the
+# enterprise (mastered in MDM), so ids are NPIs/NDCs and never unit-qualified.
+global_identity: [Provider, Drug, PharmacyBenefitManager]
+
+# Client dimensions sit next to the pack's conformed ones.
+dimensions:
+  um_delegate:
+    label: UM delegate
+    paths:
+      PriorAuthorization: mhp_um_delegate
+
+agent_policy:
+  redact: [pii, phi]

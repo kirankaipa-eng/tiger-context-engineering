@@ -1,0 +1,49 @@
+# What a good curator should conclude from this practice corpus.
+# Used to measure recall (needles found) and precision (decoys ignored).
+needles:
+  - scenario: 5
+    doc: doi_bulletin_2026_14.md
+    page: 3
+    kind: ontology_change
+    change: new value in CauseOfLossEnum (pfas_contamination)
+    layer: pack
+    corroborated_by: HPG claims with CAUSE_CD = PFAS
+  - scenario: 2
+    doc: hpg_bordereau_spec_v3_2.md
+    page: 7
+    kind: ontology_change
+    change: HPG mapping, paid loss vs paid expense
+    layer: unit:HPG
+  - scenario: 1
+    doc: treaty_2026_cat_xol_endorsement_2.md
+    page: 41
+    kind: ontology_change
+    change: catastrophe event aggregation (wildfire hours clause 168)
+    layer: client
+  - scenario: 3
+    doc: actuarial_memo_program_lr.md
+    page: 1
+    kind: ontology_change
+    change: client metric override (program loss ratio net of commission)
+    layer: client
+  - scenario: 4
+    doc: claims_manual_ch4.md
+    page: 13
+    kind: ontology_change
+    change: claim status value (suspended, litigation hold)
+    layer: client
+  - scenario: 7
+    doc: meeting_transcript_cfo_sep.md
+    page: 1
+    kind: ask_owner
+    change: alias 'net retained ultimate' (low confidence)
+  - scenario: 8
+    docs: [claims_manual_ch4.md, data_dictionary_claims.md]
+    kind: ask_owner
+    change: conflicting definitions of 'litigated'
+decoys:
+  - {doc: uw_guideline_contractors_v7.md, page: 2, kind: rule, why: appetite / endorsement rule, not ontology}
+  - {doc: trade_press_pfas.md, page: 1, kind: noise}
+  - {doc: board_minutes_q2.md, kind: noise}
+  - {doc: pas_release_notes_2026_08.md, kind: noise}
+  - {doc: marketing_brochure_es.md, kind: noise}

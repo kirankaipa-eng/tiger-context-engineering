@@ -1,0 +1,1670 @@
+id: https://ontology.tigeranalytics.com/insurance/health-payer
+name: health_payer
+title: Healthcare Insurance (Payer) Pack
+description: >-
+  Health plan / payer specialization of the insurance kernel for commercial
+  (individual, small and large group, fully insured and ASO) and Medicare
+  Advantage business: members, employer groups, enrollment with MA eligibility
+  attributes, providers, networks and contracts (fee schedules, value-based
+  arrangements), medical claims with line-level adjudication, pharmacy (drugs,
+  formularies, PBM claims), prior authorization, appeals and grievances,
+  premium billing, and the Medicare Advantage revenue cycle (contracts, PBPs,
+  bids, CMS monthly payments, risk adjustment, Star Ratings). Aligned to FHIR R4
+  resources (open standard) where a counterpart exists. CMS, X12, NCPDP, NUBC,
+  NCQA (HEDIS) and drug-compendium (GPI) references are recorded as annotations
+  only; licensed content is not reproduced.
+version: 0.2.0
+license: Apache-2.0
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ins: https://ontology.tigeranalytics.com/insurance/core/
+  hp: https://ontology.tigeranalytics.com/insurance/health-payer/
+  fhir: http://hl7.org/fhir/
+  schema: http://schema.org/
+default_prefix: hp
+default_range: string
+
+imports:
+  - linkml:types
+  - ../core/core
+
+# Annotation conventions are the kernel's (see core.yaml): sensitivity phi|pii is
+# redacted for agents, identity_scope: global marks identifiers that are unique
+# industry-wide (CMS contract numbers, HCCs) and therefore never unit-qualified.
+# Dates tied to an individual's care (admission, discharge) are PHI under HIPAA
+# and marked so; the year survives redaction.
+
+classes:
+
+  # ---------------------------------------------------------------- parties
+
+  Member:
+    is_a: Person
+    description: A person enrolled (or previously enrolled) in a health plan.
+    aliases: [enrollee, beneficiary, patient]
+    exact_mappings:
+      - fhir:Patient
+    slots:
+      - member_number
+      - subscriber
+      - relationship_to_subscriber
+      - address_state
+      - address_zip
+      - medicare_beneficiary_identifier
+
+  Provider:
+    is_a: Party
+    description: >-
+      A practitioner or facility that renders or bills for services.
+      Identified nationally by NPI.
+    close_mappings:
+      - fhir:Practitioner
+      - fhir:Organization
+    slots:
+      - npi
+      - provider_type
+      - specialty_taxonomy
+      - address_state
+
+  Network:
+    is_a: Entity
+    description: A contracted set of providers used to determine in/out-of-network benefits.
+    slots:
+      - name
+      - network_type
+
+  NetworkParticipation:
+    is_a: Entity
+    description: A provider's contracted participation in a network for a period.
+    slots:
+      - provider
+      - network
+      - effective_date
+      - termination_date
+
+  EmployerGroup:
+    is_a: Organization
+    description: >-
+      An employer (or association) that sponsors group coverage for its
+      employees. Fully insured groups pay premium; self-funded (ASO) groups pay
+      claims plus an administrative fee, so their claims are not the payer's risk.
+    aliases: [group, account, plan sponsor]
+    close_mappings:
+      - fhir:Organization
+    annotations:
+      x12_transaction: "834 (group enrollment), 820 (premium payment)"
+    slots:
+      - group_number
+      - market_segment
+      - funding_type
+      - address_state
+      - broker
+      - eligible_employee_count
+      - effective_date
+      - termination_date
+    slot_usage:
+      funding_type:
+        required: true
+
+  Pharmacy:
+    is_a: Provider
+    description: A dispensing pharmacy. Identified by NPI and NCPDP provider ID.
+    close_mappings:
+      - fhir:Organization
+    annotations:
+      ncpdp_reference: "NCPDP provider ID; NCPDP content is licensed"
+    slots:
+      - ncpdp_id
+      - pharmacy_type
+
+  PharmacyBenefitManager:
+    is_a: Organization
+    description: >-
+      A PBM that administers the pharmacy benefit: network, formulary,
+      point-of-sale adjudication and manufacturer rebates.
+    aliases: [PBM]
+    slots:
+      - pbm_pricing_model
+
+  # ------------------------------------------------------ products/coverage
+
+  HealthPlan:
+    is_a: Product
+    description: A health benefit plan offered by the payer.
+    close_mappings:
+      - fhir:InsurancePlan
+    slots:
+      - plan_type
+      - metal_tier
+      - network
+      - individual_deductible
+      - individual_oop_max
+      - market_segment
+      - funding_type
+      - plan_benefit_package
+      - formulary
+
+  Enrollment:
+    is_a: Coverage
+    description: >-
+      An eligibility span: this member is covered by this plan between these
+      dates. Health-payer specialization of Coverage. Medicare Advantage
+      eligibility attributes (dual status, LIS, ESRD, institutional) describe
+      the span; CMS's monthly payment record carries the month-by-month truth.
+    aliases: [eligibility span, coverage span]
+    exact_mappings:
+      - fhir:Coverage
+    annotations:
+      x12_transaction: "834 (enrollment), 270/271 (eligibility inquiry)"
+    slots:
+      - member
+      - employer_group
+      - dual_status
+      - lis_level
+      - esrd
+      - institutional
+    slot_usage:
+      product:
+        range: HealthPlan
+        required: true
+      member:
+        required: true
+      effective_date:
+        required: true
+
+  BenefitAccumulator:
+    is_a: Entity
+    description: >-
+      Running totals a member has met against plan cost-sharing limits for a
+      plan year. Drives member liability on the next claim.
+    slots:
+      - member
+      - plan
+      - plan_year
+      - accumulator_type
+      - accumulated_amount
+      - limit_amount
+
+  PremiumInvoice:
+    is_a: Entity
+    description: >-
+      Premium billed for one coverage month: to an employer group (group
+      business), to a subscriber (individual market) or to a Medicare Advantage
+      member (plan premium). Payment fields record the premium collected.
+      ASO groups are not billed premium.
+    aliases: [premium bill, premium statement, premium payment]
+    annotations:
+      x12_transaction: "820 (premium payment)"
+    slots:
+      - employer_group
+      - member
+      - plan
+      - coverage_month
+      - invoice_date
+      - billed_premium_amount
+      - premium_paid_amount
+      - premium_paid_date
+      - invoice_status
+    slot_usage:
+      plan:
+        required: true
+      coverage_month:
+        required: true
+      billed_premium_amount:
+        required: true
+
+  # ----------------------------------------------------- Medicare Advantage
+
+  MedicareAdvantageContract:
+    is_a: Entity
+    description: >-
+      A contract between CMS and the MA organization, identified by its
+      contract number (H = local plans, R = regional PPO). Star Ratings and the
+      quality bonus are assigned at contract level.
+    aliases: [MA contract, H-number, H contract]
+    annotations:
+      identity_scope: global
+      cms_reference: "CMS contract number (HPMS)"
+    slots:
+      - contract_number
+      - name
+      - contract_type
+    slot_usage:
+      contract_number:
+        required: true
+
+  PlanBenefitPackage:
+    is_a: Entity
+    description: >-
+      A plan benefit package (PBP) under an MA contract, identified as
+      contract-PBP-segment (e.g. H0000-001-000). The unit CMS pays and members
+      enroll in; bids are filed per PBP.
+    aliases: [PBP, MA plan]
+    annotations:
+      identity_scope: global
+      cms_reference: "PBP / segment identifiers (HPMS)"
+    slots:
+      - ma_contract
+      - pbp_number
+      - segment_number
+      - plan_year
+      - snp_type
+      - part_d_included
+      - name
+    slot_usage:
+      ma_contract:
+        required: true
+      pbp_number:
+        required: true
+
+  MedicareAdvantageBid:
+    is_a: Entity
+    description: >-
+      Summary of the annual bid for a PBP: projected enrollment, the plan's bid
+      for Part A/B benefits against the county benchmark, and the resulting
+      rebate. Bids are due to CMS the first Monday of June for the next contract
+      year. Bid Pricing Tool content is not reproduced.
+    aliases: [bid, BPT summary]
+    annotations:
+      cms_reference: "Bid Pricing Tool (BPT) summary fields"
+    slots:
+      - ma_contract
+      - plan_benefit_package
+      - contract_year
+      - projected_member_months
+      - bid_amount_pmpm
+      - benchmark_pmpm
+      - rebate_pmpm
+      - projected_mlr
+      - submitted_date
+    slot_usage:
+      plan_benefit_package:
+        required: true
+      contract_year:
+        required: true
+
+  CapitationPayment:
+    is_a: Entity
+    description: >-
+      CMS's monthly payment to the MA organization for one member-month, as
+      reported on the Monthly Membership Report (MMR): risk-adjusted Part C
+      payment, Part D payment and rebate. Retroactive adjustments arrive as
+      additional (possibly negative) rows. This is revenue; capitation the plan
+      pays to providers is ProviderCapitationPayment.
+    aliases: [MMR payment, CMS capitation, monthly membership payment]
+    annotations:
+      cms_reference: "Monthly Membership Report (MMR)"
+    slots:
+      - member
+      - ma_contract
+      - plan_benefit_package
+      - plan
+      - payment_month
+      - risk_score_applied
+      - part_c_amount
+      - part_d_amount
+      - rebate_amount
+      - total_payment_amount
+      - retroactive_adjustment
+    slot_usage:
+      member:
+        required: true
+      payment_month:
+        required: true
+      total_payment_amount:
+        required: true
+
+  RiskAdjustmentModel:
+    is_a: Entity
+    description: >-
+      One risk adjustment model as applied to a payment year: its blend weight
+      during a phase-in (CMS-HCC V24 to V28 over payment years 2024-2026), the
+      normalization factor and the MA coding pattern adjustment.
+    aliases: [CMS-HCC model, risk model]
+    annotations:
+      identity_scope: global
+      cms_reference: "CMS Rate Announcement (annual)"
+    slots:
+      - model_version
+      - payment_year
+      - blend_weight
+      - normalization_factor
+      - coding_intensity_adjustment
+    slot_usage:
+      model_version:
+        required: true
+      payment_year:
+        required: true
+
+  HierarchicalConditionCategory:
+    is_a: Entity
+    description: >-
+      A hierarchical condition category (HCC) in a given risk model version:
+      a group of diagnoses with a relative cost factor. Diagnosis-to-HCC
+      mappings are published by CMS per model version.
+    aliases: [HCC, condition category]
+    annotations:
+      identity_scope: global
+    slots:
+      - model_version
+      - hcc_number
+      - name
+      - relative_factor
+    slot_usage:
+      model_version:
+        required: true
+      hcc_number:
+        required: true
+
+  DiagnosisSubmission:
+    is_a: Entity
+    description: >-
+      A diagnosis submitted to CMS for risk adjustment: from encounter data
+      (EDS), legacy RAPS, or a chart review that adds or deletes a diagnosis.
+      Only accepted, risk-adjustment-eligible submissions move a member's score.
+    aliases: [encounter data record, RAPS record, chart review]
+    annotations:
+      x12_transaction: "837 encounter (EDS submission)"
+      cms_reference: "Encounter Data System / Risk Adjustment Processing System"
+    slots:
+      - member
+      - rendering_provider
+      - diagnosis_code
+      - service_from_date
+      - service_to_date
+      - submission_type
+      - submitted_date
+      - submission_status
+      - risk_adjustment_eligible
+      - claim
+      - payment_year
+      - hcc
+    slot_usage:
+      member:
+        required: true
+      diagnosis_code:
+        required: true
+      submission_type:
+        required: true
+
+  MemberRiskScore:
+    is_a: Entity
+    description: >-
+      A member's CMS risk score for a payment year (latest sweep on file):
+      raw model score, normalized score, and the payment score after
+      normalization and the coding pattern adjustment. The basis records how
+      the score was calculated (single model or phase-in blend).
+    aliases: [RAF, risk adjustment factor, risk score]
+    slots:
+      - member
+      - plan
+      - payment_year
+      - risk_score_basis
+      - score_run
+      - risk_segment
+      - raw_risk_score
+      - normalized_risk_score
+      - payment_risk_score
+    slot_usage:
+      member:
+        required: true
+      payment_year:
+        required: true
+      risk_score_basis:
+        required: true
+
+  StarMeasure:
+    is_a: Entity
+    description: >-
+      A measure in the CMS Part C/D Star Ratings program with its data source
+      (HEDIS, CAHPS survey, HOS, Part D prescription drug events,
+      administrative) and weight. Overall ratings are 1-5 stars.
+    aliases: [Star Ratings measure, quality measure]
+    annotations:
+      identity_scope: global
+      cms_reference: "Star Ratings Technical Notes (annual)"
+      ncqa_reference: "HEDIS measure specifications are NCQA-licensed; not reproduced"
+    slots:
+      - measure_code
+      - name
+      - measure_source
+      - measure_weight
+      - higher_is_better
+
+  StarMeasureResult:
+    is_a: Entity
+    description: >-
+      A contract's result on one Star measure for one measurement year:
+      numerator, denominator, rate and the measure-level star (1-5). Star
+      Ratings published in year Y use mostly measurement year Y-2 data.
+    slots:
+      - ma_contract
+      - star_measure
+      - measurement_year
+      - star_year
+      - numerator
+      - denominator
+      - measure_rate
+      - star_rating
+    slot_usage:
+      ma_contract:
+        required: true
+      star_measure:
+        required: true
+
+  # -------------------------------------------------- provider contracting
+
+  FeeSchedule:
+    is_a: Entity
+    description: >-
+      A reimbursement schedule referenced by provider contracts (e.g. a
+      percentage of the Medicare physician fee schedule). Code-level rates are
+      client-loaded; CPT descriptors are AMA-licensed.
+    slots:
+      - name
+      - fee_schedule_type
+      - base_year
+      - effective_date
+
+  ProviderContract:
+    is_a: Entity
+    description: >-
+      The payer's agreement with a provider or group: which network and line of
+      business it covers and how services are reimbursed.
+    aliases: [provider agreement, participation agreement]
+    close_mappings:
+      - fhir:Contract
+    slots:
+      - provider
+      - network
+      - line_of_business
+      - reimbursement_method
+      - fee_schedule
+      - percent_of_medicare
+      - effective_date
+      - termination_date
+      - contract_status
+    slot_usage:
+      provider:
+        required: true
+
+  ValueBasedArrangement:
+    is_a: Entity
+    description: >-
+      A value-based payment term on a provider contract: capitation (the
+      provider is paid a fixed amount per member per month), shared savings or
+      shared risk against a cost target, pay-for-performance or bundles.
+    aliases: [VBC arrangement, risk arrangement, APM]
+    slots:
+      - provider_contract
+      - provider
+      - line_of_business
+      - arrangement_type
+      - capitation_pmpm
+      - shared_savings_rate
+      - minimum_savings_rate
+      - quality_gate
+      - effective_date
+      - termination_date
+    slot_usage:
+      arrangement_type:
+        required: true
+
+  ProviderCapitationPayment:
+    is_a: Entity
+    description: >-
+      Capitation the plan pays a provider for one attributed member-month under
+      a value-based arrangement. Medical expense: services it covers arrive as
+      zero-paid encounter records.
+    aliases: [provider capitation, cap payment]
+    slots:
+      - value_based_arrangement
+      - provider
+      - member
+      - plan
+      - payment_month
+      - capitation_amount
+    slot_usage:
+      payment_month:
+        required: true
+      capitation_amount:
+        required: true
+
+  # ----------------------------------------------------------------- claims
+
+  MedicalClaim:
+    is_a: Claim
+    description: >-
+      A professional or institutional claim submitted by a provider for services
+      rendered to a member. Zero-paid encounter records from capitated providers
+      use the same structure, flagged `encounter_record`.
+    exact_mappings:
+      - fhir:Claim
+    related_mappings:
+      - fhir:ExplanationOfBenefit
+    annotations:
+      x12_transaction: "837P / 837I (submission), 835 (remittance)"
+    slots:
+      - member
+      - billing_provider
+      - rendering_provider
+      - claim_type
+      - service_from_date
+      - service_to_date
+      - primary_diagnosis_code
+      - total_billed_amount
+      - total_allowed_amount
+      - member_liability_amount
+      - in_network
+      - prior_authorization
+      - plan
+      - paid_date
+      - service_category
+      - place_of_service
+      - type_of_bill
+      - admission_date
+      - discharge_date
+      - drg_code
+      - denial_category
+      - auto_adjudicated
+      - encounter_record
+    slot_usage:
+      claim_status:
+        range: ClaimStatusEnum
+        required: true
+      member:
+        required: true
+      billing_provider:
+        required: true
+
+  MedicalClaimLine:
+    is_a: ClaimLine
+    description: One service line with its own adjudication outcome.
+    annotations:
+      x12_transaction: "837 loop 2400 / 835 loop 2110"
+    slots:
+      - claim
+      - procedure_code
+      - procedure_modifier
+      - units
+      - allowed_amount
+      - line_status
+      - denial_reason_code
+
+  PriorAuthorization:
+    is_a: Decision
+    description: >-
+      A request that the payer pre-approve a service. The Decision parent carries
+      the determination date and reason.
+    aliases: [prior auth, pre-certification, utilization management request]
+    close_mappings:
+      - fhir:ClaimResponse
+    annotations:
+      x12_transaction: "278"
+      regulatory_note: >-
+        CMS-0057-F sets determination time frames for impacted payers: 72h for
+        expedited and 7 calendar days for standard requests.
+    slots:
+      - member
+      - requesting_provider
+      - requested_procedure_code
+      - diagnosis_code
+      - urgency
+      - request_date
+      - pa_status
+      - approved_units
+      - plan
+      - request_timestamp
+      - decision_timestamp
+    slot_usage:
+      pa_status:
+        required: true
+      request_date:
+        required: true
+
+  Appeal:
+    is_a: Decision
+    description: >-
+      A member's (or provider's on their behalf) request to reconsider an
+      adverse determination on a claim or prior authorization, at a given level
+      (internal reconsideration, independent review, external review).
+    aliases: [reconsideration, redetermination, dispute]
+    annotations:
+      cms_reference: "MA organization determinations and appeals (42 CFR 422 Subpart M)"
+    slots:
+      - member
+      - plan
+      - claim
+      - prior_authorization
+      - appeal_level
+      - urgency
+      - received_date
+      - appeal_outcome
+    slot_usage:
+      member:
+        required: true
+      received_date:
+        required: true
+      appeal_level:
+        required: true
+
+  Grievance:
+    is_a: Entity
+    description: >-
+      An expression of dissatisfaction that is not a request to change a
+      coverage decision (access, quality of care, service, billing).
+    aliases: [complaint]
+    slots:
+      - member
+      - plan
+      - grievance_category
+      - urgency
+      - received_date
+      - resolved_date
+      - grievance_status
+      - grievance_description
+    slot_usage:
+      member:
+        required: true
+      received_date:
+        required: true
+
+  # --------------------------------------------------------------- pharmacy
+
+  Drug:
+    is_a: Entity
+    description: >-
+      A drug product identified by its 11-digit NDC. Therapeutic
+      classification (GPI, AHFS) comes from licensed compendia that clients
+      load themselves.
+    close_mappings:
+      - fhir:Medication
+    annotations:
+      code_system_note: "NDC (FDA, open); GPI (Medi-Span) and AHFS are licensed, client-loaded"
+    slots:
+      - ndc
+      - name
+      - generic_name
+      - brand_generic
+      - therapeutic_class
+      - specialty_drug
+    slot_usage:
+      ndc:
+        required: true
+
+  Formulary:
+    is_a: Entity
+    description: The list of covered drugs and their cost-sharing tiers for a plan year.
+    aliases: [drug list, PDL]
+    close_mappings:
+      - fhir:InsurancePlan
+    slots:
+      - name
+      - plan_year
+      - pbm
+      - formulary_type
+
+  FormularyTier:
+    is_a: Entity
+    description: A cost-sharing tier on a formulary with its member copay or coinsurance.
+    slots:
+      - formulary
+      - tier_number
+      - tier_type
+      - copay_amount
+      - coinsurance_rate
+    slot_usage:
+      formulary:
+        required: true
+      tier_number:
+        required: true
+
+  FormularyEntry:
+    is_a: Entity
+    description: >-
+      A drug's placement on a formulary for a period: its tier and utilization
+      management edits (prior authorization, step therapy, quantity limits).
+    slots:
+      - formulary
+      - drug
+      - formulary_tier
+      - prior_auth_required
+      - step_therapy
+      - quantity_limit
+      - effective_date
+      - termination_date
+    slot_usage:
+      formulary:
+        required: true
+      drug:
+        required: true
+
+  PharmacyClaim:
+    is_a: Claim
+    description: >-
+      A prescription fill adjudicated at the point of sale by the PBM. For
+      Medicare Part D the same record underlies the Prescription Drug Event (PDE).
+    aliases: [Rx claim, script, prescription claim, PDE]
+    close_mappings:
+      - fhir:Claim
+    related_mappings:
+      - fhir:MedicationDispense
+    annotations:
+      ncpdp_transaction: "NCPDP Telecommunication Standard (B1 billing / B2 reversal); content licensed"
+    slots:
+      - member
+      - plan
+      - pharmacy
+      - prescriber
+      - drug
+      - pbm
+      - fill_date
+      - days_supply
+      - quantity_dispensed
+      - fill_number
+      - ingredient_cost
+      - dispensing_fee
+      - member_liability_amount
+      - formulary_tier_number
+      - dispense_as_written
+    slot_usage:
+      claim_status:
+        range: PharmacyClaimStatusEnum
+        required: true
+      member:
+        required: true
+      drug:
+        required: true
+      fill_date:
+        required: true
+
+  # ------------------------------------------------------------ finance
+
+  QualityImprovementExpense:
+    is_a: Entity
+    description: >-
+      Spend on activities that improve health care quality, which the MLR
+      rules count with claims in the numerator (outcomes, readmission
+      prevention, patient safety, wellness, health IT for those purposes).
+    aliases: [QIA expense, quality improvement activities]
+    slots:
+      - line_of_business
+      - market_segment
+      - expense_month
+      - qia_activity
+      - expense_amount
+    slot_usage:
+      expense_month:
+        required: true
+      expense_amount:
+        required: true
+
+slots:
+  member_number:
+    description: Payer-issued member ID printed on the ID card.
+    annotations:
+      sensitivity: phi
+  subscriber:
+    range: Member
+    description: The policyholder whose enrollment this member depends on (self for subscribers).
+  relationship_to_subscriber:
+    range: RelationshipEnum
+  address_state:
+    pattern: "^[A-Z]{2}$"
+  address_zip:
+    pattern: "^[0-9]{5}$"
+    annotations:
+      sensitivity: phi
+  npi:
+    description: National Provider Identifier (10 digits).
+    pattern: "^[0-9]{10}$"
+  provider_type:
+    range: ProviderTypeEnum
+  specialty_taxonomy:
+    description: NUCC healthcare provider taxonomy code.
+  network_type:
+    range: NetworkTypeEnum
+  provider:
+    range: Provider
+  network:
+    range: Network
+  plan:
+    range: HealthPlan
+  plan_type:
+    range: PlanTypeEnum
+  metal_tier:
+    range: MetalTierEnum
+  individual_deductible:
+    range: decimal
+    minimum_value: 0
+  individual_oop_max:
+    range: decimal
+    minimum_value: 0
+  member:
+    range: Member
+  plan_year:
+    range: integer
+  accumulator_type:
+    range: AccumulatorTypeEnum
+  accumulated_amount:
+    range: decimal
+    minimum_value: 0
+  limit_amount:
+    range: decimal
+    minimum_value: 0
+  billing_provider:
+    range: Provider
+  rendering_provider:
+    range: Provider
+  requesting_provider:
+    range: Provider
+  claim_type:
+    range: ClaimTypeEnum
+  service_from_date:
+    range: date
+  service_to_date:
+    range: date
+  primary_diagnosis_code:
+    description: ICD-10-CM code.
+    annotations:
+      sensitivity: phi
+  diagnosis_code:
+    description: ICD-10-CM code.
+    annotations:
+      sensitivity: phi
+  total_billed_amount:
+    range: decimal
+    minimum_value: 0
+  total_allowed_amount:
+    range: decimal
+    minimum_value: 0
+  member_liability_amount:
+    range: decimal
+    minimum_value: 0
+  in_network:
+    range: boolean
+  prior_authorization:
+    range: PriorAuthorization
+  claim:
+    range: MedicalClaim
+  procedure_code:
+    description: CPT or HCPCS code.
+  requested_procedure_code:
+    description: CPT or HCPCS code.
+  procedure_modifier:
+  units:
+    range: integer
+    minimum_value: 0
+  allowed_amount:
+    range: decimal
+    minimum_value: 0
+  line_status:
+    range: LineStatusEnum
+  denial_reason_code:
+    description: X12 Claim Adjustment Reason Code (CARC).
+  urgency:
+    range: UrgencyEnum
+  request_date:
+    range: date
+  pa_status:
+    range: PriorAuthStatusEnum
+  approved_units:
+    range: integer
+    minimum_value: 0
+
+  # ------------------------------------------------- members & enrollment
+  medicare_beneficiary_identifier:
+    description: >-
+      CMS Medicare Beneficiary Identifier (MBI): 11 characters, non-intelligent,
+      excluding the letters S, L, O, I, B and Z.
+    aliases: [MBI]
+    pattern: "^[1-9][AC-HJKMNP-RT-Y][AC-HJKMNP-RT-Y0-9][0-9][AC-HJKMNP-RT-Y][AC-HJKMNP-RT-Y0-9][0-9][AC-HJKMNP-RT-Y]{2}[0-9]{2}$"
+    annotations:
+      sensitivity: phi
+  employer_group:
+    range: EmployerGroup
+  group_number:
+    description: Payer-assigned group number printed on group members' ID cards.
+  market_segment:
+    range: MarketSegmentEnum
+  funding_type:
+    range: FundingTypeEnum
+  broker:
+    range: Producer
+    description: Broker or consultant of record for the group.
+  eligible_employee_count:
+    range: integer
+    minimum_value: 0
+  dual_status:
+    range: DualStatusEnum
+    description: Medicare-Medicaid dual eligibility for the span.
+  lis_level:
+    range: LisLevelEnum
+    description: Part D low-income subsidy level.
+  esrd:
+    range: boolean
+    description: Member has end-stage renal disease status (separate CMS payment model).
+  institutional:
+    range: boolean
+    description: Long-term institutional resident (90+ days), which changes the risk model segment.
+  plan_benefit_package:
+    range: PlanBenefitPackage
+  formulary:
+    range: Formulary
+  coverage_month:
+    range: date
+    description: First day of the month the premium covers.
+  invoice_date:
+    range: date
+  billed_premium_amount:
+    range: decimal
+    annotations:
+      sensitivity: financial
+  premium_paid_amount:
+    range: decimal
+    minimum_value: 0
+    annotations:
+      sensitivity: financial
+  premium_paid_date:
+    range: date
+  invoice_status:
+    range: InvoiceStatusEnum
+
+  # --------------------------------------------------- Medicare Advantage
+  contract_number:
+    description: CMS MA contract number (H = local, R = regional).
+    pattern: "^[HR][0-9]{4}$"
+  contract_type:
+    range: MAContractTypeEnum
+  ma_contract:
+    range: MedicareAdvantageContract
+  pbp_number:
+    description: Plan benefit package number within the contract.
+    pattern: "^[0-9]{3}$"
+  segment_number:
+    pattern: "^[0-9]{3}$"
+  snp_type:
+    range: SnpTypeEnum
+  part_d_included:
+    range: boolean
+    description: MA-PD (includes Part D) vs MA-only.
+  contract_year:
+    range: integer
+  projected_member_months:
+    range: integer
+    minimum_value: 0
+  bid_amount_pmpm:
+    range: decimal
+    minimum_value: 0
+    annotations:
+      sensitivity: financial
+  benchmark_pmpm:
+    range: decimal
+    minimum_value: 0
+  rebate_pmpm:
+    range: decimal
+    minimum_value: 0
+    annotations:
+      sensitivity: financial
+  projected_mlr:
+    range: decimal
+    minimum_value: 0
+    maximum_value: 2
+  submitted_date:
+    range: date
+  payment_month:
+    range: date
+    description: First day of the month the payment is for.
+  risk_score_applied:
+    range: decimal
+    minimum_value: 0
+  part_c_amount:
+    range: decimal
+    annotations:
+      sensitivity: financial
+  part_d_amount:
+    range: decimal
+    annotations:
+      sensitivity: financial
+  rebate_amount:
+    range: decimal
+    annotations:
+      sensitivity: financial
+  total_payment_amount:
+    range: decimal
+    description: Signed; retroactive adjustments can be negative.
+    annotations:
+      sensitivity: financial
+  retroactive_adjustment:
+    range: boolean
+  model_version:
+    range: HccModelEnum
+  payment_year:
+    range: integer
+    minimum_value: 2000
+  blend_weight:
+    range: decimal
+    minimum_value: 0
+    maximum_value: 1
+    description: Share of the payment-year risk score calculated with this model.
+  normalization_factor:
+    range: decimal
+    minimum_value: 0
+  coding_intensity_adjustment:
+    range: decimal
+    minimum_value: 0
+    maximum_value: 1
+    description: MA coding pattern adjustment applied to normalized scores (statutory minimum 5.9%).
+  hcc_number:
+    range: integer
+    minimum_value: 1
+  relative_factor:
+    range: decimal
+    minimum_value: 0
+  submission_type:
+    range: DiagnosisSourceEnum
+  submission_status:
+    range: EncounterSubmissionStatusEnum
+  risk_adjustment_eligible:
+    range: boolean
+    description: Source and provider type qualify the diagnosis for risk adjustment.
+  hcc:
+    range: HierarchicalConditionCategory
+  risk_score_basis:
+    range: RiskScoreBasisEnum
+  score_run:
+    range: RiskScoreRunEnum
+  risk_segment:
+    range: RiskSegmentEnum
+  raw_risk_score:
+    range: decimal
+    minimum_value: 0
+  normalized_risk_score:
+    range: decimal
+    minimum_value: 0
+  payment_risk_score:
+    range: decimal
+    minimum_value: 0
+  measure_code:
+  measure_source:
+    range: StarMeasureSourceEnum
+  measure_weight:
+    range: decimal
+    minimum_value: 0
+  higher_is_better:
+    range: boolean
+  star_measure:
+    range: StarMeasure
+  measurement_year:
+    range: integer
+  star_year:
+    range: integer
+    description: Year the Star Ratings are published for (used for the following year's payment).
+  numerator:
+    range: integer
+    minimum_value: 0
+  denominator:
+    range: integer
+    minimum_value: 0
+  measure_rate:
+    range: decimal
+    minimum_value: 0
+  star_rating:
+    range: integer
+    minimum_value: 1
+    maximum_value: 5
+
+  # --------------------------------------------------- provider contracting
+  fee_schedule_type:
+    range: FeeScheduleTypeEnum
+  base_year:
+    range: integer
+  reimbursement_method:
+    range: ReimbursementMethodEnum
+  fee_schedule:
+    range: FeeSchedule
+  percent_of_medicare:
+    range: decimal
+    minimum_value: 0
+    description: Contracted rate as a share of Medicare (1.0 = 100%).
+  contract_status:
+    range: ContractStatusEnum
+  provider_contract:
+    range: ProviderContract
+  arrangement_type:
+    range: ValueBasedArrangementTypeEnum
+  capitation_pmpm:
+    range: decimal
+    minimum_value: 0
+    annotations:
+      sensitivity: financial
+  shared_savings_rate:
+    range: decimal
+    minimum_value: 0
+    maximum_value: 1
+  minimum_savings_rate:
+    range: decimal
+    minimum_value: 0
+    maximum_value: 1
+  quality_gate:
+    range: boolean
+    description: Savings are paid only if quality thresholds are met.
+  value_based_arrangement:
+    range: ValueBasedArrangement
+  capitation_amount:
+    range: decimal
+    annotations:
+      sensitivity: financial
+
+  # ------------------------------------------------------- claims & UM
+  paid_date:
+    range: date
+    description: Date the claim was finalized for payment (or denial).
+  service_category:
+    range: ServiceCategoryEnum
+  place_of_service:
+    description: CMS place of service code (2 digits) for professional claims.
+    pattern: "^[0-9]{2}$"
+  type_of_bill:
+    description: Institutional type of bill. NUBC UB-04 content is licensed; codes only.
+    pattern: "^[0-9]{3,4}$"
+  admission_date:
+    range: date
+    annotations:
+      sensitivity: phi
+  discharge_date:
+    range: date
+    annotations:
+      sensitivity: phi
+  drg_code:
+    description: MS-DRG assigned to an inpatient stay (CMS, public).
+    pattern: "^[0-9]{3}$"
+  denial_category:
+    range: DenialCategoryEnum
+    description: Payer's grouping of the reason a claim was denied (detail in line CARCs).
+  auto_adjudicated:
+    range: boolean
+    description: Finalized on first pass without manual intervention.
+  encounter_record:
+    range: boolean
+    description: Zero-paid encounter from a capitated provider (reportable, not payable).
+  request_timestamp:
+    range: datetime
+    description: When the request was received (the CMS-0057-F clock starts here).
+  decision_timestamp:
+    range: datetime
+  appeal_level:
+    range: AppealLevelEnum
+  appeal_outcome:
+    range: AppealOutcomeEnum
+  grievance_category:
+    range: GrievanceCategoryEnum
+  resolved_date:
+    range: date
+  grievance_status:
+    range: GrievanceStatusEnum
+  grievance_description:
+    annotations:
+      sensitivity: phi
+
+  # -------------------------------------------------------------- pharmacy
+  ncpdp_id:
+    description: NCPDP provider identifier (7 digits).
+    pattern: "^[0-9]{7}$"
+  pharmacy_type:
+    range: PharmacyTypeEnum
+  pbm_pricing_model:
+    range: PbmPricingModelEnum
+  pbm:
+    range: PharmacyBenefitManager
+  ndc:
+    description: National Drug Code in 11-digit (5-4-2) format without hyphens.
+    pattern: "^[0-9]{11}$"
+  generic_name:
+  brand_generic:
+    range: BrandGenericEnum
+  therapeutic_class:
+    description: Therapeutic class code from the client's licensed compendium (e.g. GPI-4).
+  specialty_drug:
+    range: boolean
+  formulary_type:
+    range: FormularyTypeEnum
+  tier_number:
+    range: integer
+    minimum_value: 1
+    maximum_value: 6
+  tier_type:
+    range: FormularyTierTypeEnum
+  copay_amount:
+    range: decimal
+    minimum_value: 0
+  coinsurance_rate:
+    range: decimal
+    minimum_value: 0
+    maximum_value: 1
+  drug:
+    range: Drug
+  formulary_tier:
+    range: FormularyTier
+  prior_auth_required:
+    range: boolean
+  step_therapy:
+    range: boolean
+  quantity_limit:
+    range: boolean
+  pharmacy:
+    range: Pharmacy
+  prescriber:
+    range: Provider
+  fill_date:
+    range: date
+  days_supply:
+    range: integer
+    minimum_value: 1
+  quantity_dispensed:
+    range: decimal
+    minimum_value: 0
+  fill_number:
+    range: integer
+    minimum_value: 0
+    description: 0 for the original fill, then refill sequence.
+  ingredient_cost:
+    range: decimal
+    annotations:
+      sensitivity: financial
+  dispensing_fee:
+    range: decimal
+    minimum_value: 0
+  formulary_tier_number:
+    range: integer
+    minimum_value: 1
+    maximum_value: 6
+  dispense_as_written:
+    description: Dispense-as-written / product selection code (single digit).
+    pattern: "^[0-9]$"
+
+  # --------------------------------------------------------------- finance
+  expense_month:
+    range: date
+  qia_activity:
+    range: QiaActivityEnum
+  expense_amount:
+    range: decimal
+    annotations:
+      sensitivity: financial
+
+enums:
+  RelationshipEnum:
+    enum_uri: hp:RelationshipEnum
+    permissible_values:
+      subscriber:
+        description: The member is the subscriber (X12 "18 - Self").
+      spouse:
+      child:
+      other_dependent:
+  ProviderTypeEnum:
+    enum_uri: hp:ProviderTypeEnum
+    permissible_values:
+      individual:
+        description: NPI entity type 1
+      organization:
+        description: NPI entity type 2
+  NetworkTypeEnum:
+    enum_uri: hp:NetworkTypeEnum
+    permissible_values:
+      hmo:
+      ppo:
+      epo:
+      pos:
+  PlanTypeEnum:
+    enum_uri: hp:PlanTypeEnum
+    permissible_values:
+      hmo:
+      ppo:
+      epo:
+      pos:
+      hdhp:
+  MetalTierEnum:
+    enum_uri: hp:MetalTierEnum
+    description: ACA actuarial value tiers (individual and small group only).
+    permissible_values:
+      bronze:
+      silver:
+      gold:
+      platinum:
+      not_applicable:
+        description: Large group, ASO and Medicare plans.
+  AccumulatorTypeEnum:
+    enum_uri: hp:AccumulatorTypeEnum
+    permissible_values:
+      deductible:
+      out_of_pocket:
+  ClaimTypeEnum:
+    enum_uri: hp:ClaimTypeEnum
+    permissible_values:
+      professional:
+        description: 837P / CMS-1500
+      institutional:
+        description: 837I / UB-04
+      dental:
+      pharmacy:
+  ClaimStatusEnum:
+    enum_uri: hp:ClaimStatusEnum
+    description: Claim lifecycle state.
+    permissible_values:
+      received:
+      pended:
+      adjudicated:
+      paid:
+      denied:
+      voided:
+  LineStatusEnum:
+    enum_uri: hp:LineStatusEnum
+    permissible_values:
+      paid:
+      denied:
+      adjusted:
+  UrgencyEnum:
+    enum_uri: hp:UrgencyEnum
+    permissible_values:
+      standard:
+      expedited:
+  PriorAuthStatusEnum:
+    enum_uri: hp:PriorAuthStatusEnum
+    description: Prior authorization lifecycle state.
+    permissible_values:
+      submitted:
+      in_review:
+      pended_for_info:
+      approved:
+      partially_approved:
+      denied:
+      withdrawn:
+
+  # ------------------------------------------------- commercial & enrollment
+  MarketSegmentEnum:
+    enum_uri: hp:MarketSegmentEnum
+    description: >-
+      Market segment. `mlr_minimum` is the minimum medical loss ratio that
+      applies (ACA for commercial, 42 CFR 422.2410 for MA).
+    permissible_values:
+      individual:
+        annotations:
+          mlr_minimum: 0.80
+      small_group:
+        annotations:
+          mlr_minimum: 0.80
+      large_group:
+        annotations:
+          mlr_minimum: 0.85
+      medicare_individual:
+        annotations:
+          mlr_minimum: 0.85
+      medicare_group:
+        description: Employer group waiver plan (EGWP).
+        annotations:
+          mlr_minimum: 0.85
+  FundingTypeEnum:
+    enum_uri: hp:FundingTypeEnum
+    permissible_values:
+      fully_insured:
+        description: The payer bears the claim risk in exchange for premium.
+      aso:
+        description: Administrative services only; the employer self-funds claims.
+      level_funded:
+        description: Self-funded with stop-loss and a fixed monthly funding amount.
+  DualStatusEnum:
+    enum_uri: hp:DualStatusEnum
+    permissible_values:
+      non_dual:
+      full_benefit_dual:
+        description: Eligible for full Medicaid benefits.
+      partial_benefit_dual:
+        description: Medicaid pays Medicare premiums and/or cost sharing only (MSP).
+  LisLevelEnum:
+    enum_uri: hp:LisLevelEnum
+    permissible_values:
+      none:
+      partial:
+      full:
+  InvoiceStatusEnum:
+    enum_uri: hp:InvoiceStatusEnum
+    permissible_values:
+      open:
+      paid:
+      partially_paid:
+      written_off:
+
+  # ------------------------------------------------------ Medicare Advantage
+  MAContractTypeEnum:
+    enum_uri: hp:MAContractTypeEnum
+    permissible_values:
+      local_hmo:
+      local_ppo:
+      regional_ppo:
+      pffs:
+        description: Private fee-for-service.
+      msa:
+        description: Medical savings account.
+  SnpTypeEnum:
+    enum_uri: hp:SnpTypeEnum
+    description: Special needs plan type.
+    permissible_values:
+      none:
+      dual_eligible:
+        description: D-SNP.
+      chronic_condition:
+        description: C-SNP.
+      institutional:
+        description: I-SNP.
+  HccModelEnum:
+    enum_uri: hp:HccModelEnum
+    description: Risk adjustment model versions.
+    permissible_values:
+      cms_hcc_v24:
+        description: 2020 CMS-HCC model (V24).
+      cms_hcc_v28:
+        description: 2024 CMS-HCC model (V28), phased in over payment years 2024-2026.
+      rx_hcc:
+        description: Part D RxHCC model.
+      esrd:
+        description: ESRD dialysis / functioning graft models.
+  RiskScoreBasisEnum:
+    enum_uri: hp:RiskScoreBasisEnum
+    description: How a payment-year Part C risk score was calculated.
+    permissible_values:
+      cms_hcc_v24:
+        description: 100% 2020 CMS-HCC (V24) model (payment years before 2024).
+      cms_hcc_v24_v28_blend:
+        description: Phase-in blend of V24 and V28 scores (payment years 2024-2025).
+      esrd:
+        description: ESRD model.
+  RiskScoreRunEnum:
+    enum_uri: hp:RiskScoreRunEnum
+    permissible_values:
+      initial:
+      midyear:
+      final:
+  RiskSegmentEnum:
+    enum_uri: hp:RiskSegmentEnum
+    permissible_values:
+      community_non_dual:
+      community_partial_dual:
+      community_full_dual:
+      institutional:
+      new_enrollee:
+      esrd:
+  DiagnosisSourceEnum:
+    enum_uri: hp:DiagnosisSourceEnum
+    permissible_values:
+      encounter_data:
+        description: Encounter Data System (EDS) record.
+      raps:
+        description: Legacy Risk Adjustment Processing System record.
+      chart_review_add:
+      chart_review_delete:
+  EncounterSubmissionStatusEnum:
+    enum_uri: hp:EncounterSubmissionStatusEnum
+    permissible_values:
+      accepted:
+      rejected:
+  StarMeasureSourceEnum:
+    enum_uri: hp:StarMeasureSourceEnum
+    permissible_values:
+      hedis:
+        description: NCQA HEDIS (licensed specifications).
+      cahps:
+        description: Consumer survey of member experience.
+      hos:
+        description: Health Outcomes Survey.
+      part_d:
+        description: Prescription drug event (PDE) based measures.
+      administrative:
+        description: CMS administrative data (appeals, complaints, call center).
+
+  # ------------------------------------------------------ provider contracting
+  FeeScheduleTypeEnum:
+    enum_uri: hp:FeeScheduleTypeEnum
+    permissible_values:
+      medicare_based:
+      custom:
+      drg_based:
+      per_diem:
+  ReimbursementMethodEnum:
+    enum_uri: hp:ReimbursementMethodEnum
+    permissible_values:
+      fee_schedule:
+      percent_of_medicare:
+      percent_of_charges:
+      drg:
+      per_diem:
+      capitation:
+  ContractStatusEnum:
+    enum_uri: hp:ContractStatusEnum
+    permissible_values:
+      pending:
+      active:
+      terminated:
+  ValueBasedArrangementTypeEnum:
+    enum_uri: hp:ValueBasedArrangementTypeEnum
+    permissible_values:
+      primary_care_capitation:
+      global_capitation:
+      shared_savings:
+      shared_risk:
+      pay_for_performance:
+      bundled_payment:
+
+  # ------------------------------------------------------------ claims & UM
+  ServiceCategoryEnum:
+    enum_uri: hp:ServiceCategoryEnum
+    description: Utilization category used for PMPM and per-1,000 reporting.
+    permissible_values:
+      inpatient:
+        description: Inpatient facility stay (one claim per admission).
+      emergency:
+        description: Emergency department visit not resulting in admission.
+      outpatient:
+        description: Outpatient facility (surgery, imaging, observation, SNF/home health).
+      professional:
+      ancillary:
+        description: Lab, DME and other ancillary services.
+  DenialCategoryEnum:
+    enum_uri: hp:DenialCategoryEnum
+    description: Payer grouping of claim denial reasons (CARCs carry the detail).
+    permissible_values:
+      medical_necessity:
+      no_prior_authorization:
+      not_covered:
+      eligibility:
+      duplicate:
+      timely_filing:
+      coding_billing_error:
+      coordination_of_benefits:
+  AppealLevelEnum:
+    enum_uri: hp:AppealLevelEnum
+    permissible_values:
+      internal_first_level:
+        description: Plan reconsideration / redetermination.
+      internal_second_level:
+      independent_review_entity:
+        description: MA Part C reconsiderations upheld by the plan are auto-forwarded to the IRE.
+      external_review:
+        description: Commercial independent external review.
+      administrative_law_judge:
+  AppealOutcomeEnum:
+    enum_uri: hp:AppealOutcomeEnum
+    permissible_values:
+      pending:
+      upheld:
+        description: Original adverse decision stands.
+      overturned:
+      partially_overturned:
+      dismissed:
+      withdrawn:
+  GrievanceCategoryEnum:
+    enum_uri: hp:GrievanceCategoryEnum
+    permissible_values:
+      access_to_care:
+      quality_of_care:
+      customer_service:
+      billing_premium:
+      enrollment:
+      pharmacy:
+  GrievanceStatusEnum:
+    enum_uri: hp:GrievanceStatusEnum
+    permissible_values:
+      open:
+      resolved:
+
+  # ---------------------------------------------------------------- pharmacy
+  PharmacyTypeEnum:
+    enum_uri: hp:PharmacyTypeEnum
+    permissible_values:
+      retail:
+      mail_order:
+      specialty:
+      long_term_care:
+  PbmPricingModelEnum:
+    enum_uri: hp:PbmPricingModelEnum
+    permissible_values:
+      pass_through:
+      spread:
+      hybrid:
+  BrandGenericEnum:
+    enum_uri: hp:BrandGenericEnum
+    permissible_values:
+      brand:
+      generic:
+  FormularyTypeEnum:
+    enum_uri: hp:FormularyTypeEnum
+    permissible_values:
+      commercial_open:
+      commercial_closed:
+      medicare_part_d:
+  FormularyTierTypeEnum:
+    enum_uri: hp:FormularyTierTypeEnum
+    permissible_values:
+      preferred_generic:
+      generic:
+      preferred_brand:
+      non_preferred_drug:
+      specialty:
+  PharmacyClaimStatusEnum:
+    enum_uri: hp:PharmacyClaimStatusEnum
+    permissible_values:
+      paid:
+      rejected:
+      reversed:
+
+  # ----------------------------------------------------------------- finance
+  QiaActivityEnum:
+    enum_uri: hp:QiaActivityEnum
+    description: Quality improvement activity categories counted in the MLR numerator.
+    permissible_values:
+      improve_health_outcomes:
+      prevent_readmissions:
+      patient_safety:
+      wellness_health_promotion:
+      health_it:

@@ -1,0 +1,303 @@
+table Metrics
+	lineageTag: 08654ce0-255a-5c0e-8ac2-211e46e418b0
+
+	column Year
+		dataType: int64
+		formatString: 0
+		lineageTag: fc442390-74b8-5adb-ab5b-312289b941d4
+		summarizeBy: none
+		sourceColumn: Year
+
+		annotation SummarizationSetBy = Automatic
+
+	column Members
+		dataType: int64
+		formatString: #,0
+		lineageTag: 0510e420-0ab4-5f19-b9f7-d9b6dc15ee6c
+		summarizeBy: sum
+		sourceColumn: Members
+
+		annotation SummarizationSetBy = Automatic
+
+	column Subscribers
+		dataType: int64
+		formatString: #,0
+		lineageTag: 988153b6-6473-5fe9-a5b5-6c7f14c26477
+		summarizeBy: sum
+		sourceColumn: Subscribers
+
+		annotation SummarizationSetBy = Automatic
+
+	column Dependents
+		dataType: int64
+		formatString: #,0
+		lineageTag: 1f93d550-143d-50b1-8e23-6bc6d20c4432
+		summarizeBy: sum
+		sourceColumn: Dependents
+
+		annotation SummarizationSetBy = Automatic
+
+	column RiskScore
+		dataType: double
+		formatString: 0.00
+		lineageTag: e4a893c8-a45d-5e84-80f5-1584b4770c0c
+		summarizeBy: sum
+		sourceColumn: RiskScore
+
+		annotation SummarizationSetBy = Automatic
+
+	column PaidPMPM
+		dataType: double
+		formatString: \$#,0.00
+		lineageTag: 40312499-4a10-53b8-a157-42609a0cd461
+		summarizeBy: sum
+		sourceColumn: PaidPMPM
+
+		annotation SummarizationSetBy = Automatic
+
+	column MedicalPMPM
+		dataType: double
+		formatString: \$#,0.00
+		lineageTag: 3eb96b8a-c6bf-5123-a576-c872f0496448
+		summarizeBy: sum
+		sourceColumn: MedicalPMPM
+
+		annotation SummarizationSetBy = Automatic
+
+	column BHPMPM
+		dataType: double
+		formatString: \$#,0.00
+		lineageTag: 965adc71-6869-5f76-bb95-b16f2b995075
+		summarizeBy: sum
+		sourceColumn: BHPMPM
+
+		annotation SummarizationSetBy = Automatic
+
+	column HCC
+		dataType: int64
+		formatString: #,0
+		lineageTag: 7be11b18-3751-5e47-ac00-bb188def30f9
+		summarizeBy: sum
+		sourceColumn: HCC
+
+		annotation SummarizationSetBy = Automatic
+
+	column PMPMPerHCC
+		dataType: int64
+		formatString: \$#,0
+		lineageTag: ceae0291-8a30-5674-a34e-2ab2aa1ea2b2
+		summarizeBy: sum
+		sourceColumn: PMPMPerHCC
+
+		annotation SummarizationSetBy = Automatic
+
+	column AdmitsK
+		dataType: double
+		formatString: 0.0
+		lineageTag: 14c87bcd-daa6-5d47-827e-814261826bdb
+		summarizeBy: sum
+		sourceColumn: AdmitsK
+
+		annotation SummarizationSetBy = Automatic
+
+	column PaidPerAdmit
+		dataType: int64
+		formatString: \$#,0
+		lineageTag: 03ce13a4-3be3-5463-ab60-4dd4e5a1163f
+		summarizeBy: sum
+		sourceColumn: PaidPerAdmit
+
+		annotation SummarizationSetBy = Automatic
+
+	column OPVisitsK
+		dataType: double
+		formatString: #,0.0
+		lineageTag: 35a8f7ed-c44d-5900-843c-6bf77fe68a24
+		summarizeBy: sum
+		sourceColumn: OPVisitsK
+
+		annotation SummarizationSetBy = Automatic
+
+	column PaidPerOP
+		dataType: int64
+		formatString: \$#,0
+		lineageTag: cf4cfeb4-fd03-5a69-a11c-17ceb604f3d1
+		summarizeBy: sum
+		sourceColumn: PaidPerOP
+
+		annotation SummarizationSetBy = Automatic
+
+	column ProfVisitsK
+		dataType: double
+		formatString: #,0
+		lineageTag: e0cc2ba4-6cfc-5c8d-abe1-1a1fdb757b72
+		summarizeBy: sum
+		sourceColumn: ProfVisitsK
+
+		annotation SummarizationSetBy = Automatic
+
+	column PaidPerProf
+		dataType: int64
+		formatString: \$#,0
+		lineageTag: 9021c954-4354-56b9-a0c4-ac3e5e041e27
+		summarizeBy: sum
+		sourceColumn: PaidPerProf
+
+		annotation SummarizationSetBy = Automatic
+
+	column PctFemale
+		dataType: double
+		formatString: 0%
+		lineageTag: a5615d6f-f983-5622-b4da-bf1e112f0ec5
+		summarizeBy: sum
+		sourceColumn: PctFemale
+
+		annotation SummarizationSetBy = Automatic
+
+	column AvgAge
+		dataType: double
+		formatString: 0.0
+		lineageTag: 1ff7ba1d-b9a0-562f-b130-1489c4a437d4
+		summarizeBy: sum
+		sourceColumn: AvgAge
+
+		annotation SummarizationSetBy = Automatic
+
+	measure 'Average Members' = VAR _y = MAX(Metrics[Year]) RETURN CALCULATE(SUM(Metrics[Members]), ALLSELECTED(Metrics), Metrics[Year] = _y)
+		formatString: #,0
+		lineageTag: cb1afe9a-8bba-53d0-b72e-9ea2b99d2ae5
+
+	measure 'Members YoY' = VAR _y = MAX(Metrics[Year]) VAR _c = CALCULATE(SUM(Metrics[Members]), ALL(Metrics), Metrics[Year] = _y) VAR _p = CALCULATE(SUM(Metrics[Members]), ALL(Metrics), Metrics[Year] = _y - 1) VAR _d = DIVIDE(_c - _p, _p) RETURN IF(ISBLANK(_p), "--", IF(_d < 0, "▼ ", "▲ ") & FORMAT(ABS(_d), "0.0%") & " YoY")
+		lineageTag: 03b05468-12bd-57cb-a1d1-a19dd6c6f1e7
+
+	measure '% Female' = VAR _y = MAX(Metrics[Year]) RETURN CALCULATE(SUM(Metrics[PctFemale]), ALLSELECTED(Metrics), Metrics[Year] = _y)
+		formatString: 0%
+		lineageTag: e27339fa-e0e5-5955-9c69-723e9a7676bd
+
+	measure 'Avg Age' = VAR _y = MAX(Metrics[Year]) RETURN CALCULATE(SUM(Metrics[AvgAge]), ALLSELECTED(Metrics), Metrics[Year] = _y)
+		formatString: 0.0
+		lineageTag: de9ac95a-382f-501b-9105-a7a3eb533d79
+
+	measure 'Average Risk Score' = VAR _y = MAX(Metrics[Year]) RETURN CALCULATE(SUM(Metrics[RiskScore]), ALLSELECTED(Metrics), Metrics[Year] = _y)
+		formatString: 0.00
+		lineageTag: 4d69f761-ee23-528d-a8c9-fe5f3b24a736
+
+	measure 'Risk Score YoY' = VAR _y = MAX(Metrics[Year]) VAR _c = CALCULATE(SUM(Metrics[RiskScore]), ALL(Metrics), Metrics[Year] = _y) VAR _p = CALCULATE(SUM(Metrics[RiskScore]), ALL(Metrics), Metrics[Year] = _y - 1) VAR _d = DIVIDE(_c - _p, _p) RETURN IF(ISBLANK(_p), "--", IF(_d < 0, "▼ ", "▲ ") & FORMAT(ABS(_d), "0.0%") & " YoY")
+		lineageTag: 88612b2e-cd0a-5327-828d-75bd1447e678
+
+	measure '2021 Baseline' = CALCULATE(SUM(Metrics[RiskScore]), ALL(Metrics), Metrics[Year] = 2021)
+		formatString: 0.00
+		lineageTag: dc856754-f217-5fec-a9a9-66dfbd3dc3ec
+
+	measure '5Yr Change' = VAR _y = MAX(Metrics[Year]) VAR _c = CALCULATE(SUM(Metrics[RiskScore]), ALLSELECTED(Metrics), Metrics[Year] = _y) VAR _b = CALCULATE(SUM(Metrics[RiskScore]), ALL(Metrics), Metrics[Year] = 2021) RETURN _c - _b
+		formatString: +0.00;-0.00;0.00
+		lineageTag: 0030c45a-3ef8-5758-b8bc-a5f1339d875b
+
+	measure 'Paid PMPM' = VAR _y = MAX(Metrics[Year]) RETURN CALCULATE(SUM(Metrics[PaidPMPM]), ALLSELECTED(Metrics), Metrics[Year] = _y)
+		formatString: \$#,0
+		lineageTag: e9543534-ccb1-5b7c-8104-2227d91f778c
+
+	measure 'Paid PMPM YoY' = VAR _y = MAX(Metrics[Year]) VAR _c = CALCULATE(SUM(Metrics[PaidPMPM]), ALL(Metrics), Metrics[Year] = _y) VAR _p = CALCULATE(SUM(Metrics[PaidPMPM]), ALL(Metrics), Metrics[Year] = _y - 1) VAR _d = DIVIDE(_c - _p, _p) RETURN IF(ISBLANK(_p), "--", IF(_d < 0, "▼ ", "▲ ") & FORMAT(ABS(_d), "0.0%") & " YoY")
+		lineageTag: 977b9e93-8850-5ad4-aaed-ecc226af1824
+
+	measure 'Medical PMPM' = VAR _y = MAX(Metrics[Year]) RETURN CALCULATE(SUM(Metrics[MedicalPMPM]), ALLSELECTED(Metrics), Metrics[Year] = _y)
+		formatString: \$#,0.00
+		lineageTag: c9615596-f300-52be-a203-d136b2f692f8
+
+	measure 'BH PMPM' = VAR _y = MAX(Metrics[Year]) RETURN CALCULATE(SUM(Metrics[BHPMPM]), ALLSELECTED(Metrics), Metrics[Year] = _y)
+		formatString: \$#,0.00
+		lineageTag: b868138d-e4a0-5def-8a53-014d62f34401
+
+	measure 'High Cost Claimants' = VAR _y = MAX(Metrics[Year]) RETURN CALCULATE(SUM(Metrics[HCC]), ALLSELECTED(Metrics), Metrics[Year] = _y)
+		formatString: #,0
+		lineageTag: dd2f81cd-f39b-50d2-98c2-debe3ac9d159
+
+	measure 'Claimants YoY' = VAR _y = MAX(Metrics[Year]) VAR _c = CALCULATE(SUM(Metrics[HCC]), ALL(Metrics), Metrics[Year] = _y) VAR _p = CALCULATE(SUM(Metrics[HCC]), ALL(Metrics), Metrics[Year] = _y - 1) VAR _d = DIVIDE(_c - _p, _p) RETURN IF(ISBLANK(_p), "--", IF(_d < 0, "▼ ", "▲ ") & FORMAT(ABS(_d), "0.0%") & " Claimants YoY")
+		lineageTag: 64801802-7b7a-57df-9a1e-b783b5196a44
+
+	measure 'PMPM per HCC' = VAR _y = MAX(Metrics[Year]) RETURN CALCULATE(SUM(Metrics[PMPMPerHCC]), ALLSELECTED(Metrics), Metrics[Year] = _y)
+		formatString: \$#,0
+		lineageTag: a0966345-befa-5886-8453-ce0c78e75e55
+
+	measure 'PMPM YoY' = VAR _y = MAX(Metrics[Year]) VAR _c = CALCULATE(SUM(Metrics[PMPMPerHCC]), ALL(Metrics), Metrics[Year] = _y) VAR _p = CALCULATE(SUM(Metrics[PMPMPerHCC]), ALL(Metrics), Metrics[Year] = _y - 1) VAR _d = DIVIDE(_c - _p, _p) RETURN IF(ISBLANK(_p), "--", IF(_d < 0, "▼ ", "▲ ") & FORMAT(ABS(_d), "0.0%") & " YoY")
+		lineageTag: ec5cc772-aca8-5e16-b988-b03ba4034bab
+
+	measure 'Subscriber' = SUM(Metrics[Subscribers])
+		formatString: #,0
+		lineageTag: 14323e11-0728-569f-af1b-670fcee009cc
+
+	measure 'Dependent' = SUM(Metrics[Dependents])
+		formatString: #,0
+		lineageTag: f549a79b-b85d-58f3-9b19-d41ca4ea3279
+
+	measure 'Risk Score' = SUM(Metrics[RiskScore])
+		formatString: 0.00
+		lineageTag: fecc7d3e-f3f1-5384-afd6-347628add7fc
+
+	measure 'Total PMPM' = SUM(Metrics[PaidPMPM])
+		formatString: \$#,0
+		lineageTag: e89408a3-22f9-5a2d-b561-da9d060ec376
+
+	measure 'Medical PMPM Trend' = SUM(Metrics[MedicalPMPM])
+		formatString: \$#,0
+		lineageTag: 60174079-f2a6-55d1-8896-f0d7e6c51fcd
+
+	measure 'BH PMPM Trend' = SUM(Metrics[BHPMPM])
+		formatString: \$#,0
+		lineageTag: aef4ead3-7935-5c82-a6b8-d8a4332c3ddf
+
+	measure 'PMPM per HCC Trend' = SUM(Metrics[PMPMPerHCC])
+		formatString: \$#,0
+		lineageTag: f66db2d4-5c27-5c2f-b31f-f78f4fe40479
+
+	measure 'Claimant Count' = SUM(Metrics[HCC])
+		formatString: #,0
+		lineageTag: b3602035-db90-57e1-8c13-dc960159543e
+
+	measure 'Admits / K' = SUM(Metrics[AdmitsK])
+		formatString: 0.0
+		lineageTag: ec70bb49-beae-537d-aef1-86190768e012
+
+	measure 'Paid per Admit' = SUM(Metrics[PaidPerAdmit])
+		formatString: \$#,0
+		lineageTag: 4b3d08f8-cad6-53e0-9826-895ccc808524
+
+	measure 'OP Visits / K' = SUM(Metrics[OPVisitsK])
+		formatString: #,0.0
+		lineageTag: cb899a15-8705-5306-b8e8-3cbdb43ddf8c
+
+	measure 'Paid per OP Visit' = SUM(Metrics[PaidPerOP])
+		formatString: \$#,0
+		lineageTag: f227d24a-7a24-5390-8b87-6c05cf502f0f
+
+	measure 'Prof Visits / K' = SUM(Metrics[ProfVisitsK])
+		formatString: #,0
+		lineageTag: 5418365a-4370-5182-b3d1-72b96a359f1a
+
+	measure 'Paid per Prof Visit' = SUM(Metrics[PaidPerProf])
+		formatString: \$#,0
+		lineageTag: 88683340-4034-561f-9a27-48c80f899f33
+
+	measure 'Chip Admits K' = VAR _y = MAX(Metrics[Year]) VAR _c = CALCULATE(SUM(Metrics[AdmitsK]), ALL(Metrics), Metrics[Year] = _y) VAR _p = CALCULATE(SUM(Metrics[AdmitsK]), ALL(Metrics), Metrics[Year] = _y - 1) VAR _d = DIVIDE(_c - _p, _p) RETURN "Admits/K  " & IF(_d < 0, "▼", "▲") & FORMAT(ABS(_d), "0.0%")
+		lineageTag: d171414a-c695-56b9-8cbc-7b9264d16c43
+
+	measure 'Chip Per Admit Cost' = VAR _y = MAX(Metrics[Year]) VAR _c = CALCULATE(SUM(Metrics[PaidPerAdmit]), ALL(Metrics), Metrics[Year] = _y) VAR _p = CALCULATE(SUM(Metrics[PaidPerAdmit]), ALL(Metrics), Metrics[Year] = _y - 1) VAR _d = DIVIDE(_c - _p, _p) RETURN "Per Admit Cost  " & IF(_d < 0, "▼", "▲") & FORMAT(ABS(_d), "0.0%")
+		lineageTag: b42a9014-05b0-5d1d-bb54-e8334b72b2df
+
+	measure 'Chip OP Visits K' = VAR _y = MAX(Metrics[Year]) VAR _c = CALCULATE(SUM(Metrics[OPVisitsK]), ALL(Metrics), Metrics[Year] = _y) VAR _p = CALCULATE(SUM(Metrics[OPVisitsK]), ALL(Metrics), Metrics[Year] = _y - 1) VAR _d = DIVIDE(_c - _p, _p) RETURN "OP Visits/K  " & IF(_d < 0, "▼", "▲") & FORMAT(ABS(_d), "0.0%")
+		lineageTag: ac2c1cd1-fef9-5523-ad9e-ff39fc781955
+
+	measure 'Chip Per OP Visit Cost' = VAR _y = MAX(Metrics[Year]) VAR _c = CALCULATE(SUM(Metrics[PaidPerOP]), ALL(Metrics), Metrics[Year] = _y) VAR _p = CALCULATE(SUM(Metrics[PaidPerOP]), ALL(Metrics), Metrics[Year] = _y - 1) VAR _d = DIVIDE(_c - _p, _p) RETURN "Per OP Visit Cost  " & IF(_d < 0, "▼", "▲") & FORMAT(ABS(_d), "0.0%")
+		lineageTag: 2a3429f8-e898-56b1-acce-9f3b903c8fa8
+
+	measure 'Chip Prof Visits K' = VAR _y = MAX(Metrics[Year]) VAR _c = CALCULATE(SUM(Metrics[ProfVisitsK]), ALL(Metrics), Metrics[Year] = _y) VAR _p = CALCULATE(SUM(Metrics[ProfVisitsK]), ALL(Metrics), Metrics[Year] = _y - 1) VAR _d = DIVIDE(_c - _p, _p) RETURN "Prof Visits/K  " & IF(_d < 0, "▼", "▲") & FORMAT(ABS(_d), "0.0%")
+		lineageTag: 22c58031-bae3-5dac-91e0-1e2fe2a5a416
+
+	measure 'Chip Per Prof Visit Cost' = VAR _y = MAX(Metrics[Year]) VAR _c = CALCULATE(SUM(Metrics[PaidPerProf]), ALL(Metrics), Metrics[Year] = _y) VAR _p = CALCULATE(SUM(Metrics[PaidPerProf]), ALL(Metrics), Metrics[Year] = _y - 1) VAR _d = DIVIDE(_c - _p, _p) RETURN "Per Prof Visit Cost  " & IF(_d < 0, "▼", "▲") & FORMAT(ABS(_d), "0.0%")
+		lineageTag: ed03612a-eb0e-5456-aeda-8e13af4e2c90
+
+	partition Metrics = m
+		mode: import
+		source = let Source = Table.FromRows({{2021,185000,101750,83250,1.32,362.0,346.8,15.2,1440,20598,98.8,12600,1718.6,950,10836,275,0.49,36.1}, {2022,188000,103400,84600,1.34,401.0,383.2,17.8,1695,20700,102.8,13300,1770.5,1005,11803,292,0.49,36.3}, {2023,192000,105600,86400,1.35,414.0,394.4,19.6,1422,21100,98.1,13250,1826.6,1065,11666,305,0.49,36.5}, {2024,190425,104734,85691,1.37,442.0,419.9,22.1,1490,19814,99.2,13860,1880.6,1147,12048,333,0.49,36.7}, {2025,168336,92585,75751,1.39,484.75,459.81,24.94,1387,21812,98.1,16300,1953.5,1232,12113,358,0.49,36.8}}, {"Year", "Members", "Subscribers", "Dependents", "RiskScore", "PaidPMPM", "MedicalPMPM", "BHPMPM", "HCC", "PMPMPerHCC", "AdmitsK", "PaidPerAdmit", "OPVisitsK", "PaidPerOP", "ProfVisitsK", "PaidPerProf", "PctFemale", "AvgAge"}), Typed = Table.TransformColumnTypes(Source, {{"Year", Int64.Type}, {"Members", Int64.Type}, {"Subscribers", Int64.Type}, {"Dependents", Int64.Type}, {"RiskScore", type number}, {"PaidPMPM", type number}, {"MedicalPMPM", type number}, {"BHPMPM", type number}, {"HCC", Int64.Type}, {"PMPMPerHCC", Int64.Type}, {"AdmitsK", type number}, {"PaidPerAdmit", Int64.Type}, {"OPVisitsK", type number}, {"PaidPerOP", Int64.Type}, {"ProfVisitsK", type number}, {"PaidPerProf", Int64.Type}, {"PctFemale", type number}, {"AvgAge", type number}}) in Typed
+
+	annotation PBI_ResultType = Table

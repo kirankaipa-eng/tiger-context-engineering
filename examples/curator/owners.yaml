@@ -1,0 +1,18 @@
+# Who approves what. CI generates CODEOWNERS from this file.
+# Names are placeholders; replace with real GitLab users or groups.
+areas:
+  pack-concepts:
+    paths: [ontology/core/, ontology/lines/]
+    owners: ["@pack-steward"]
+  client-vocabulary:
+    paths: [clients/summit_group/client.yaml]
+    owners: ["@summit-data-steward"]
+  metrics:
+    paths: [ontology/metrics/]
+    owners: ["@actuarial-lead"]
+  unit-mappings-hpg:
+    paths: [clients/summit_group/units/hpg/]
+    owners: ["@hpg-data-engineer"]
+  privacy:
+    paths: ["**/sensitivity"]
+    owners: ["@privacy-officer"]

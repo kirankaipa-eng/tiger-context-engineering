@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Context Studio: review inbox</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=IBM+Plex+Mono:wght@400&amp;display=swap">
+<style>
+body{margin:0;font-family:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;color:#1c1c1a;background:#f4f3ef}
+a{color:#1f4fbf;text-decoration:none}a:hover{color:#163a8c}
+.nav{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:6px;color:#3d3c38;font-size:14px}
+.nav.on{background:#e3e7f3;color:#163a8c;font-weight:600}
+.badge{margin-left:auto;background:#1f4fbf;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px}
+.lbl{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#6b6960;font-weight:600}
+.box{border:1px solid #d3d0c7;border-radius:8px;background:#fff}
+.pill{font-size:12px;padding:3px 9px;border-radius:12px;border:1px solid #d3d0c7;color:#3d3c38;background:#faf9f6}
+.ok{border-color:#9cc3a6;color:#23603a;background:#eef6f0}
+.btn{font:inherit;font-size:14px;padding:10px 16px;border-radius:6px;border:1px solid #bdb9ae;background:#fff;color:#1c1c1a;min-height:44px}
+.btn.primary{background:#1f4fbf;border-color:#1f4fbf;color:#fff;font-weight:600}
+.muted{color:#6b6960}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px}
+</style>
+</head>
+<body>
+<div style="width: 1440px; height: 900px; display: flex; flex-direction: column; overflow: hidden">
+  <header style="height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 16px; padding: 0 20px; background: #fff; border-bottom: 1px solid #d3d0c7">
+    <div style="font-weight: 600; font-size: 16px; width: 176px">Context Studio</div>
+    <button class="btn" style="min-height: 36px; padding: 6px 12px">Summit Group · Commercial P&amp;C</button>
+    <label style="flex-grow: 1; max-width: 520px"><span class="lbl" style="position: absolute; left: -9999px">Search</span><input type="search" placeholder="Search concepts, metrics, proposals" style="width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 8px 12px; border: 1px solid #d3d0c7; border-radius: 6px; background: #faf9f6"></label>
+    <div style="margin-left: auto; font-size: 14px" class="muted">Signed in as <b style="color: #1c1c1a">Pack steward</b></div>
+  </header>
+  <div style="flex-grow: 1; display: flex; min-height: 0">
+    <nav style="width: 216px; flex-shrink: 0; padding: 16px 12px; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid #d3d0c7; background: #f4f3ef">
+      <a class="nav on" href="inbox.html">Inbox <span class="badge">1</span></a>
+      <a class="nav" href="map.html">Map</a>
+      <a class="nav" href="concept.html">Concepts</a>
+      <a class="nav" href="metric.html">Metrics</a>
+      <a class="nav" href="mapping.html">Mappings</a>
+      <a class="nav" href="history.html">History</a>
+    </nav>
+
+    <section style="width: 340px; flex-shrink: 0; border-right: 1px solid #d3d0c7; background: #faf9f6; display: flex; flex-direction: column">
+      <div style="padding: 16px; display: flex; gap: 6px; flex-wrap: wrap; border-bottom: 1px solid #d3d0c7">
+        <button class="pill" style="background: #e3e7f3; color: #163a8c; border-color: #b8c4e6">Waiting for me · 1</button>
+        <button class="pill">All open · 5</button>
+        <button class="pill">Questions · 1</button>
+      </div>
+      <div style="display: flex; flex-direction: column">
+        <div style="padding: 14px 16px; background: #fff; border-left: 3px solid #1f4fbf; border-bottom: 1px solid #e6e3db">
+          <div style="font-weight: 600; font-size: 14px">Add PFAS as a cause of loss</div>
+          <div style="font-size: 12px; margin-top: 4px" class="muted">Pack concepts · waiting for you · found 2h ago</div>
+        </div>
+        <div style="padding: 14px 16px; border-bottom: 1px solid #e6e3db">
+          <div style="font-size: 14px">HPG paid loss no longer includes expense</div>
+          <div style="font-size: 12px; margin-top: 4px" class="muted">HPG mappings · waiting for HPG data engineer</div>
+        </div>
+        <div style="padding: 14px 16px; border-bottom: 1px solid #e6e3db">
+          <div style="font-size: 14px">New claim status: suspended, litigation hold</div>
+          <div style="font-size: 12px; margin-top: 4px" class="muted">Client vocabulary · waiting for client steward</div>
+        </div>
+        <div style="padding: 14px 16px; border-bottom: 1px solid #e6e3db">
+          <div style="font-size: 14px">Two definitions of “litigated”</div>
+          <div style="font-size: 12px; margin-top: 4px" class="muted">Question for 2 owners · the curator did not pick one</div>
+        </div>
+        <div style="padding: 14px 16px; border-bottom: 1px solid #e6e3db">
+          <div style="font-size: 14px">Wildfire hours clause: 72 to 168 hours</div>
+          <div style="font-size: 12px; margin-top: 4px" class="muted">Client · checks running</div>
+        </div>
+      </div>
+    </section>
+
+    <main style="flex-grow: 1; min-width: 0; padding: 24px 28px; display: flex; flex-direction: column; gap: 16px; overflow: hidden">
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <div style="display: flex; gap: 8px; align-items: center"><span class="pill">Pack concepts</span><span class="pill">High confidence</span><span class="muted" style="font-size: 12px">Proposed by the curator</span></div>
+        <h1 style="margin: 0; font-size: 24px; font-weight: 600">Add PFAS as a cause of loss</h1>
+        <p style="margin: 0; font-size: 14px; line-height: 1.5">Claims can be coded <b>PFAS contamination</b> as their cause of loss. Every Commercial P&amp;C client gets it.</p>
+      </div>
+
+      <div class="box" style="padding: 14px 16px; display: flex; flex-direction: column; gap: 8px">
+        <div class="lbl">Why: the source</div>
+        <blockquote style="margin: 0; padding-left: 12px; border-left: 3px solid #d3d0c7; font-size: 14px; line-height: 1.5">“Effective January 1, 2027, insurers shall code claims alleging bodily injury or property damage arising from per- and polyfluoroalkyl substances (PFAS) under a separate cause-of-loss code…”</blockquote>
+        <div style="font-size: 13px"><span class="muted">DOI Bulletin 2026-14 · page 3 ·</span> <a href="#">Open the page</a></div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
+        <div class="box" style="padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+          <div class="lbl">Proof in the data</div>
+          <div style="font-size: 14px; line-height: 1.5">HPG already has <b>5 claims</b> coded <span class="mono">PFAS</span> that the ontology does not recognise.</div>
+          <a href="#" style="font-size: 13px">See the 5 claims</a>
+        </div>
+        <div class="box" style="padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+          <div class="lbl">Set aside</div>
+          <div style="font-size: 13px; line-height: 1.5">Underwriting guideline v7, p.2: a rule, not the ontology.<br>Trade press article: news.</div>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px">
+        <div class="lbl">Checks</div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap">
+          <span class="pill ok">Ontology builds</span><span class="pill ok">Tests pass</span><span class="pill ok">Totals reconcile</span><span class="pill ok">Evidence cited</span>
+        </div>
+        <div style="font-size: 13px" class="muted">Impact: no metric changes today. Claim counts by cause of loss gain a PFAS row.</div>
+      </div>
+
+      <div style="display: flex; gap: 10px; margin-top: auto; padding-top: 16px; border-top: 1px solid #e6e3db">
+        <button class="btn primary">Approve</button>
+        <button class="btn">Request changes</button>
+        <button class="btn">Ask the curator</button>
+        <a href="#" style="margin-left: auto; align-self: center; font-size: 13px">See exactly what changes</a>
+      </div>
+    </main>
+
+    <aside style="width: 320px; flex-shrink: 0; border-left: 1px solid #d3d0c7; background: #fff; display: flex; flex-direction: column">
+      <div style="padding: 16px; border-bottom: 1px solid #e6e3db"><div style="font-weight: 600; font-size: 14px">Curator</div><div class="muted" style="font-size: 12px">About: Add PFAS as a cause of loss</div></div>
+      <div style="flex-grow: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px; font-size: 13px; line-height: 1.5">
+        <div style="align-self: flex-end; max-width: 240px; background: #e3e7f3; padding: 10px 12px; border-radius: 8px">Why the pack and not just Summit?</div>
+        <div style="max-width: 260px; background: #f4f3ef; padding: 10px 12px; border-radius: 8px">It is a state rule, so every P&amp;C carrier writing there needs the code. That makes it a pack concept, which you own.</div>
+        <div style="align-self: flex-end; max-width: 240px; background: #e3e7f3; padding: 10px 12px; border-radius: 8px">What happens to open claims?</div>
+        <div style="max-width: 260px; background: #f4f3ef; padding: 10px 12px; border-radius: 8px">The bulletin says recode them at the next reserve review (page 3). I can draft a note for the claims teams after you approve.</div>
+      </div>
+      <label style="padding: 12px 16px; border-top: 1px solid #e6e3db"><span style="position: absolute; left: -9999px">Ask the curator</span><input placeholder="Ask about this proposal" style="width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 10px 12px; border: 1px solid #d3d0c7; border-radius: 6px"></label>
+    </aside>
+  </div>
+</div>
+</body>
+</html>

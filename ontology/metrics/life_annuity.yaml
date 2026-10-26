@@ -1,0 +1,833 @@
+# Governed metric definitions for the life & annuity pack (individual life + deferred annuities).
+#
+# Metrics are defined over ONTOLOGY paths, never tables: `{policy.product.life_product_type}`
+# is resolved to joins by following the ontology's relationships, so the same
+# definition runs on any client whose units are mapped. Client overlays may
+# override or add metrics (see clients/<client>/client.yaml `metrics:`); every
+# result carries the definition that produced it.
+#
+# Conventions:
+#   * Policies and contracts are the conformed spine: transactions, values, claims,
+#     reserves, riders and commissions reach product, issue year, state, channel and
+#     producer through `policy` (life) or `contract` (annuity), whichever is set.
+#   * Balances (account value, reserves, in-force counts) are point in time: they are
+#     measured at the valuation date. Re-run with an earlier as_of to trend them; never
+#     sum them across dates.
+#   * Ratios are ratios of sums, never averages of ratios, so any cut composes.
+#   * Rates per year (lapse, surrender) divide by exposure years from the derived
+#     InForceExposure entity, so partial years and recent issues weigh what they should.
+#   * Weighted new premium follows the industry convention: 100% of new annualized
+#     (recurring) premium plus 10% of single premium.
+#   * Mortality actual-to-expected compares reported life death claims with expected
+#     deaths on the experience basis (`vbt_2015` MortalityRate rows, ultimate rates by
+#     attained age, sex and tobacco class). Early durations run below an ultimate-only
+#     basis because of underwriting selection.
+#
+# Placeholders:  {path}   ontology path from the metric's entity
+#                {as_of}  valuation date (DATE literal)
+#                {ont}    group ontology schema
+
+version: 0.1.0
+
+# ------------------------------------------------------------ derived entities
+# Computed at query time (they depend on as_of), then usable like any entity.
+derived:
+  InForceExposure:
+    description: >-
+      One row per policy or contract per calendar year it was in force, through the
+      valuation date: the fraction of the year in force (exposure), attained age,
+      expected deaths on the experience mortality basis (life only), and whether it
+      lapsed or surrendered in that year. Not-taken and free-look policies never
+      went in force and are excluded. The denominator for lapse, surrender and
+      mortality actual-to-expected.
+    columns:
+      policy: {range: LifePolicy}
+      contract: {range: AnnuityContract}
+      source_system: {}
+      year: {}
+      attained_age: {}
+      exposure: {}
+      expected_deaths: {}
+      expected_death_benefit: {}
+      lapses: {}
+      surrenders: {}
+    sql: |
+      WITH cov AS (
+        SELECT p.id AS policy, CAST(NULL AS VARCHAR) AS contract, p.insured AS person, p.issue_date,
+               p.termination_date, p.termination_reason, p.issue_age, p.face_amount, p.source_system
+        FROM {ont}.life_policy p
+        WHERE coalesce(p.termination_reason, 'in_force') NOT IN ('not_taken', 'free_look')
+          AND p.issue_date <= {as_of}
+        UNION ALL
+        SELECT CAST(NULL AS VARCHAR), c.id, c.annuitant, c.issue_date, c.termination_date, c.termination_reason,
+               c.issue_age, CAST(NULL AS DECIMAL(18,2)), c.source_system
+        FROM {ont}.annuity_contract c
+        WHERE c.issue_date <= {as_of}
+      ),
+      years AS (
+        SELECT CAST(y AS INTEGER) AS year FROM (SELECT unnest(generate_series(2000, 2040)) AS y)
+      ),
+      spans AS (
+        SELECT cov.*, yr.year,
+               greatest(cov.issue_date, CAST(CAST(yr.year AS VARCHAR) || '-01-01' AS DATE)) AS span_start,
+               least(CASE WHEN cov.termination_date <= {as_of} THEN cov.termination_date ELSE {as_of} END,
+                     CAST(CAST(yr.year AS VARCHAR) || '-12-31' AS DATE)) AS span_end
+        FROM cov
+        JOIN years yr ON yr.year >= year(cov.issue_date) AND yr.year <= year({as_of})
+      ),
+      e AS (
+        SELECT s.*, date_diff('day', s.span_start, s.span_end) / 365.25 AS exposure,
+               s.issue_age + (s.year - year(s.issue_date)) AS attained_age
+        FROM spans s
+        WHERE s.span_end >= s.span_start
+      )
+      SELECT e.policy, e.contract, e.source_system, e.year, e.attained_age, e.exposure,
+             CASE WHEN e.policy IS NOT NULL THEN e.exposure * r.mortality_rate END AS expected_deaths,
+             CASE WHEN e.policy IS NOT NULL THEN e.exposure * r.mortality_rate * e.face_amount END AS expected_death_benefit,
+             CASE WHEN e.termination_reason = 'lapse' AND year(e.termination_date) = e.year
+                   AND e.termination_date <= {as_of} THEN 1 ELSE 0 END AS lapses,
+             CASE WHEN e.termination_reason IN ('surrender', 'exchange_1035_out') AND year(e.termination_date) = e.year
+                   AND e.termination_date <= {as_of} THEN 1 ELSE 0 END AS surrenders
+      FROM e
+      LEFT JOIN {ont}.insured_person i ON i.id = e.person
+      LEFT JOIN {ont}.mortality_rate r
+        ON r.mortality_table = 'vbt_2015' AND r.attained_age = e.attained_age
+       AND r.gender = i.gender AND r.smoker_status = i.smoker_status
+
+# ----------------------------------------------------------- conformed dimensions
+dimensions:
+  unit:
+    label: Operating unit (source platform)
+    description: The unit whose system recorded the fact (lineage column on every entity).
+    paths:
+      Application: source_system
+      UnderwritingCase: source_system
+      SuitabilityReview: source_system
+      LifePolicy: source_system
+      AnnuityContract: source_system
+      Rider: source_system
+      AccountValueSnapshot: source_system
+      ContractTransaction: source_system
+      DeathClaim: source_system
+      StatutoryReserve: source_system
+      CreditingStrategy: source_system
+      CommissionPayment: source_system
+      InForceExposure: source_system
+  line_of_business:
+    label: Line of business
+    description: Individual life or individual annuity.
+    paths:
+      Application: line_of_business
+      UnderwritingCase: application.line_of_business
+      SuitabilityReview: application.line_of_business
+      LifePolicy: product.line_of_business
+      AnnuityContract: product.line_of_business
+      Rider: "coalesce({policy.product.line_of_business}, {contract.product.line_of_business})"
+      AccountValueSnapshot: "coalesce({policy.product.line_of_business}, {contract.product.line_of_business})"
+      ContractTransaction: "coalesce({policy.product.line_of_business}, {contract.product.line_of_business})"
+      DeathClaim: "coalesce({policy.product.line_of_business}, {contract.product.line_of_business})"
+      StatutoryReserve: "coalesce({policy.product.line_of_business}, {contract.product.line_of_business})"
+      CreditingStrategy: product.line_of_business
+      CommissionPayment: "coalesce({policy.product.line_of_business}, {contract.product.line_of_business})"
+      InForceExposure: "coalesce({policy.product.line_of_business}, {contract.product.line_of_business})"
+  product_type:
+    label: Product type
+    description: Term, UL, IUL, whole life; MYGA (fixed_deferred), fixed indexed, RILA.
+    paths:
+      Application: >-
+        coalesce((SELECT x.life_product_type FROM {ont}.life_product x WHERE x.id = {product}),
+                 (SELECT x.annuity_product_type FROM {ont}.annuity_product x WHERE x.id = {product}))
+      UnderwritingCase: >-
+        (SELECT x.life_product_type FROM {ont}.life_product x WHERE x.id = {application.product})
+      SuitabilityReview: >-
+        (SELECT x.annuity_product_type FROM {ont}.annuity_product x WHERE x.id = {application.product})
+      CreditingStrategy: >-
+        coalesce((SELECT x.life_product_type FROM {ont}.life_product x WHERE x.id = {product}),
+                 (SELECT x.annuity_product_type FROM {ont}.annuity_product x WHERE x.id = {product}))
+      LifePolicy: product.life_product_type
+      AnnuityContract: product.annuity_product_type
+      Rider: "coalesce({policy.product.life_product_type}, {contract.product.annuity_product_type})"
+      AccountValueSnapshot: "coalesce({policy.product.life_product_type}, {contract.product.annuity_product_type})"
+      ContractTransaction: "coalesce({policy.product.life_product_type}, {contract.product.annuity_product_type})"
+      DeathClaim: "coalesce({policy.product.life_product_type}, {contract.product.annuity_product_type})"
+      StatutoryReserve: "coalesce({policy.product.life_product_type}, {contract.product.annuity_product_type})"
+      CommissionPayment: "coalesce({policy.product.life_product_type}, {contract.product.annuity_product_type})"
+      InForceExposure: "coalesce({policy.product.life_product_type}, {contract.product.annuity_product_type})"
+  product:
+    label: Product
+    paths:
+      Application: product.name
+      UnderwritingCase: application.product.name
+      SuitabilityReview: application.product.name
+      CreditingStrategy: product.name
+      LifePolicy: product.name
+      AnnuityContract: product.name
+      Rider: "coalesce({policy.product.name}, {contract.product.name})"
+      AccountValueSnapshot: "coalesce({policy.product.name}, {contract.product.name})"
+      ContractTransaction: "coalesce({policy.product.name}, {contract.product.name})"
+      DeathClaim: "coalesce({policy.product.name}, {contract.product.name})"
+      StatutoryReserve: "coalesce({policy.product.name}, {contract.product.name})"
+      CommissionPayment: "coalesce({policy.product.name}, {contract.product.name})"
+      InForceExposure: "coalesce({policy.product.name}, {contract.product.name})"
+  issue_year:
+    label: Issue year (cohort)
+    paths:
+      LifePolicy: "year({issue_date})"
+      AnnuityContract: "year({issue_date})"
+      Rider: "year(coalesce({policy.issue_date}, {contract.issue_date}))"
+      AccountValueSnapshot: "year(coalesce({policy.issue_date}, {contract.issue_date}))"
+      ContractTransaction: "year(coalesce({policy.issue_date}, {contract.issue_date}))"
+      DeathClaim: "year(coalesce({policy.issue_date}, {contract.issue_date}))"
+      StatutoryReserve: "year(coalesce({policy.issue_date}, {contract.issue_date}))"
+      CommissionPayment: "year(coalesce({policy.issue_date}, {contract.issue_date}))"
+      InForceExposure: "year(coalesce({policy.issue_date}, {contract.issue_date}))"
+  issue_age_band:
+    label: Issue age band
+    description: "<35, 35-44, 45-54, 55-64, 65-74, 75+"
+    paths:
+      LifePolicy: &age_band >-
+        CASE WHEN {issue_age} < 35 THEN '<35' WHEN {issue_age} < 45 THEN '35-44' WHEN {issue_age} < 55 THEN '45-54'
+             WHEN {issue_age} < 65 THEN '55-64' WHEN {issue_age} < 75 THEN '65-74' ELSE '75+' END
+      AnnuityContract: *age_band
+      DeathClaim: &age_band_via >-
+        CASE WHEN coalesce({policy.issue_age}, {contract.issue_age}) < 35 THEN '<35'
+             WHEN coalesce({policy.issue_age}, {contract.issue_age}) < 45 THEN '35-44'
+             WHEN coalesce({policy.issue_age}, {contract.issue_age}) < 55 THEN '45-54'
+             WHEN coalesce({policy.issue_age}, {contract.issue_age}) < 65 THEN '55-64'
+             WHEN coalesce({policy.issue_age}, {contract.issue_age}) < 75 THEN '65-74' ELSE '75+' END
+      InForceExposure: *age_band_via
+      AccountValueSnapshot: *age_band_via
+      ContractTransaction: *age_band_via
+  risk_class:
+    label: Underwriting risk class
+    paths:
+      UnderwritingCase: risk_class
+      LifePolicy: risk_class
+      DeathClaim: policy.risk_class
+      InForceExposure: policy.risk_class
+  underwriting_path:
+    label: Underwriting path (full / accelerated / simplified)
+    paths:
+      UnderwritingCase: underwriting_path
+  state:
+    label: Issue state
+    paths:
+      Application: state_of_issue
+      UnderwritingCase: application.state_of_issue
+      SuitabilityReview: application.state_of_issue
+      LifePolicy: state_of_issue
+      AnnuityContract: state_of_issue
+      AccountValueSnapshot: "coalesce({policy.state_of_issue}, {contract.state_of_issue})"
+      ContractTransaction: "coalesce({policy.state_of_issue}, {contract.state_of_issue})"
+      DeathClaim: "coalesce({policy.state_of_issue}, {contract.state_of_issue})"
+      StatutoryReserve: "coalesce({policy.state_of_issue}, {contract.state_of_issue})"
+      InForceExposure: "coalesce({policy.state_of_issue}, {contract.state_of_issue})"
+  producer:
+    label: Producer
+    paths:
+      Application: producer.name
+      UnderwritingCase: application.producer.name
+      SuitabilityReview: application.producer.name
+      LifePolicy: producer.name
+      AnnuityContract: producer.name
+      CommissionPayment: producer.name
+      ContractTransaction: "coalesce({policy.producer.name}, {contract.producer.name})"
+  channel:
+    label: Distribution channel
+    paths:
+      Application: distribution_channel
+      UnderwritingCase: application.distribution_channel
+      SuitabilityReview: application.distribution_channel
+      LifePolicy: distribution_channel
+      AnnuityContract: distribution_channel
+      AccountValueSnapshot: "coalesce({policy.distribution_channel}, {contract.distribution_channel})"
+      ContractTransaction: "coalesce({policy.distribution_channel}, {contract.distribution_channel})"
+      CommissionPayment: "coalesce({policy.distribution_channel}, {contract.distribution_channel})"
+      InForceExposure: "coalesce({policy.distribution_channel}, {contract.distribution_channel})"
+  tax_qualification:
+    label: Tax qualification
+    paths:
+      AnnuityContract: tax_qualification
+      AccountValueSnapshot: contract.tax_qualification
+      ContractTransaction: contract.tax_qualification
+      DeathClaim: contract.tax_qualification
+      StatutoryReserve: contract.tax_qualification
+      InForceExposure: contract.tax_qualification
+  contract_phase:
+    label: Contract phase (accumulation / payout)
+    paths:
+      AnnuityContract: contract_phase
+      AccountValueSnapshot: contract.contract_phase
+      ContractTransaction: contract.contract_phase
+      StatutoryReserve: contract.contract_phase
+  crediting_method:
+    label: Crediting method (primary strategy)
+    paths:
+      CreditingStrategy: crediting_method
+      LifePolicy: crediting_strategy.crediting_method
+      AnnuityContract: crediting_strategy.crediting_method
+      AccountValueSnapshot: "coalesce({policy.crediting_strategy.crediting_method}, {contract.crediting_strategy.crediting_method})"
+      ContractTransaction: "coalesce({policy.crediting_strategy.crediting_method}, {contract.crediting_strategy.crediting_method})"
+      InForceExposure: "coalesce({policy.crediting_strategy.crediting_method}, {contract.crediting_strategy.crediting_method})"
+  termination_reason:
+    label: Termination reason
+    paths:
+      LifePolicy: termination_reason
+      AnnuityContract: termination_reason
+  application_status:
+    label: Application status
+    paths:
+      Application: application_status
+  review_outcome:
+    label: Best-interest review outcome
+    paths:
+      SuitabilityReview: review_outcome
+  transaction_type:
+    label: Transaction type
+    paths:
+      ContractTransaction: transaction_type
+  rider_type:
+    label: Rider type
+    paths:
+      Rider: rider_type
+  commission_type:
+    label: Commission type
+    paths:
+      CommissionPayment: commission_type
+  reserve_method:
+    label: Reserve method
+    paths:
+      StatutoryReserve: reserve_method
+  mortality_table:
+    label: Reserve mortality table
+    paths:
+      StatutoryReserve: mortality_table
+  claim_status:
+    label: Death claim status
+    paths:
+      DeathClaim: claim_status
+  month:
+    label: Month (event / valuation)
+    description: >-
+      Signing month for applications, decision month for underwriting and reviews, issue
+      month for policies and contracts, transaction, payment and death months, valuation
+      month for balances, rate effective month for crediting strategies.
+    paths:
+      Application: "CAST(date_trunc('month', {application_date}) AS DATE)"
+      UnderwritingCase: "CAST(date_trunc('month', {decision_date}) AS DATE)"
+      SuitabilityReview: "CAST(date_trunc('month', {decision_date}) AS DATE)"
+      LifePolicy: "CAST(date_trunc('month', {issue_date}) AS DATE)"
+      AnnuityContract: "CAST(date_trunc('month', {issue_date}) AS DATE)"
+      Rider: "CAST(date_trunc('month', {effective_date}) AS DATE)"
+      AccountValueSnapshot: "CAST(date_trunc('month', {valuation_date}) AS DATE)"
+      ContractTransaction: "CAST(date_trunc('month', {transaction_date}) AS DATE)"
+      DeathClaim: "CAST(date_trunc('month', {date_of_death}) AS DATE)"
+      StatutoryReserve: "CAST(date_trunc('month', {valuation_date}) AS DATE)"
+      CreditingStrategy: "CAST(date_trunc('month', {rate_effective_date}) AS DATE)"
+      CommissionPayment: "CAST(date_trunc('month', {payment_date}) AS DATE)"
+  year:
+    label: Calendar year (event / valuation / exposure)
+    paths:
+      Application: "year({application_date})"
+      UnderwritingCase: "year({decision_date})"
+      SuitabilityReview: "year({decision_date})"
+      LifePolicy: "year({issue_date})"
+      AnnuityContract: "year({issue_date})"
+      Rider: "year({effective_date})"
+      AccountValueSnapshot: "year({valuation_date})"
+      ContractTransaction: "year({transaction_date})"
+      DeathClaim: "year({date_of_death})"
+      StatutoryReserve: "year({valuation_date})"
+      CreditingStrategy: "year({rate_effective_date})"
+      CommissionPayment: "year({payment_date})"
+      InForceExposure: year
+
+# ------------------------------------------------------------------- metrics
+metrics:
+  # new business
+  application_count:
+    label: Applications
+    description: Applications signed on or before the valuation date.
+    entity: Application
+    measure: "count(DISTINCT {id})"
+    as_of: application_date
+    format: count
+  placed_application_count:
+    label: Applications placed
+    description: Applications that became in-force business (issued, delivered and paid).
+    entity: Application
+    measure: "count(DISTINCT CASE WHEN {application_status} = 'placed' THEN {id} END)"
+    as_of: application_date
+    format: count
+  placement_rate:
+    label: Placement rate
+    description: >-
+      Placed / applications signed. The latest application months are still open in
+      underwriting, so read recent cohorts as incomplete.
+    ratio: [placed_application_count, application_count]
+    format: percent
+  issued_policy_count:
+    label: Life policies issued
+    description: Life policies issued, including those later not taken.
+    entity: LifePolicy
+    measure: "count(DISTINCT {id})"
+    as_of: issue_date
+    format: count
+  placed_policy_count:
+    label: Life policies placed
+    description: Issued life policies that went in force (not taken and free-look returns excluded).
+    entity: LifePolicy
+    measure: "count(DISTINCT CASE WHEN coalesce({termination_reason}, 'in_force') NOT IN ('not_taken', 'free_look') THEN {id} END)"
+    as_of: issue_date
+    format: count
+  issued_contract_count:
+    label: Annuity contracts issued
+    entity: AnnuityContract
+    measure: "count(DISTINCT {id})"
+    as_of: issue_date
+    format: count
+  new_annualized_premium:
+    label: New annualized premium (life)
+    description: Annualized (target) premium on placed life policies, by issue date.
+    entity: LifePolicy
+    measure: "sum(CASE WHEN coalesce({termination_reason}, 'in_force') NOT IN ('not_taken', 'free_look') THEN {annualized_premium} ELSE 0 END)"
+    as_of: issue_date
+    format: currency
+  new_face_amount:
+    label: New face amount (life)
+    entity: LifePolicy
+    measure: "sum(CASE WHEN coalesce({termination_reason}, 'in_force') NOT IN ('not_taken', 'free_look') THEN {face_amount} ELSE 0 END)"
+    as_of: issue_date
+    format: currency
+  annuity_single_premium:
+    label: Annuity sales (single premium)
+    description: Initial premium on issued annuity contracts, including 1035 transfers in.
+    entity: AnnuityContract
+    measure: "sum({initial_premium})"
+    as_of: issue_date
+    format: currency
+  annuity_weighted_premium:
+    label: Annuity weighted premium (10% of single premium)
+    entity: AnnuityContract
+    measure: "sum({initial_premium}) * 0.1"
+    as_of: issue_date
+    format: currency
+  weighted_new_premium:
+    label: Weighted new premium
+    description: New annualized life premium plus 10% of annuity single premium.
+    sum_of: [new_annualized_premium, annuity_weighted_premium]
+    format: currency
+  average_face_amount:
+    label: Average face amount (new placed policies)
+    ratio: [new_face_amount, placed_policy_count]
+    format: currency
+
+  # underwriting
+  uw_decided_count:
+    label: Underwriting decisions
+    description: Cases approved, approved other than applied, declined or postponed on or before the valuation date.
+    entity: UnderwritingCase
+    measure: >-
+      count(DISTINCT CASE WHEN {uw_status} IN ('approved', 'approved_other_than_applied', 'declined', 'postponed')
+                          THEN {id} END)
+    as_of: decision_date
+    format: count
+  uw_approved_count:
+    label: Underwriting approvals
+    entity: UnderwritingCase
+    measure: "count(DISTINCT CASE WHEN {uw_status} IN ('approved', 'approved_other_than_applied') THEN {id} END)"
+    as_of: decision_date
+    format: count
+  uw_approval_rate:
+    label: Underwriting approval rate
+    ratio: [uw_approved_count, uw_decided_count]
+    format: percent
+  accelerated_decision_count:
+    label: Accelerated underwriting decisions
+    entity: UnderwritingCase
+    measure: >-
+      count(DISTINCT CASE WHEN {underwriting_path} = 'accelerated'
+                           AND {uw_status} IN ('approved', 'approved_other_than_applied', 'declined', 'postponed')
+                          THEN {id} END)
+    as_of: decision_date
+    format: count
+  accelerated_uw_share:
+    label: Accelerated underwriting share
+    description: Share of underwriting decisions made on the accelerated (no exam, no fluids) path.
+    ratio: [accelerated_decision_count, uw_decided_count]
+    format: percent
+  substandard_approval_count:
+    label: Substandard approvals
+    description: Approvals in the substandard class or with a table rating.
+    entity: UnderwritingCase
+    measure: >-
+      count(DISTINCT CASE WHEN {uw_status} IN ('approved', 'approved_other_than_applied')
+                           AND ({risk_class} = 'substandard' OR coalesce({table_rating}, 0) > 0) THEN {id} END)
+    as_of: decision_date
+    format: count
+  substandard_rate:
+    label: Substandard rate
+    ratio: [substandard_approval_count, uw_approved_count]
+    format: percent
+  days_to_issue_total:
+    label: Days application to issue (sum)
+    entity: LifePolicy
+    measure: "sum(date_diff('day', {application.application_date}, {issue_date}))"
+    as_of: issue_date
+    format: number
+  policies_with_application:
+    label: Issued policies with an application date
+    entity: LifePolicy
+    measure: "count(DISTINCT CASE WHEN {application.application_date} IS NOT NULL THEN {id} END)"
+    as_of: issue_date
+    format: count
+  average_days_to_issue:
+    label: Average days application to issue (life)
+    description: Calendar days from application signature to policy issue.
+    ratio: [days_to_issue_total, policies_with_application]
+    format: number
+
+  # in force
+  inforce_policy_count:
+    label: Life policies in force
+    description: Placed life policies in force at the valuation date.
+    entity: LifePolicy
+    measure: >-
+      count(DISTINCT CASE WHEN {issue_date} <= {as_of}
+                           AND coalesce({termination_reason}, 'in_force') NOT IN ('not_taken', 'free_look')
+                           AND ({termination_date} IS NULL OR {termination_date} > {as_of}) THEN {id} END)
+    format: count
+  face_amount_in_force:
+    label: Face amount in force
+    entity: LifePolicy
+    measure: >-
+      sum(CASE WHEN {issue_date} <= {as_of}
+                AND coalesce({termination_reason}, 'in_force') NOT IN ('not_taken', 'free_look')
+                AND ({termination_date} IS NULL OR {termination_date} > {as_of}) THEN {face_amount} ELSE 0 END)
+    format: currency
+  annualized_premium_in_force:
+    label: Annualized premium in force (life)
+    entity: LifePolicy
+    measure: >-
+      sum(CASE WHEN {issue_date} <= {as_of}
+                AND coalesce({termination_reason}, 'in_force') NOT IN ('not_taken', 'free_look')
+                AND ({termination_date} IS NULL OR {termination_date} > {as_of}) THEN {annualized_premium} ELSE 0 END)
+    format: currency
+  inforce_contract_count:
+    label: Annuity contracts in force
+    entity: AnnuityContract
+    measure: >-
+      count(DISTINCT CASE WHEN {issue_date} <= {as_of}
+                           AND ({termination_date} IS NULL OR {termination_date} > {as_of}) THEN {id} END)
+    format: count
+  account_value:
+    label: Account value
+    description: >-
+      Account value (cash value on whole life) at each record's latest snapshot on or
+      before the valuation date. Only contracts still in force have a snapshot then.
+    entity: AccountValueSnapshot
+    measure: "sum({account_value})"
+    filter: >-
+      {valuation_date} = (SELECT max(x.valuation_date) FROM {ont}.account_value_snapshot x
+                          WHERE x.valuation_date <= {as_of} AND x.source_system = {source_system})
+    format: currency
+  cash_surrender_value:
+    label: Cash surrender value
+    entity: AccountValueSnapshot
+    measure: "sum({cash_surrender_value})"
+    filter: >-
+      {valuation_date} = (SELECT max(x.valuation_date) FROM {ont}.account_value_snapshot x
+                          WHERE x.valuation_date <= {as_of} AND x.source_system = {source_system})
+    format: currency
+  life_account_value_deduction:
+    label: Life account value (deducted from face)
+    description: Negated life account value at the valuation date; the deduction in net amount at risk.
+    entity: AccountValueSnapshot
+    measure: "-sum(CASE WHEN {policy} IS NOT NULL THEN {account_value} ELSE 0 END)"
+    filter: >-
+      {valuation_date} = (SELECT max(x.valuation_date) FROM {ont}.account_value_snapshot x
+                          WHERE x.valuation_date <= {as_of} AND x.source_system = {source_system})
+    format: currency
+  net_amount_at_risk:
+    label: Net amount at risk (life)
+    description: >-
+      Face amount in force less life account value: the mortality exposure the carrier
+      (or its reinsurers) carries. Assumes a level (option A) death benefit.
+    sum_of: [face_amount_in_force, life_account_value_deduction]
+    format: currency
+
+  # persistency and lapse
+  persistency_base_13m:
+    label: Placed policies past 13 months
+    description: Placed life policies issued at least 13 months before the valuation date.
+    entity: LifePolicy
+    measure: >-
+      count(DISTINCT CASE WHEN {issue_date} + INTERVAL 13 MONTH <= {as_of}
+                           AND coalesce({termination_reason}, 'in_force') NOT IN ('not_taken', 'free_look')
+                          THEN {id} END)
+    format: count
+  persisting_13m:
+    label: Policies persisting at 13 months
+    entity: LifePolicy
+    measure: >-
+      count(DISTINCT CASE WHEN {issue_date} + INTERVAL 13 MONTH <= {as_of}
+                           AND coalesce({termination_reason}, 'in_force') NOT IN ('not_taken', 'free_look')
+                           AND ({termination_date} IS NULL OR {termination_date} > {issue_date} + INTERVAL 13 MONTH
+                                OR {termination_reason} = 'death')
+                          THEN {id} END)
+    format: count
+  persistency_13_month:
+    label: 13-month persistency
+    description: >-
+      Share of placed policies still in force 13 months after issue (deaths count as
+      persisting). Cut by issue_year for cohorts.
+    ratio: [persisting_13m, persistency_base_13m]
+    format: percent
+  life_exposure_years:
+    label: Life exposure (policy years)
+    entity: InForceExposure
+    measure: "sum(CASE WHEN {policy} IS NOT NULL THEN {exposure} ELSE 0 END)"
+    format: number
+  life_lapse_count:
+    label: Life lapses
+    entity: InForceExposure
+    measure: "sum(CASE WHEN {policy} IS NOT NULL THEN {lapses} ELSE 0 END)"
+    format: count
+  lapse_rate:
+    label: Lapse rate (life, annual)
+    description: Lapses per policy year of exposure.
+    ratio: [life_lapse_count, life_exposure_years]
+    format: percent
+
+  # annuity flows
+  annuity_deposits:
+    label: Annuity deposits
+    description: Premium and 1035 exchanges in.
+    entity: ContractTransaction
+    measure: "sum(CASE WHEN {transaction_type} IN ('premium', 'exchange_1035_in') THEN {transaction_amount} ELSE 0 END)"
+    filter: "{contract} IS NOT NULL"
+    as_of: transaction_date
+    format: currency
+  annuity_withdrawals:
+    label: Annuity partial withdrawals
+    entity: ContractTransaction
+    measure: "sum(CASE WHEN {transaction_type} = 'partial_withdrawal' THEN {transaction_amount} ELSE 0 END)"
+    filter: "{contract} IS NOT NULL"
+    as_of: transaction_date
+    format: currency
+  annuity_surrenders:
+    label: Annuity surrenders
+    description: Full surrenders and 1035 exchanges out, at surrender value.
+    entity: ContractTransaction
+    measure: "sum(CASE WHEN {transaction_type} IN ('full_surrender', 'exchange_1035_out') THEN {transaction_amount} ELSE 0 END)"
+    filter: "{contract} IS NOT NULL"
+    as_of: transaction_date
+    format: currency
+  annuity_net_flows:
+    label: Annuity net flows
+    description: Deposits less partial withdrawals, surrenders and 1035 exchanges out (death benefits are claims, not flows).
+    entity: ContractTransaction
+    measure: >-
+      sum(CASE WHEN {transaction_type} IN ('premium', 'exchange_1035_in') THEN {transaction_amount}
+               WHEN {transaction_type} IN ('partial_withdrawal', 'full_surrender', 'exchange_1035_out')
+               THEN -{transaction_amount} ELSE 0 END)
+    filter: "{contract} IS NOT NULL"
+    as_of: transaction_date
+    format: currency
+  life_premium_collected:
+    label: Life premium collected
+    entity: ContractTransaction
+    measure: "sum(CASE WHEN {transaction_type} = 'premium' THEN {transaction_amount} ELSE 0 END)"
+    filter: "{policy} IS NOT NULL"
+    as_of: transaction_date
+    format: currency
+  annuity_exposure_years:
+    label: Annuity exposure (contract years)
+    entity: InForceExposure
+    measure: "sum(CASE WHEN {contract} IS NOT NULL THEN {exposure} ELSE 0 END)"
+    format: number
+  annuity_surrender_count:
+    label: Annuity surrenders (count)
+    description: Full surrenders and 1035 exchanges out.
+    entity: InForceExposure
+    measure: "sum(CASE WHEN {contract} IS NOT NULL THEN {surrenders} ELSE 0 END)"
+    format: count
+  surrender_rate:
+    label: Surrender rate (annuity, annual)
+    description: Full surrenders and 1035 exchanges out per contract year of exposure.
+    ratio: [annuity_surrender_count, annuity_exposure_years]
+    format: percent
+
+  # crediting
+  cap_rate_total:
+    label: Annual point-to-point caps (sum)
+    entity: CreditingStrategy
+    measure: "sum(CASE WHEN {crediting_method} = 'annual_point_to_point' THEN {cap_rate} END)"
+    as_of: rate_effective_date
+    format: number
+  capped_strategy_count:
+    label: Capped annual point-to-point strategies
+    entity: CreditingStrategy
+    measure: "count(CASE WHEN {crediting_method} = 'annual_point_to_point' THEN {cap_rate} END)"
+    as_of: rate_effective_date
+    format: count
+  average_cap_rate:
+    label: Average cap rate (annual point-to-point)
+    description: >-
+      Mean declared cap across capped annual point-to-point strategy rate sheets. Cut by
+      year (rate effective year) and product_type; monthly caps are not comparable and are excluded.
+    ratio: [cap_rate_total, capped_strategy_count]
+    format: percent
+  credited_value_weighted:
+    label: Credited rate x account value
+    entity: AccountValueSnapshot
+    measure: "sum(CASE WHEN {credited_rate} IS NOT NULL THEN {credited_rate} * {account_value} ELSE 0 END)"
+    as_of: valuation_date
+    format: number
+  credited_value_base:
+    label: Account value with a credited rate
+    entity: AccountValueSnapshot
+    measure: "sum(CASE WHEN {credited_rate} IS NOT NULL THEN {account_value} ELSE 0 END)"
+    as_of: valuation_date
+    format: currency
+  average_credited_rate:
+    label: Average credited rate
+    description: >-
+      Account-value-weighted rate credited over the twelve months before each snapshot.
+      Cut by year (valuation year) to trend; indexed money credits zero in a down year.
+    ratio: [credited_value_weighted, credited_value_base]
+    format: percent
+
+  # claims and mortality
+  death_claim_count:
+    label: Death claims reported
+    entity: DeathClaim
+    measure: "count(DISTINCT {id})"
+    as_of: received_date
+    format: count
+  paid_death_claim_count:
+    label: Death claims paid
+    entity: DeathClaim
+    measure: "count(DISTINCT CASE WHEN {claim_status} = 'paid' THEN {id} END)"
+    as_of: paid_date
+    format: count
+  death_benefits_paid:
+    label: Death benefits paid
+    description: Paid amount (benefit plus interest) on claims paid on or before the valuation date.
+    entity: DeathClaim
+    measure: "sum(CASE WHEN {claim_status} = 'paid' THEN {total_paid_amount} ELSE 0 END)"
+    as_of: paid_date
+    format: currency
+  days_to_pay_total:
+    label: Days notice to payment (sum)
+    entity: DeathClaim
+    measure: "sum(CASE WHEN {claim_status} = 'paid' THEN date_diff('day', {received_date}, {paid_date}) END)"
+    as_of: paid_date
+    format: number
+  average_days_to_pay:
+    label: Average days to pay a death claim
+    description: Calendar days from notice of death to payment, on paid claims.
+    ratio: [days_to_pay_total, paid_death_claim_count]
+    format: number
+  contestable_claim_count:
+    label: Contestable death claims
+    entity: DeathClaim
+    measure: "count(DISTINCT CASE WHEN {contestable} THEN {id} END)"
+    as_of: received_date
+    format: count
+  contestable_claim_share:
+    label: Contestable claim share
+    description: Share of reported death claims with death inside the contestable period.
+    ratio: [contestable_claim_count, death_claim_count]
+    format: percent
+  actual_life_deaths:
+    label: Actual deaths (life)
+    description: Reported life death claims, by year of death; denied claims count (the insured died).
+    entity: DeathClaim
+    measure: "count(DISTINCT CASE WHEN {policy} IS NOT NULL THEN {id} END)"
+    as_of: received_date
+    format: count
+  expected_life_deaths:
+    label: Expected deaths (life, experience basis)
+    entity: InForceExposure
+    measure: "sum(coalesce({expected_deaths}, 0))"
+    format: number
+  mortality_ae_ratio:
+    label: Mortality actual-to-expected (count)
+    description: >-
+      Actual life death claims / expected deaths on the experience basis. Recent months
+      run low until late-reported claims arrive.
+    ratio: [actual_life_deaths, expected_life_deaths]
+    format: percent
+  actual_life_death_benefit:
+    label: Actual death benefit (life)
+    entity: DeathClaim
+    measure: "sum(CASE WHEN {policy} IS NOT NULL THEN {death_benefit_amount} ELSE 0 END)"
+    as_of: received_date
+    format: currency
+  expected_life_death_benefit:
+    label: Expected death benefit (life)
+    entity: InForceExposure
+    measure: "sum(coalesce({expected_death_benefit}, 0))"
+    format: currency
+  mortality_ae_amount_ratio:
+    label: Mortality actual-to-expected (amount)
+    ratio: [actual_life_death_benefit, expected_life_death_benefit]
+    format: percent
+
+  # reserves
+  statutory_reserve:
+    label: Statutory reserve
+    description: Reserve held at each record's latest statutory valuation on or before the valuation date.
+    entity: StatutoryReserve
+    measure: "sum({reserve_amount})"
+    filter: >-
+      {valuation_date} = (SELECT max(x.valuation_date) FROM {ont}.statutory_reserve x
+                          WHERE x.valuation_date <= {as_of} AND x.source_system = {source_system})
+    format: currency
+
+  # best interest / suitability
+  suitability_review_count:
+    label: Best-interest reviews decided
+    entity: SuitabilityReview
+    measure: "count(DISTINCT CASE WHEN {review_outcome} IN ('approved', 'approved_with_conditions', 'rejected') THEN {id} END)"
+    as_of: decision_date
+    format: count
+  suitability_approved_count:
+    label: Best-interest reviews approved
+    description: Approved, with or without conditions.
+    entity: SuitabilityReview
+    measure: "count(DISTINCT CASE WHEN {review_outcome} IN ('approved', 'approved_with_conditions') THEN {id} END)"
+    as_of: decision_date
+    format: count
+  suitability_rejected_count:
+    label: Best-interest reviews rejected
+    entity: SuitabilityReview
+    measure: "count(DISTINCT CASE WHEN {review_outcome} = 'rejected' THEN {id} END)"
+    as_of: decision_date
+    format: count
+  suitability_rejection_rate:
+    label: Best-interest rejection rate
+    ratio: [suitability_rejected_count, suitability_review_count]
+    format: percent
+  replacement_review_count:
+    label: Replacement sales reviewed
+    entity: SuitabilityReview
+    measure: >-
+      count(DISTINCT CASE WHEN {replacement_indicator}
+                           AND {review_outcome} IN ('approved', 'approved_with_conditions', 'rejected') THEN {id} END)
+    as_of: decision_date
+    format: count
+  replacement_share:
+    label: Replacement share of reviewed sales
+    ratio: [replacement_review_count, suitability_review_count]
+    format: percent
+
+  # distribution
+  commissions_paid:
+    label: Commissions paid
+    description: First-year, renewal, upfront, trail and bonus commission net of chargebacks.
+    entity: CommissionPayment
+    measure: "sum({commission_amount})"
+    as_of: payment_date
+    format: currency

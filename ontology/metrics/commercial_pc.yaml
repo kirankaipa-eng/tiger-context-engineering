@@ -1,0 +1,406 @@
+# Governed metric definitions for the commercial P&C pack.
+#
+# Metrics are defined over ONTOLOGY paths, never tables: `{claim.policy.operating_unit}`
+# is resolved to joins by following the ontology's relationships, so the same
+# definition runs on any client whose units are mapped. Client overlays may
+# override or add metrics (see clients/<client>/client.yaml `metrics:`); every
+# result carries the definition that produced it.
+#
+# Placeholders:  {path}   ontology path from the metric's entity
+#                {as_of}  valuation date (DATE literal)
+#                {ont}    group ontology schema
+
+version: 0.1.0
+
+# ------------------------------------------------------------ derived entities
+# Computed at query time (they depend on as_of), then usable like any entity.
+derived:
+  EarnedPremium:
+    description: >-
+      Written premium transactions earned pro rata over the policy term, split by
+      calendar year and capped at the valuation date. Calendar-year earned premium
+      is also the accident-year denominator by convention.
+    columns:
+      operating_unit: {range: OperatingUnit}
+      coverage_line: {}
+      program: {range: Program}
+      producer: {range: Producer}
+      policy: {range: Policy}
+      new_renewal: {}
+      market_type: {}
+      underwriting_year: {}
+      calendar_year: {}
+      earned: {}
+    sql: |
+      WITH yrs AS (SELECT unnest(range(2000, 2051)) AS calendar_year),
+      tx AS (
+        SELECT t.policy, p.operating_unit, p.program, p.producer, p.new_renewal, p.market_type,
+               coalesce(cp.coverage_line, 'unallocated') AS coverage_line,
+               year(p.effective_date) AS underwriting_year,
+               t.written_premium_change AS wp,
+               t.transaction_effective_date AS s,
+               p.termination_date AS e
+        FROM {ont}.policy_transaction t
+        JOIN {ont}.policy p ON p.id = t.policy
+        LEFT JOIN {ont}.coverage_part cp ON cp.id = t.coverage_part
+        WHERE coalesce(t.booked_date, t.transaction_effective_date) <= {as_of}
+      )
+      SELECT tx.operating_unit, tx.coverage_line, tx.program, tx.producer, tx.policy, tx.new_renewal,
+             tx.market_type, tx.underwriting_year, y.calendar_year,
+             tx.wp * greatest(0, datediff('day',
+                       greatest(tx.s, make_date(y.calendar_year, 1, 1)),
+                       least(tx.e, make_date(y.calendar_year + 1, 1, 1), {as_of} + 1)))
+                   / nullif(datediff('day', tx.s, tx.e), 0) AS earned
+      FROM tx JOIN yrs y ON y.calendar_year BETWEEN year(tx.s) AND least(year(tx.e), year({as_of}))
+
+  PolicyRenewal:
+    description: >-
+      Each policy that has reached expiration by the valuation date, flagged if a
+      renewal term exists (any policy whose renewal_of points at it).
+    columns:
+      policy: {range: Policy}
+      operating_unit: {range: OperatingUnit}
+      program: {range: Program}
+      producer: {range: Producer}
+      expiration_year: {}
+      renewed: {}
+    sql: |
+      SELECT p.id AS policy, p.operating_unit, p.program, p.producer,
+             year(p.termination_date) AS expiration_year,
+             CASE WHEN r.renewal_of IS NOT NULL THEN 1 ELSE 0 END AS renewed
+      FROM {ont}.policy p
+      LEFT JOIN (SELECT DISTINCT renewal_of FROM {ont}.policy WHERE renewal_of IS NOT NULL) r
+        ON r.renewal_of = p.id
+      WHERE p.termination_date <= {as_of} AND coalesce(p.coverage_status, '') <> 'cancelled'
+
+# ----------------------------------------------------------- conformed dimensions
+dimensions:
+  operating_unit:
+    label: Operating unit
+    paths:
+      Policy: operating_unit
+      PolicyTransaction: policy.operating_unit
+      EarnedPremium: operating_unit
+      PolicyRenewal: operating_unit
+      Submission: operating_unit
+      CommercialClaim: policy.operating_unit
+      ClaimFinancialTransaction: claim.policy.operating_unit
+      ReserveEstimate: operating_unit
+  operating_unit_name:
+    label: Operating unit name
+    paths:
+      Policy: operating_unit.name
+      PolicyTransaction: policy.operating_unit.name
+      EarnedPremium: operating_unit.name
+      PolicyRenewal: operating_unit.name
+      Submission: operating_unit.name
+      CommercialClaim: policy.operating_unit.name
+      ClaimFinancialTransaction: claim.policy.operating_unit.name
+      ReserveEstimate: operating_unit.name
+  coverage_line:
+    label: Coverage line
+    paths:
+      PolicyTransaction: coverage_part.coverage_line
+      EarnedPremium: coverage_line
+      CommercialClaim: coverage_line
+      ClaimFinancialTransaction: claim.coverage_line
+      ReserveEstimate: coverage_line
+  line_group:
+    label: Line group
+    description: Portfolio grouping of coverage lines (casualty, property, ...), from the ontology.
+    enum_group: {enum: CoverageLineEnum, annotation: line_group}
+    paths:
+      PolicyTransaction: coverage_part.coverage_line
+      EarnedPremium: coverage_line
+      CommercialClaim: coverage_line
+      ClaimFinancialTransaction: claim.coverage_line
+      ReserveEstimate: coverage_line
+  accident_year:
+    label: Accident year
+    description: Year of loss. Premium is aligned by calendar year of earning.
+    paths:
+      CommercialClaim: "year({loss_date})"
+      ClaimFinancialTransaction: "year({claim.loss_date})"
+      ReserveEstimate: accident_year
+      EarnedPremium: calendar_year
+  calendar_year:
+    label: Calendar year
+    paths:
+      PolicyTransaction: "year({booked_date})"
+      EarnedPremium: calendar_year
+      ClaimFinancialTransaction: "year({transaction_date})"
+      CommercialClaim: "year({received_date})"
+      Submission: "year({received_date})"
+      PolicyRenewal: expiration_year
+  underwriting_year:
+    label: Underwriting (policy) year
+    paths:
+      Policy: "year({effective_date})"
+      PolicyTransaction: "year({policy.effective_date})"
+      EarnedPremium: underwriting_year
+      CommercialClaim: "year({policy.effective_date})"
+      ClaimFinancialTransaction: "year({claim.policy.effective_date})"
+      Submission: "year({requested_effective_date})"
+  program:
+    label: Program
+    paths:
+      Policy: program
+      PolicyTransaction: policy.program
+      EarnedPremium: program
+      PolicyRenewal: program
+      CommercialClaim: policy.program
+      ClaimFinancialTransaction: claim.policy.program
+  program_name:
+    label: Program name
+    paths:
+      Policy: program.name
+      PolicyTransaction: policy.program.name
+      EarnedPremium: program.name
+      PolicyRenewal: program.name
+      CommercialClaim: policy.program.name
+      ClaimFinancialTransaction: claim.policy.program.name
+  broker:
+    label: Broker / producer
+    paths:
+      Policy: producer.name
+      PolicyTransaction: policy.producer.name
+      EarnedPremium: producer.name
+      PolicyRenewal: producer.name
+      Submission: producer.name
+      CommercialClaim: policy.producer.name
+      ClaimFinancialTransaction: claim.policy.producer.name
+  new_renewal:
+    label: New vs renewal
+    paths:
+      Policy: new_renewal
+      PolicyTransaction: policy.new_renewal
+      EarnedPremium: new_renewal
+      CommercialClaim: policy.new_renewal
+      ClaimFinancialTransaction: claim.policy.new_renewal
+  market_type:
+    label: Admitted vs E&S
+    paths:
+      Policy: market_type
+      PolicyTransaction: policy.market_type
+      EarnedPremium: market_type
+      CommercialClaim: policy.market_type
+      ClaimFinancialTransaction: claim.policy.market_type
+  litigated:
+    label: Litigated
+    paths:
+      CommercialClaim: litigated
+      ClaimFinancialTransaction: claim.litigated
+  cause_of_loss:
+    label: Cause of loss
+    paths:
+      CommercialClaim: cause_of_loss
+      ClaimFinancialTransaction: claim.cause_of_loss
+  catastrophe_event:
+    label: Catastrophe event
+    paths:
+      CommercialClaim: catastrophe_event.name
+      ClaimFinancialTransaction: claim.catastrophe_event.name
+  loss_state:
+    label: Loss state
+    paths:
+      CommercialClaim: loss_state
+      ClaimFinancialTransaction: claim.loss_state
+  submission_status:
+    label: Submission status
+    paths:
+      Submission: submission_status
+  decline_reason:
+    label: Decline reason
+    paths:
+      Submission: decline_reason
+
+# ------------------------------------------------------------------- metrics
+metrics:
+  # premium
+  gross_written_premium:
+    label: Gross written premium
+    description: Sum of premium-bearing policy transactions booked on or before the valuation date.
+    entity: PolicyTransaction
+    measure: "sum({written_premium_change})"
+    as_of: booked_date
+    format: currency
+  earned_premium:
+    label: Earned premium
+    description: Written premium earned pro rata over each policy term through the valuation date.
+    entity: EarnedPremium
+    measure: "sum({earned})"
+    format: currency
+  policy_count:
+    label: Policies written
+    entity: Policy
+    measure: "count(DISTINCT {id})"
+    as_of: effective_date
+    format: count
+
+  # claims financials (as of valuation date)
+  paid_loss:
+    label: Paid loss
+    entity: ClaimFinancialTransaction
+    measure: "sum(CASE WHEN {financial_type} = 'payment' AND {cost_category} = 'loss' THEN {amount} ELSE 0 END)"
+    as_of: transaction_date
+    format: currency
+  paid_alae:
+    label: Paid ALAE
+    entity: ClaimFinancialTransaction
+    measure: "sum(CASE WHEN {financial_type} = 'payment' AND {cost_category} = 'alae' THEN {amount} ELSE 0 END)"
+    as_of: transaction_date
+    format: currency
+  case_reserve:
+    label: Case reserve (loss)
+    description: Outstanding case reserve for loss, i.e. the sum of reserve changes.
+    entity: ClaimFinancialTransaction
+    measure: "sum(CASE WHEN {financial_type} = 'reserve_change' AND {cost_category} = 'loss' THEN {amount} ELSE 0 END)"
+    as_of: transaction_date
+    format: currency
+  case_reserve_alae:
+    label: Case reserve (ALAE)
+    entity: ClaimFinancialTransaction
+    measure: "sum(CASE WHEN {financial_type} = 'reserve_change' AND {cost_category} = 'alae' THEN {amount} ELSE 0 END)"
+    as_of: transaction_date
+    format: currency
+  recoveries:
+    label: Recoveries
+    description: Subrogation, salvage and other recoveries received.
+    entity: ClaimFinancialTransaction
+    measure: "sum(CASE WHEN {financial_type} = 'recovery' THEN {amount} ELSE 0 END)"
+    as_of: transaction_date
+    format: currency
+  reported_incurred_loss:
+    label: Reported incurred loss
+    description: Paid loss + case reserve - recoveries (excludes ALAE and IBNR).
+    entity: ClaimFinancialTransaction
+    measure: >-
+      sum(CASE WHEN {financial_type} = 'recovery' THEN -{amount}
+               WHEN {cost_category} = 'loss' THEN {amount} ELSE 0 END)
+    as_of: transaction_date
+    format: currency
+  reported_incurred_loss_alae:
+    label: Reported incurred loss & ALAE
+    description: Paid + case reserve for loss and ALAE, net of recoveries (excludes IBNR).
+    entity: ClaimFinancialTransaction
+    measure: >-
+      sum(CASE WHEN {financial_type} = 'recovery' THEN -{amount}
+               WHEN {cost_category} IN ('loss', 'alae') THEN {amount} ELSE 0 END)
+    as_of: transaction_date
+    format: currency
+  ibnr:
+    label: IBNR (selected)
+    description: Selected actuarial IBNR at the latest valuation on or before the as-of date.
+    entity: ReserveEstimate
+    measure: "sum({ibnr_amount})"
+    filter: >-
+      {selected} AND {valuation_date} = (SELECT max(valuation_date) FROM {ont}.reserve_estimate
+                                         WHERE valuation_date <= {as_of})
+    format: currency
+  ultimate_loss_alae:
+    label: Ultimate loss & ALAE
+    description: Reported incurred loss & ALAE plus selected IBNR.
+    sum_of: [reported_incurred_loss_alae, ibnr]
+    format: currency
+
+  # ratios
+  reported_loss_ratio:
+    label: Reported loss ratio
+    description: Reported incurred loss / earned premium.
+    ratio: [reported_incurred_loss, earned_premium]
+    format: percent
+  loss_alae_ratio:
+    label: Loss & ALAE ratio
+    description: Reported incurred loss & ALAE / earned premium.
+    ratio: [reported_incurred_loss_alae, earned_premium]
+    format: percent
+  ultimate_loss_ratio:
+    label: Ultimate loss & ALAE ratio
+    description: (Reported incurred loss & ALAE + IBNR) / earned premium.
+    ratio: [ultimate_loss_alae, earned_premium]
+    format: percent
+
+  # claim counts & severity
+  reported_claim_count:
+    label: Reported claims
+    entity: CommercialClaim
+    measure: "count(DISTINCT {id})"
+    as_of: received_date
+    format: count
+  open_claim_count:
+    label: Open claims
+    entity: CommercialClaim
+    measure: "count(DISTINCT CASE WHEN {claim_status} IN ('open', 'reopened') THEN {id} END)"
+    as_of: received_date
+    format: count
+  litigated_claim_count:
+    label: Litigated claims
+    entity: CommercialClaim
+    measure: "count(DISTINCT CASE WHEN {litigated} THEN {id} END)"
+    as_of: received_date
+    format: count
+  litigation_rate:
+    label: Litigation rate
+    description: Share of reported claims in suit (a leading social-inflation indicator).
+    ratio: [litigated_claim_count, reported_claim_count]
+    format: percent
+  average_incurred_severity:
+    label: Average incurred severity
+    description: Reported incurred loss & ALAE per reported claim.
+    ratio: [reported_incurred_loss_alae, reported_claim_count]
+    format: currency
+
+  # underwriting funnel
+  submission_count:
+    label: Submissions received
+    entity: Submission
+    measure: "count(DISTINCT {id})"
+    as_of: received_date
+    format: count
+  quoted_submission_count:
+    label: Submissions quoted
+    entity: Submission
+    measure: "count(DISTINCT CASE WHEN {submission_status} IN ('quoted', 'bound', 'not_taken_up') THEN {id} END)"
+    as_of: received_date
+    format: count
+  bound_submission_count:
+    label: Submissions bound
+    entity: Submission
+    measure: "count(DISTINCT CASE WHEN {submission_status} = 'bound' THEN {id} END)"
+    as_of: received_date
+    format: count
+  declined_submission_count:
+    label: Submissions declined
+    entity: Submission
+    measure: "count(DISTINCT CASE WHEN {submission_status} = 'declined' THEN {id} END)"
+    as_of: received_date
+    format: count
+  quote_ratio:
+    label: Quote ratio
+    ratio: [quoted_submission_count, submission_count]
+    format: percent
+  hit_ratio:
+    label: Hit ratio
+    description: Bound / quoted submissions.
+    ratio: [bound_submission_count, quoted_submission_count]
+    format: percent
+  decline_rate:
+    label: Decline rate
+    ratio: [declined_submission_count, submission_count]
+    format: percent
+
+  # retention
+  expiring_policy_count:
+    label: Expiring policies
+    entity: PolicyRenewal
+    measure: "count(DISTINCT {policy})"
+    format: count
+  renewed_policy_count:
+    label: Renewed policies
+    entity: PolicyRenewal
+    measure: "sum({renewed})"
+    format: count
+  renewal_retention:
+    label: Renewal retention (policy count)
+    ratio: [renewed_policy_count, expiring_policy_count]
+    format: percent
