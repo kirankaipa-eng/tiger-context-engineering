@@ -131,8 +131,9 @@ class _Parser:
     """DAX expressions as tuples: (num v) (str v) (col table col) (ref name) (table name)
     (call FN args) (bin op l r) (neg x) (not x) (set items) (blank) (datevar table col level)."""
 
-    def __init__(self, text: str):
+    def __init__(self, text: str, names=None):
         self.toks, self.i = tokenize(text), 0
+        self.names = names or (lambda table, name=None: name if table is None or name is not None else table)
         self.vars: list[dict] = [{}]
         self.depth = 0  # inside how many function calls
         self.outer: list = []  # values of the measure's own VARs that read the model (computed once, up front)
@@ -160,7 +161,7 @@ class _Parser:
             self.vars.append(scope)
             while self.peek()[0] == "id" and self.peek()[1].upper() == "VAR":
                 self.take()
-                name = self.take()[1]
+                name = self.take()[1].lower()  # DAX names are case-insensitive
                 self.take("=")
                 scope[name] = self.expr()
                 if self.depth == 0 and _scalarish(scope[name]):
@@ -215,9 +216,12 @@ class _Parser:
             return ("str", text[1:-1].replace('""', '"'))
         if kind == "col":
             table, col = text.split("[", 1)
-            return ("col", _unq(table), col[:-1]) if table else ("ref", col[:-1])
+            if not table:
+                return ("ref", self.names(None, col[:-1]))
+            table = self.names(_unq(table))
+            return ("col", table, self.names(table, col[:-1]))
         if kind == "tbl":
-            return ("table", _unq(text))
+            return ("table", self.names(_unq(text)))
         if kind == "op" and text == "(":
             node = self.expr()
             self.take(")")
@@ -231,8 +235,8 @@ class _Parser:
             return ("set", items)
         if kind == "id":
             for scope in reversed(self.vars):
-                if text in scope:
-                    return scope[text]
+                if text.lower() in scope:
+                    return scope[text.lower()]
             if self.peek() == ("op", "("):
                 self.take()
                 args = []
@@ -253,7 +257,7 @@ class _Parser:
                 return ("call", fn, args)
             if text.upper() in ("TRUE", "FALSE"):
                 return ("bool", text.upper() == "TRUE")
-            return ("table", text)
+            return ("table", self.names(text))
         raise Unsupported("syntax", f"unexpected {text!r}")
 
 
@@ -314,6 +318,21 @@ class _Ctx:
     outer: dict = field(default_factory=dict)    # id -> a measure's own VAR value (computed once, up front)
     filter: tuple | None = None   # (owner, [(table, column | None)]): in a filter condition over those rows
     iterating: bool = False       # inside an iterator's per-value expression
+    spelled: dict = field(default_factory=dict)  # lower-case name -> the model's spelling
+
+    def names(self, table: str | None, name: str | None = None) -> str:
+        """A name as the model spells it (DAX names are case-insensitive): a table, a column of `table`, or
+        a measure or column without its table (table None)."""
+        if not self.spelled:
+            self.spelled = {("t", t.lower()): t for t in self.model.tables}
+            self.spelled.update({("m", m.lower()): m for m in self.keys})
+            self.spelled.update({("c", t.lower(), c.name.lower()): c.name
+                                 for t, x in self.model.tables.items() for c in x.columns})
+        if name is None:
+            return self.spelled.get(("t", table.lower()), table)
+        if table is None:
+            return self.spelled.get(("m", name.lower()), name)
+        return self.spelled.get(("c", table.lower(), name.lower()), self.spelled.get(("m", name.lower()), name))
 
 
 _REF = re.compile(r"\{(\??)([a-z0-9_]+)\}")
@@ -373,7 +392,7 @@ def _measure(ctx: _Ctx, name: str) -> dict:
     spec = {"label": name, "dax": " ".join(expr.split())}
     saved, ctx.filter, ctx.iterating = (ctx.filter, ctx.iterating), None, False  # its own context, not its user's
     try:
-        p = _Parser(expr)
+        p = _Parser(expr, ctx.names)
         node = p.parse()
         ctx.outer.update({id(v): v for v in p.outer})
         if _is_text(node):
@@ -816,7 +835,7 @@ def _parameter(ctx: _Ctx, args: list) -> str:
         raise Unsupported("context", "SELECTEDVALUE of something other than a column")
     t = ctx.model.tables.get(c[1])
     if t is None or t.column(c[2]) is None:
-        raise Unsupported("reference", f"no column {c[1]}[{c[2]}] in the model")
+        raise Unsupported("reference", f"no column {c[1]}[{c[2]}] in the model{_near(ctx, c[2])}")
     series = None
     if t.source_kind == "calculated" and t.column(c[2]).expression is None:
         try:
@@ -1231,13 +1250,23 @@ def _column(ctx: _Ctx, c) -> None:
         raise Unsupported("reference", f"no table {c[1]!r} in the model")
     column = t.column(c[2])
     if column is None:
-        raise Unsupported("reference", f"no column {c[1]}[{c[2]}] in the model")
+        raise Unsupported("reference", f"no column {c[1]}[{c[2]}] in the model{_near(ctx, c[2])}")
     if t.source_kind == "calculated":
         raise Unsupported("parameter", f"uses {c[1]}, a what-if parameter or calculated table that only "
                                        "exists in Power BI")
     if column.expression is not None:
         raise Unsupported("calculated_column", f"uses {c[1]}[{c[2]}], a calculated column that only exists in "
                                                "Power BI")
+
+
+def _near(ctx: _Ctx, name: str) -> str:
+    """What a missing column's name is instead, in words only (coverage groups by it without names)."""
+    plain = name.strip().lower()
+    if any(c.name.strip().lower() == plain for t in ctx.model.tables.values() for c in t.columns):
+        return "; a column of that name is on another table"
+    if any(m.strip().lower() == plain for m in ctx.keys):
+        return "; a measure of that name is on another table"
+    return "; nor on any other table (a calculated column or table not in the TMDL?)"
 
 
 def _condition(ctx: _Ctx, node, owner: str | None = None) -> str | None:

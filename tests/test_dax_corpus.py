@@ -72,6 +72,9 @@ MEASURES = {
     "Specialty Over 100": "CALCULATE([Paid When Specialty], Claims[Paid] > 100)",
     "Scoped Over 100": "CALCULATE([Scoped Paid], Claims[Paid] > 100)",
     "Cardio When Specialty": "CALCULATE([Paid When Specialty], Provider[Specialty] = \"Cardio\")",
+    # DAX names are case-insensitive: tables, columns, measures and VARs
+    "Lower Case Paid": "VAR _N = 1 RETURN CALCULATE([paid], claims[serviceDATE] >= DATE(2025, 3, _n), "
+                       "ALL(dim_date))",
     # refused: DAX computes the measure again per row it tests (context transition)
     "High Cost Inline": "CALCULATE([Paid], FILTER(Claims, Claims[Paid] > [Avg Paid]))",
     "Up To Latest Inline": "CALCULATE([Paid], ALL(Dim_Date), Dim_Date[Date] <= [Latest Date])",
@@ -146,6 +149,11 @@ def test_a_measure_that_ignores_the_visual_is_the_same_value_inline(layer):
 
 def test_date_literals(layer):
     assert ask(layer, ["since_march"]) == [(600,)]
+
+
+def test_names_in_any_case(layer):
+    assert status(layer, "lower_case_paid") == "captured"
+    assert ask(layer, ["lower_case_paid"]) == [(600,)]
 
 
 def test_scope_tests_joined_by_and(layer):
