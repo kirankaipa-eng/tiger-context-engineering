@@ -31,6 +31,26 @@ Pick who you are with **Signed in as** (people come from `owners.yaml`; SSO repl
 in production) and the client in the header. Start in the Inbox and press
 **Run the curator on documents**.
 
+## Over a Power BI model (any client, no content repo)
+
+```bash
+uv run ictx pbi import <model>.pbix --out build/pbi/<model>     # or a folder `ictx pbi export` wrote
+uv run ctx-studio serve --pbi build/pbi/<model>                 # API on :8700; repeat --pbi for several
+cd studio/web && npm run dev                                     # web app on http://localhost:3700
+```
+
+This serves only the captured model: no demo clients, no reference data, no proposals. The web app
+opens on the **analysis desk**: ask in plain words on the left (the same agent as `ictx pbi ask`;
+numbers only from the model's captured measures, or rows of its tables when no measure answers), and
+each answer lands on the right as an exhibit with its headline, the chart that fits it (a line for a
+period, ranked bars for many categories, stacked bars, lines or a heatmap for two dimensions) and how
+it was built (the definition and the SQL). Click any bar, point or cell to drill in: break that value
+down by another column, see its monthly trend, or open the rows behind it; each drill is a new exhibit
+computed in SQL with no LLM in between. **Coverage** shows why measures were not captured, by root cause;
+**Measures**, **Drilldown**, **Explore rows** and **Tables** are the model page by page. Without an LLM
+configured, everything but asking still works. Numbers run on Databricks when `DATABRICKS_*` is set in
+`.env`, else on the local copy of the .pbix's rows.
+
 ## How it works
 
 | Piece | Where |

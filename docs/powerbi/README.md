@@ -398,6 +398,12 @@ Power BI filters, under row-level security; values are literals, never SQL. Each
 than one is served. `list_models` / `model_version` counts carry `captured`, `presentation`
 (display-only), `presentation_with_value`, `not_captured` and a `summary` line.
 
+## In the Studio
+
+`uv run ctx-studio serve --pbi build/pbi/<model>` and `npm run dev` in `studio/web` give the analysis
+desk over the captured model: questions, exhibits with drilldowns, coverage, measures, rows and tables.
+See [studio/README.md](../../studio/README.md#over-a-power-bi-model-any-client-no-content-repo).
+
 ## Registering the server in MCP clients
 
 HTTP endpoint: `https://<host>/mcp` (streamable HTTP).

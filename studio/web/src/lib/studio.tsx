@@ -2,10 +2,13 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { api, setApiUser, type Area, type ClientInfo, type Person } from "./api";
+import { pbi, type PbiModel } from "./pbi";
 
 type ScreenContext = Record<string, unknown>;
 
 type Studio = {
+  mode: "studio" | "pbi" | null;     // null until the API says which it is serving
+  pbiModels: PbiModel[]; pbiModel: string; setPbiModel: (id: string) => void; llm: boolean;
   people: Person[]; areas: Area[]; clients: ClientInfo[];
   user: string; setUser: (id: string) => void; me: Person | undefined;
   client: string; setClient: (name: string) => void; clientInfo: ClientInfo | undefined;
@@ -34,8 +37,26 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   const [panelOpen, setPanelOpenState] = useState(true);
   const [version, setVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"studio" | "pbi" | null>(null);
+  const [pbiModels, setPbiModels] = useState<PbiModel[]>([]);
+  const [pbiModel, setPbiModelState] = useState("");
+  const [llm, setLlm] = useState(false);
 
   useEffect(() => {
+    pbi.health().then((h) => {
+      if (h.mode !== "pbi") { setMode("studio"); return; }
+      setMode("pbi");
+      return pbi.models().then((r) => {
+        setPbiModels(r.models); setLlm(r.llm);
+        const want = stored("studio.pbi.model", "");
+        setPbiModelState(r.models.some((x) => x.id === want) ? want : r.models[0]?.id ?? "");
+        if (!r.models.length) setError("No Power BI model is served. Start the API with: ctx-studio serve --pbi build/pbi/<model>");
+      });
+    }).catch((e) => setError(`Cannot reach the Studio API (${e.message}). Start it with: ctx-studio serve --pbi build/pbi/<model>`));
+  }, []);
+
+  useEffect(() => {
+    if (mode !== "studio") return;
     Promise.all([api.people(), api.clients()]).then(([p, c]) => {
       setPeople(p.people); setAreas(p.areas); setClients(c.clients);
       const u = stored("studio.user", "pack-steward");
@@ -44,6 +65,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setClientState(c.clients.some((x) => x.name === cl) ? cl : c.default);
       setPanelOpenState(stored("studio.panel", "1") === "1");
     }).catch((e) => setError(`Cannot reach the Studio API (${e.message}). Start it with: ctx-studio serve`));
+  }, [mode]);
+
+  const setPbiModel = useCallback((id: string) => {
+    setPbiModelState(id);
+    try { window.localStorage.setItem("studio.pbi.model", id); } catch { /* private window */ }
+    setVersion((v) => v + 1);
   }, []);
 
   const setUser = useCallback((id: string) => {
@@ -62,9 +89,9 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const refreshCounts = useCallback(() => {
-    if (!client) return;
+    if (!client || mode !== "studio") return;
     api.inbox(client, "mine").then((r) => setCounts(r.counts)).catch(() => {});
-  }, [client]);
+  }, [client, mode]);
   useEffect(() => { refreshCounts(); }, [refreshCounts, user, version]);
   useEffect(() => {
     const t = setInterval(refreshCounts, 8000);
@@ -72,11 +99,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   }, [refreshCounts]);
 
   const value = useMemo<Studio>(() => ({
+    mode, pbiModels, pbiModel, setPbiModel, llm,
     people, areas, clients, user, setUser, me: people.find((p) => p.id === user),
     client, setClient, clientInfo: clients.find((c) => c.name === client),
     counts, refreshCounts, screen, setScreen, panelOpen, setPanelOpen,
     version, bump: () => setVersion((v) => v + 1), error,
-  }), [people, areas, clients, user, setUser, client, setClient, counts, refreshCounts, screen, panelOpen, setPanelOpen, version, error]);
+  }), [people, areas, clients, user, setUser, client, setClient, counts, refreshCounts, screen, panelOpen, setPanelOpen, version, error, mode, pbiModels, pbiModel, setPbiModel, llm]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

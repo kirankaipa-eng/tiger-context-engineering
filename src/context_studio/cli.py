@@ -2,6 +2,9 @@
 
     ctx-studio init            create the content repo and build reference warehouses
     ctx-studio serve           run the API on :8700 (the web app runs on :3700)
+    ctx-studio serve --pbi <dir> [--pbi <dir>]
+                               the Studio over captured Power BI models (what `ictx pbi import` or
+                               `ictx pbi export` wrote) only: no content repo, no reference data
     ctx-studio scan <client>   run the curator over a client's documents
     ctx-studio onboard <client>  propose adding a client from this checkout to the content repo
     ctx-studio harvest-powerbi <client> <pbip folder | model.bim | .pbit | .pbix>
@@ -23,6 +26,8 @@ def main(argv: list[str] | None = None) -> None:
     sv = sub.add_parser("serve")
     sv.add_argument("--port", type=int, default=8700)
     sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--pbi", action="append", metavar="DIR",
+                    help="a captured Power BI model folder; repeat for several")
     sc = sub.add_parser("scan")
     sc.add_argument("client")
     sc.add_argument("--no-llm", action="store_true")
@@ -34,6 +39,22 @@ def main(argv: list[str] | None = None) -> None:
     rs = sub.add_parser("reset")
     rs.add_argument("--yes", action="store_true")
     args = ap.parse_args(argv)
+
+    if args.cmd == "serve" and args.pbi:
+        import os
+        from pathlib import Path
+
+        import uvicorn
+        for d in args.pbi:
+            p = Path(d)
+            if not (p / "capture.yaml").exists() and not (p / "capture" / "capture.yaml").exists():
+                sys.exit(f"{d}: no capture.yaml (run `ictx pbi import <file.pbix> --out {d}` first)")
+        os.environ["CTX_STUDIO_PBI"] = os.pathsep.join(str(Path(d).resolve()) for d in args.pbi)
+        from insurance_context import llm
+        llm.configured()  # loads .env (the LLM and Databricks settings) before the app reads them
+        print(f"Power BI models: {', '.join(args.pbi)}. Web app: cd studio/web && npm run dev", flush=True)
+        uvicorn.run("context_studio.pbi_app:app", host=args.host, port=args.port, log_level="info")
+        return
 
     from .config import bootstrap, settings
     if args.cmd == "reset":

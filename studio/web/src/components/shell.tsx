@@ -7,6 +7,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { useStudio } from "@/lib/studio";
 import { ChatThread } from "./chat";
+import { PbiShell } from "./pbi-shell";
 
 const NAV = [
   { href: "/inbox", label: "Inbox", icon: Inbox, badge: true },
@@ -36,11 +37,12 @@ function suggestionsFor(screen: Record<string, unknown>, line?: string, client?:
 }
 
 export function Shell({ children }: { children: React.ReactNode }) {
-  const { people, clients, user, setUser, client, setClient, clientInfo, counts, panelOpen, setPanelOpen, screen, error } = useStudio();
+  const { people, clients, user, setUser, client, setClient, clientInfo, counts, panelOpen, setPanelOpen, screen, error, mode } = useStudio();
   const path = usePathname();
   const router = useRouter();
   const [search, setSearch] = useState("");
   const onChat = path?.startsWith("/chat");
+  if (mode === "pbi" || path?.startsWith("/pbi")) return <PbiShell>{children}</PbiShell>;  // a Power BI model, not the content repo
   if (path?.startsWith("/insights")) return <>{children}</>;  // the business view has its own frame
 
   return (

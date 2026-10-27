@@ -205,6 +205,8 @@ class BIToolkit:
         self.layer, self.wh, self.row_filters = layer, warehouse, row_filters
         self.max_rows, self.max_top, self.last = max_rows, max_top, {}
         self.on_query = None  # called with {sql, ms} after each warehouse query (`ask --trace`)
+        self.results: list[dict] = []  # each compute / explore that ran, with its rows (a screen charts them)
+        self._seq = 0
 
     def _query(self, sql: str, limit: int) -> tuple[list[str], list[tuple]]:
         import time
@@ -218,6 +220,10 @@ class BIToolkit:
                 self.on_query(self.last)
         self.last["rows"] = len(rows)
         return cols, rows
+
+    def _keep(self, last: dict) -> None:
+        self._seq += 1
+        self.results = [*self.results[-49:], {**last, "seq": self._seq}]
 
     def list_metrics(self) -> str:
         shows = _shown_by(self.layer)
@@ -353,7 +359,9 @@ class BIToolkit:
         except Exception as exc:  # noqa: BLE001 - a bad column or a warehouse error goes back to the agent
             return f"Error: {exc}"
         shown = rows[:self.max_rows]
-        self.last.update(kind="compute", columns=cols, shown=shown, metrics=list(metrics), by=list(by or []))
+        self.last.update(kind="compute", columns=cols, shown=shown, metrics=list(metrics), by=list(by or []),
+                         filters=dict(filters or {}))
+        self._keep(self.last)
         table = _markdown(cols, [[_fmt(v) if c in metrics else str(v) for c, v in zip(cols, r)] for r in shown])
         out = f"Data: {self.wh.describe()}\n\n{table}"
         if len(rows) > self.max_rows:
@@ -390,7 +398,8 @@ class BIToolkit:
             return f"Error: {exc}"
         aggs = set(aggregates or [])
         self.last.update(kind="explore", columns=cols, shown=rows[:limit], metrics=list(aggregates or []),
-                         by=list(columns or []))
+                         by=list(columns or []), filters=dict(where or {}), conditions=list(conditions or []))
+        self._keep(self.last)
         table_md = _markdown(cols, [[_fmt(v) if c in aggs else ("" if v is None else str(v)) for c, v in zip(cols, r)]
                                     for r in rows[:limit]])
         out = f"Data: {self.wh.describe()} (rows of the model's tables, not a Power BI measure)\n\n{table_md}"
