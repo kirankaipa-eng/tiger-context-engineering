@@ -33,7 +33,7 @@ def test_the_model_its_coverage_and_measures(client):
     [m] = client.get("/api/pbi/models").json()["models"]
     assert m["id"] == "claims" and m["captured"] >= 10 and "local" in m["warehouse"]
     o = client.get("/api/pbi/claims/overview").json()
-    assert o["coverage"]["not_captured"] == 6 and all(g["examples"] for g in o["coverage"]["groups"])
+    assert o["coverage"]["not_captured"] == 5 and all(g["examples"] for g in o["coverage"]["groups"])
     d = client.get("/api/pbi/claims/metrics/running_paid").json()
     assert d["status"] == "captured" and d["tables"] == ["Claims"] and "Provider[Specialty]" in d["columns"]
     assert client.get("/api/pbi/claims/metrics/nope").status_code == 404

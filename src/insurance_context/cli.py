@@ -407,7 +407,7 @@ def cmd_pbi_coverage(args):
     from .daxcapture import coverage
     args.dir = _capture_dir(args.dir)
     layer = BILayer.load(args.dir)
-    print(f"{layer.model}: " + coverage(layer.metrics, examples=args.examples))
+    print(f"{layer.model}: " + coverage(layer.metrics, examples=args.examples, shape=args.shape))
     return 0
 
 
@@ -659,6 +659,8 @@ def main(argv: list[str] | None = None) -> int:
     pc = psub.add_parser("coverage", help="why measures were not captured, grouped by root cause")
     pc.add_argument("dir")
     pc.add_argument("--examples", type=int, default=2, help="example measures (with DAX) per cause")
+    pc.add_argument("--shape", action="store_true", help="examples with every name taken out (tables, columns, "
+                                                        "measures, text), safe to share")
     pc.set_defaults(fn=cmd_pbi_coverage)
     pm = psub.add_parser("metrics", help="list captured metrics")
     pm.add_argument("dir")

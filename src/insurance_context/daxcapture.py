@@ -21,7 +21,7 @@ layer applies at the grain of the question:
 PREVIOUS/NEXT DAY|MONTH|QUARTER|YEAR, PARALLELPERIOD (shifts that need that grain), DATEADD and
 SAMEPERIODLASTYEAR (shifts at any grain), DATESYTD/QTD/MTD and TOTALYTD/QTD/MTD (to date) are
 captured; a fiscal year end, two periods on one metric, DATESINPERIOD and DATESBETWEEN are not.
-Date arithmetic is captured in filters and formulas: EOMONTH and EDATE by a whole number of months,
+Date arithmetic is captured in filters and formulas: EOMONTH and EDATE by a number of months,
 TODAY, NOW, and DATE of expressions (CALCULATE([Paid], Dim_Date[Date] <= EOMONTH(MAX(Dim_Date[Date]), -1))).
 
 What a measure reads of the visual is captured as what the question must say:
@@ -506,17 +506,17 @@ def _why(fn: str) -> Unsupported:
 
 
 def _dated(fn: str, args: list, sub) -> str | None:
-    """EOMONTH / EDATE (a whole number of months written in the measure), TODAY, NOW, and DATE of
+    """EOMONTH / EDATE (by a number of months, written or computed), TODAY, NOW, and DATE of
     expressions, with `sub` compiling the arguments (a row expression or a measure-level one)."""
     if fn in ("EOMONTH", "EDATE"):
         if len(args) != 2 or args[0] is None:
             raise Unsupported("syntax", f"{fn} needs a date and a number of months")
         n = _const(args[1])
-        if not isinstance(n, int):
-            raise Unsupported("function", f"{fn} with a number of months that is not a whole number written in "
-                                          "the measure")
-        x = f"CAST({sub(args[0])} AS DATE)" + (f" + INTERVAL {n} MONTH" if n > 0 else
-                                                f" - INTERVAL {-n} MONTH" if n < 0 else "")
+        if isinstance(n, int):
+            x = f"CAST({sub(args[0])} AS DATE)" + (f" + INTERVAL {n} MONTH" if n > 0 else
+                                                    f" - INTERVAL {-n} MONTH" if n < 0 else "")
+        else:  # computed (a VAR, a measure, a what-if parameter): rounded to whole months, BLANK as 0
+            x = f"CAST({sub(args[0])} AS DATE) + CAST(round(coalesce({sub(args[1])}, 0)) AS INTEGER) * INTERVAL 1 MONTH"
         return f"last_day({x})" if fn == "EOMONTH" else f"CAST({x} AS DATE)"
     if fn in ("TODAY", "NOW") and not [a for a in args if a is not None]:
         return "current_date" if fn == "TODAY" else "current_timestamp"
@@ -625,6 +625,10 @@ def _value(ctx: _Ctx, node, owner: str) -> str:
             return "{" + _hidden(ctx, owner, {"rank": _rank(ctx, args, owner)}) + "}"
         if fn == "SELECTEDVALUE":
             return _parameter(ctx, args)
+        if fn in ("ISINSCOPE", "ISFILTERED") and _scope_test(ctx, node) is not None:  # as a number: 1 or 0
+            one, zero = _part(ctx, ("num", 1), owner), _part(ctx, ("num", 0), owner)
+            return "{" + _hidden(ctx, owner, {"by_scope": [_scope_branch([_scope_test(ctx, node)], one),
+                                                           {"else": zero}]}) + "}"
         if fn == "VALUE" and args and args[0] is not None and _is_text(args[0]):
             raise Unsupported("sort_key", "turns text glued together (VALUE of CONCATENATE) back into a number: a "
                                           "sort key for a visual, which measures nothing; sort by its parts instead")
@@ -685,8 +689,16 @@ def _scope_test(ctx: _Ctx, node) -> tuple[str, bool, bool] | None:
     true is known from the question: ISINSCOPE when it groups by the column, ISFILTERED when it groups
     by it or filters on it (a table: any of its columns)."""
     negated = False
-    while node is not None and (node[0] == "not" or (node[0] == "call" and node[1] == "NOT" and node[2])):
-        node, negated = (node[1] if node[0] == "not" else node[2][0]), not negated
+    while node is not None:
+        if node[0] == "not" or (node[0] == "call" and node[1] == "NOT" and node[2]):
+            node, negated = (node[1] if node[0] == "not" else node[2][0]), not negated
+        elif node[0] == "bin" and node[1] in ("=", "==", "<>") and ("bool", True) in node[2:] or \
+                node[0] == "bin" and node[1] in ("=", "==", "<>") and ("bool", False) in node[2:]:
+            # ISINSCOPE(c) = TRUE(), ISFILTERED(c) <> FALSE(), ...
+            truth = ("bool", True) in node[2:]
+            node, negated = (node[3] if node[2][0] == "bool" else node[2]), negated ^ (truth == (node[1] == "<>"))
+        else:
+            break
     if node is None or node[0] != "call" or node[1] not in ("ISINSCOPE", "ISFILTERED") or len(node[2]) != 1:
         return None
     a = node[2][0]
@@ -1387,6 +1399,8 @@ def _row(ctx: _Ctx, node) -> str:
         dated = _dated(fn, args, lambda a: _row(ctx, a))
         if dated is not None:
             return dated
+        if fn == "SELECTEDVALUE":
+            return _parameter(ctx, args)
         if fn == "NOT":
             return f"(NOT {_row(ctx, args[0])})"
         if fn in ("AND", "OR") and len(args) == 2:
@@ -1445,8 +1459,44 @@ def coverage_data(metrics: dict) -> dict:
                        for (gap, why), g in sorted(groups.items(), key=lambda x: (-x[1]["blocked"], x[0]))]}
 
 
-def coverage(metrics: dict, examples: int = 2, width: int = 160) -> str:
-    """coverage_data as a report: a line per root cause, with example measures and their DAX."""
+_WORDS = {"VAR", "RETURN", "TRUE", "FALSE", "IN", "NOT", "ASC", "DESC", "DAY", "MONTH", "QUARTER", "YEAR", "SKIP",
+          "DENSE", "BLANK"}
+
+
+def masked(dax: str) -> str:
+    """DAX with every name taken out (tables T1, columns T1[c1], measures [m1], VARs _v1, text "s"):
+    the shape of a measure, safe to share when the names are not."""
+    try:
+        tokens = tokenize(dax)
+    except Unsupported:
+        return "(cannot read)"
+    names: dict[tuple, str] = {}
+
+    def name(kind, raw, stem):
+        return names.setdefault((kind, raw.lower()), f"{stem}{sum(1 for k in names if k[0] == kind) + 1}")
+    out = []
+    for i, (kind, text) in enumerate(tokens):
+        nxt = tokens[i + 1][1] if i + 1 < len(tokens) else ""
+        if kind == "col":
+            t, c = re.fullmatch(r"(.*?)\[([^\]]+)\]", text).groups()
+            out.append((name("t", t, "T") if t else "") + "[" + name("c" if t else "m", text if t else c,
+                                                                       "c" if t else "m") + "]")
+        elif kind == "tbl":
+            out.append(name("t", text, "T"))
+        elif kind == "str":
+            out.append('"s"')
+        elif kind == "id" and nxt != "(" and text.upper() not in _WORDS:
+            table = i and tokens[i - 1][1] in ("(", ",") and nxt in (")", ",") and not text.startswith("_") and \
+                tokens[i - 1][1] != "VAR"
+            out.append(name("t", text, "T") if table else name("v", text, "_v"))
+        else:
+            out.append(text)
+    return re.sub(r"(\w) \(", r"\1(", " ".join(out)).replace("( ", "(").replace(" )", ")").replace(" ,", ",")
+
+
+def coverage(metrics: dict, examples: int = 2, width: int = 160, shape: bool = False) -> str:
+    """coverage_data as a report: a line per root cause, with example measures and their DAX (shape: with
+    every name taken out, see masked)."""
     d = coverage_data(metrics)
     lines = [f"{d['measures']} measures: {d['captured']} captured, {d['presentation']} "
              f"display-only, {d['not_captured']} not captured", "",
@@ -1454,7 +1504,11 @@ def coverage(metrics: dict, examples: int = 2, width: int = 160) -> str:
              f"{'blocks':>6} {'roots':>5}  {'kind':<17} reason"]
     for g in d["groups"]:
         lines.append(f"{g['blocks']:>6} {len(g['roots']):>5}  {g['kind']:<17} {g['reason'][:width]}")
-        for r in g["roots"][:examples]:
+        for n, r in enumerate(g["roots"][:examples]):
             dax = metrics[r].get("dax", "")
+            if shape:
+                dax = masked(dax)
+                lines.append(f"{'':>14}e.g. {dax[:width * 2]}{'...' if len(dax) > width * 2 else ''}")
+                continue
             lines.append(f"{'':>14}e.g. [{metrics[r].get('label', r)}] = {dax[:width - 20]}{'...' if len(dax) > width - 20 else ''}")
     return "\n".join(lines)

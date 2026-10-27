@@ -54,12 +54,20 @@ MEASURES = {
                      "Dim_Date[Date] > EDATE(_m, -3), Dim_Date[Date] <= _m)",
     "Up To Today": "CALCULATE([Paid], Claims[ServiceDate] <= TODAY())",
     "March End Paid": "SUMX(FILTER(Claims, EOMONTH(Claims[ServiceDate], 0) = DATE(2025, 3, 31)), Claims[Paid])",
-    "Months Back": "EOMONTH(MAX(Dim_Date[Date]), [Claim Count])",
+    "Months Back": "EOMONTH(MAX(Dim_Date[Date]), -[Claim Count])",
+    "Lookback": "2",
+    "To Lookback End": "VAR _n = [Lookback] VAR _e = EOMONTH(MAX(Dim_Date[Date]), -_n) RETURN "
+                       "CALCULATE([Paid], ALL(Dim_Date), Dim_Date[Date] <= _e)",
+    "To Lookback End Inline": "CALCULATE([Paid], FILTER(ALL(Dim_Date), Dim_Date[Date] <= "
+                              "EOMONTH(MAX(Dim_Date[Date]), 0 - [Lookback])))",
     # a level of a hierarchy: grouped by month but not by specialty, by both, or neither
     "Level Paid": "SWITCH(TRUE(), ISINSCOPE(Dim_Date[Date]) && NOT ISINSCOPE(Provider[Specialty]), [Running Paid], "
                   "ISINSCOPE(Dim_Date[Date]) && ISINSCOPE(Provider[Specialty]), [Avg Paid], [Paid])",
     "Month Only Paid": "IF(ISINSCOPE(Dim_Date[Date]) && NOT ISINSCOPE(Provider[Specialty]), [Paid])",
     "Neither Paid": "SWITCH(TRUE(), NOT ISINSCOPE(Dim_Date[Date]) && NOT ISINSCOPE(Provider[Specialty]), [Paid])",
+    "Level": "ISINSCOPE(Dim_Date[Date]) + ISINSCOPE(Provider[Specialty])",
+    "By Level": "SWITCH([Level], 1, [Avg Paid], [Paid])",
+    "Specialty Is True": "IF(ISINSCOPE(Provider[Specialty]) = TRUE(), [Avg Paid], [Paid])",
     # CALCULATE filters around a scope switch reach every branch, unless they touch what it tests
     "Specialty Over 100": "CALCULATE([Paid When Specialty], Claims[Paid] > 100)",
     "Scoped Over 100": "CALCULATE([Scoped Paid], Claims[Paid] > 100)",
@@ -151,6 +159,21 @@ def test_scope_tests_joined_by_and(layer):
     assert "no test that must hold" in layer[0].metrics["neither_paid"]["why"]
 
 
+def test_isinscope_as_a_number_and_compared_with_true(layer):
+    assert ask(layer, ["paid", "level", "by_level"]) == [(1200, 0, 1200)]
+    assert ask(layer, ["paid", "level", "by_level"], [MONTH])[0] == ("2025-01", 400, 1, 200)  # one level: average
+    assert ask(layer, ["paid", "level", "by_level"], [SPECIALTY])[0] == ("Cardio", 350, 1, 116.67)
+    assert ask(layer, ["specialty_is_true"], [SPECIALTY]) == [("Cardio", 116.67), ("Ortho", 283.33)]
+    assert ask(layer, ["specialty_is_true"]) == [(1200,)]
+
+
+def test_masked_dax_keeps_the_shape_and_drops_the_names():
+    from insurance_context.daxcapture import masked
+    out = masked('VAR total = [Paid Amt] RETURN CALCULATE([Paid Amt], \'Dim Date\'[Month] = "Jan", ALL(Provider), '
+                 'Provider[NPI] > total)')
+    assert out == 'VAR _v1 = [m1] RETURN CALCULATE([m1], T1[c1] = "s", ALL(T2), T2[c2] > _v1)'
+
+
 def test_calculate_filters_around_a_scope_switch(layer):
     assert ask(layer, ["specialty_over_100"], [SPECIALTY]) == [("Cardio", 200), ("Ortho", 850)]
     assert ask(layer, ["scoped_over_100"], [MONTH]) == [("2025-01", 300), ("2025-02", 500), ("2025-03", 900),
@@ -170,7 +193,10 @@ def test_month_ends_and_month_shifts(layer):
     assert ask(layer, ["last_3_months"]) == [(800,)]  # after 2025-01-30: Feb + Mar + Apr
     assert ask(layer, ["up_to_today"]) == [(1200,)]
     assert ask(layer, ["march_end_paid"]) == [(450,)]
-    assert "whole number written in the measure" in layer[0].metrics["months_back"]["why"]
+    # a computed number of months: 6 claims back from 2025-04-30 is 2024-10-31
+    assert ask(layer, ["months_back"]) == [(datetime.date(2024, 10, 31),)]
+    # two months back from the latest date's month: through 2025-02-28
+    assert ask(layer, ["to_lookback_end", "to_lookback_end_inline"]) == [(600, 600)]
 
 
 def test_isfiltered_picks_the_branch_from_what_the_question_narrows_to(layer):
