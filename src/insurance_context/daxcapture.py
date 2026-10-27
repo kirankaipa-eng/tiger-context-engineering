@@ -28,10 +28,18 @@ What a measure reads of the visual is captured as what the question must say:
     CALCULATE(SUM(Metrics[X]), ALLSELECTED(Metrics))            context: remove Metrics, keep filters
     CALCULATE([Net Sales], ALL('Calendar'[Date].[Month]))       context: ... level month (year stays)
     VAR _y = MAX(Metrics[Year]) RETURN CALCULATE(..., Metrics[Year] = _y - 1)   latest: max, offset -1
+    CALCULATE([Paid], FILTER(ALL(Dim_Date), Dim_Date[Date] <= MAX(Dim_Date[Date])))
+                                                                filter: Date <= {@part}, the cell's max date
+    VAR _avg = [Avg Paid] RETURN CALCULATE([Paid], Claims[Paid] > _avg)    filter: Paid > {@avg_paid}
     IF([Store Top N] < 4, [Net Sales], 0)                       CASE WHEN ... END in the formula
     SELECTEDVALUE('% Return Rate'[% Return Rate])               {$pct_return_rate}: a what-if parameter
     RANKX(ALL(Store[Store]), [Net Sales], , DESC)               rank: over Store[Store], of net_sales
     SWITCH(TRUE(), ISINSCOPE(Product[Product]), ..., ...)       by_scope: the branch the grouping picks
+
+A filter may compare rows with a value computed from the model ({@key}: that metric in the question's
+cell): a VAR of the measure and a plain aggregation are computed once, around the filter, as in DAX. A
+measure written inside the condition is computed again for each row tested (context transition), so it
+is captured only when those rows do not reach what it reads (or it removes them with ALL); else refused.
 
 ALL / REMOVEFILTERS / ALLSELECTED / ALLEXCEPT are captured as CALCULATE filter modifiers; IF and
 SWITCH as CASE over comparisons of metrics, ISBLANK as {?key} IS NULL (the raw value); a measure
@@ -121,6 +129,8 @@ class _Parser:
     def __init__(self, text: str):
         self.toks, self.i = tokenize(text), 0
         self.vars: list[dict] = [{}]
+        self.depth = 0  # inside how many function calls
+        self.outer: list = []  # values of the measure's own VARs that read the model (computed once, up front)
 
     def peek(self, k=0):
         j = self.i + k
@@ -148,6 +158,8 @@ class _Parser:
                 name = self.take()[1]
                 self.take("=")
                 scope[name] = self.expr()
+                if self.depth == 0 and _scalarish(scope[name]):
+                    self.outer.append(scope[name])
             self.take("RETURN")
             body = self.expr()
             self.vars.pop()
@@ -219,12 +231,14 @@ class _Parser:
             if self.peek() == ("op", "("):
                 self.take()
                 args = []
+                self.depth += 1
                 if self.peek() != ("op", ")"):
                     while True:
                         args.append(None if self.peek() in (("op", ","), ("op", ")")) else self.expr())
                         if self.peek() != ("op", ","):
                             break
                         self.take()
+                self.depth -= 1
                 self.take(")")
                 fn = text.upper()
                 if fn in ("TRUE", "FALSE"):
@@ -240,6 +254,24 @@ class _Parser:
 
 def parse(text: str):
     return _Parser(text).parse()
+
+
+_TABLE_FNS = {"FILTER", "ALL", "ALLSELECTED", "ALLEXCEPT", "REMOVEFILTERS", "VALUES", "DISTINCT", "SUMMARIZE",
+              "SUMMARIZECOLUMNS", "ADDCOLUMNS", "SELECTCOLUMNS", "TOPN", "CALCULATETABLE", "DATESBETWEEN",
+              "DATESINPERIOD", "GENERATESERIES", "UNION", "EXCEPT", "INTERSECT", "CROSSJOIN", "TREATAS"}
+_READS = {"CALCULATE", "COUNTROWS", *AGGS, *ITERATORS}
+
+
+def _scalarish(node) -> bool:
+    """A VAR's value that reads the model as a number ([M], MAX(T[C]), CALCULATE(...)), not a table."""
+    if not isinstance(node, tuple) or not node:
+        return False
+    if node[0] == "call" and node[1] in _TABLE_FNS:
+        return False
+    if node[0] == "ref" or (node[0] == "call" and node[1] in _READS):
+        return True
+    return any(_scalarish(x) for x in node[1:] if isinstance(x, tuple)) or \
+        any(_scalarish(x) for x in node[1:] if isinstance(x, list) for x in x)
 
 
 # ------------------------------------------------------------------ capture
@@ -274,9 +306,13 @@ class _Ctx:
     pending: set
     params: dict = field(default_factory=dict)   # what-if parameters the measures read
     values: dict = field(default_factory=dict)   # presentation key -> its `<key>_value` metric
+    outer: dict = field(default_factory=dict)    # id -> a measure's own VAR value (computed once, up front)
+    filter: tuple | None = None   # (owner, [(table, column | None)]): in a filter condition over those rows
+    iterating: bool = False       # inside an iterator's per-value expression
 
 
 _REF = re.compile(r"\{(\??)([a-z0-9_]+)\}")
+_SCALAR = re.compile(r"\{@([a-z0-9_]+)\}")  # in a filter: that metric's value in the question's cell
 _COLREF = re.compile(r"\{('(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_]*)\[([^\]]+)\]\}")
 
 
@@ -317,6 +353,7 @@ def _refs(spec: dict) -> list[str]:
         out.append(spec["rank"]["of"])
     if "iterate" in spec:
         out += [spec["iterate"]["of"], *([spec["iterate"]["having"]] if spec["iterate"].get("having") else [])]
+    out += [k for f in spec.get("filter") or [] for k in _SCALAR.findall(f)]
     return out + [b.get("metric") or b.get("else") for b in spec.get("by_scope", [])]
 
 
@@ -329,8 +366,11 @@ def _measure(ctx: _Ctx, name: str) -> dict:
     ctx.pending.add(name)
     expr = next(m.expression for _, m in ctx.model.measures if m.name == name)
     spec = {"label": name, "dax": " ".join(expr.split())}
+    saved, ctx.filter, ctx.iterating = (ctx.filter, ctx.iterating), None, False  # its own context, not its user's
     try:
-        node = parse(expr)
+        p = _Parser(expr)
+        node = p.parse()
+        ctx.outer.update({id(v): v for v in p.outer})
         if _is_text(node):
             spec.update(status="presentation", why="formats a value as text for display; the value is the metric")
             _shows(ctx, node, key, spec)
@@ -345,6 +385,7 @@ def _measure(ctx: _Ctx, name: str) -> dict:
             spec["gap"] = u.kind  # what kind of DAX stopped it: syntax, function, context, period, ...
     finally:
         ctx.pending.discard(name)
+        ctx.filter, ctx.iterating = saved
     ctx.out[key] = {k: spec[k] for k in ("label", "status", *[x for x in spec if x not in ("label", "status")])}
     return ctx.out[key]
 
@@ -562,7 +603,7 @@ def _value(ctx: _Ctx, node, owner: str) -> str:
         it = _iterate(ctx, node, owner)
         if it is not None:
             return it
-        base = _aggregation(ctx, node)
+        base = _aggregation(ctx, node, owner)
         if base is not None:
             return "{" + _hidden(ctx, owner, base) + "}"
         raise _why(fn)
@@ -709,10 +750,10 @@ def _calculate(ctx: _Ctx, expr, args: list, owner: str) -> str:
     (T[C] = MAX(T[C]) + n) and at most one period (time intelligence)."""
     filters, periods, context, latest = [], [], [], []
     for a in list(args):
-        if a[0] == "call" and a[1] == "FILTER" and len(a[2]) == 2 and a[2][0] is not None and \
-                a[2][0][0] == "call" and a[2][0][1] in ("ALL", "REMOVEFILTERS") and not _has_measure(ctx, a[2][1]):
+        if a[0] == "call" and a[1] == "FILTER" and len(a[2]) == 2 and None not in a[2] and \
+                a[2][0][0] == "call" and a[2][0][1] in ("ALL", "REMOVEFILTERS"):
             context += [e for e in (_modifier(ctx, a[2][0]) or []) if e not in context]
-            filters.append(_row(ctx, a[2][1]))
+            filters.append(_filtered(ctx, owner, _rows_of(ctx, a[2][0]), a[2][1]))
             continue
         m = _modifier(ctx, a)
         if m is not None:
@@ -726,7 +767,7 @@ def _calculate(ctx: _Ctx, expr, args: list, owner: str) -> str:
         if t is not None:
             periods.append(t)
         else:
-            f = _condition(ctx, a)
+            f = _condition(ctx, a, owner)
             if f:
                 filters.append(f)
     if len(periods) > 1:
@@ -855,6 +896,20 @@ def _with_filters(ctx: _Ctx, formula: str, filters: list[str], owner: str, time:
         if spec.get("latest"):
             raise Unsupported("context", f"applies CALCULATE filters to [{label(spec)}], which reads the latest "
                                          f"{spec['latest']['column']}; the filters would change which one is latest")
+        old = list(spec.get("filter") or [])
+        if any(_SCALAR.search(f) for f in old):
+            if time or latest:
+                raise Unsupported("context", f"applies a period or the latest one to [{label(spec)}], which compares "
+                                             "rows with a value it computes; not captured")
+
+            def outer(x):  # the value it compares with is computed under the same filters (DAX's outer context)
+                f = _with_filters(ctx, "{" + x.group(1) + "}", filters, owner, None, context, None)
+                inner = re.fullmatch(r"\{([a-z0-9_]+)\}", f)
+                return "{@" + (inner.group(1) if inner else _hidden(ctx, owner, {"formula": f})) + "}"
+            old = [_SCALAR.sub(outer, f) for f in old]
+        if any(_SCALAR.search(f) for f in filters) and (time or latest or spec.get("time")):
+            raise Unsupported("context", "compares rows with a computed value and reads a period or the latest one "
+                                         "in one CALCULATE, which is not captured")
         have = list(spec.get("context") or [])
         outside = _columns_of(filters) | ({_split(latest["column"])} if latest else set()) | \
             ({_split(time["date"])} if time else set())
@@ -863,9 +918,10 @@ def _with_filters(ctx: _Ctx, formula: str, filters: list[str], owner: str, time:
             raise Unsupported("context", f"filters [{label(spec)}] on {col(*hit)[1:-1]}, which it computes without "
                                          "(ALL); DAX would drop that filter")
         base = {x: spec[x] for x in ("table", "agg", "expr") if x in spec}
-        old = list(spec.get("filter") or [])
-        if old or filters:
-            base["filter"] = old + [f for f in filters if f not in old]
+        reach = _reach(ctx, spec["table"])  # a filter on a table these rows do not reach leaves them alone
+        here = [f for f in filters if all(t in reach for t, _ in _columns_of([f]))]
+        if old or here:
+            base["filter"] = old + [f for f in here if f not in old]
         if have or context:
             base["context"] = have + [e for e in context if e not in have]
         if latest:
@@ -925,21 +981,21 @@ def _dates(ctx: _Ctx, fn: str, node) -> str:
     return col(node[1], node[2])[1:-1]
 
 
-def _table_arg(ctx: _Ctx, node) -> tuple[str, list[str]]:
+def _table_arg(ctx: _Ctx, node, owner: str | None = None) -> tuple[str, list[str]]:
     """A table expression an aggregation iterates: a table, or FILTER(table, condition)."""
     if node[0] == "table":
         if node[1] not in ctx.model.tables:
             raise Unsupported("reference", f"no table {node[1]!r} in the model")
         return node[1], []
     if node[0] == "call" and node[1] == "FILTER":
-        table, filters = _table_arg(ctx, node[2][0])
-        return table, filters + [_row(ctx, node[2][1])]
+        table, filters = _table_arg(ctx, node[2][0], owner)
+        return table, filters + [_filtered(ctx, owner, [(table, None)], node[2][1])]
     if node[0] == "call":
         raise _why(node[1])
     raise Unsupported("syntax", "iterates something other than a table")
 
 
-def _aggregation(ctx: _Ctx, node) -> dict | None:
+def _aggregation(ctx: _Ctx, node, owner: str | None = None) -> dict | None:
     fn, args = node[1], node[2]
     if fn in AGGS:
         c = args[0]
@@ -953,11 +1009,11 @@ def _aggregation(ctx: _Ctx, node) -> dict | None:
             c = a[2][0]
             _column(ctx, c)
             return {"table": c[1], "agg": "count_distinct", "expr": col(c[1], c[2])}
-        table, filters = _table_arg(ctx, a)
+        table, filters = _table_arg(ctx, a, owner)
         return {"table": table, "agg": "count", "expr": "*", **({"filter": filters} if filters else {})}
     if fn in ITERATORS:
-        table, filters = _table_arg(ctx, args[0])
-        return {"table": table, "agg": ITERATORS[fn], "expr": _row(ctx, args[1]),
+        table, filters = _table_arg(ctx, args[0], owner)
+        return {"table": table, "agg": ITERATORS[fn], "expr": _filtered(ctx, None, None, args[1]),
                 **({"filter": filters} if filters else {})}
     return None
 
@@ -1023,11 +1079,18 @@ def _iterate(ctx: _Ctx, node, owner: str) -> str | None:
     grouped = table[0] == "call" and table[1] in ("VALUES", "DISTINCT")
     if cond is None and not (expr is not None and _has_measure(ctx, expr)) and not (grouped and expr is not None):
         return None
+    if _has_outer(ctx, [expr, cond]):
+        raise Unsupported("context", f"{fn} reads a VAR computed once before it, inside its per-value expression; "
+                                     "not captured")
     over = _over(ctx, table)
     spec = {"agg": "count" if fn == "COUNTROWS" else ITERATORS[fn], "over": over}
-    if cond is not None:
-        spec["having"] = _hidden(ctx, owner, {"formula": f"CASE WHEN {_test(ctx, cond, owner)} THEN 1 ELSE 0 END"})
-    spec["of"] = _part(ctx, expr, owner) if expr is not None else spec["having"]
+    was, ctx.iterating = ctx.iterating, True
+    try:
+        if cond is not None:
+            spec["having"] = _hidden(ctx, owner, {"formula": f"CASE WHEN {_test(ctx, cond, owner)} THEN 1 ELSE 0 END"})
+        spec["of"] = _part(ctx, expr, owner) if expr is not None else spec["having"]
+    finally:
+        ctx.iterating = was
     if fn == "SUMX" and cond is None and table[0] == "table":  # row by row over the table its rows are in
         leaf = ctx.out.get(spec["of"], {})
         if leaf.get("table") == table[1] and leaf.get("agg") in ("sum", "count") and not any(
@@ -1051,22 +1114,128 @@ def _column(ctx: _Ctx, c) -> None:
                                                "Power BI")
 
 
-def _condition(ctx: _Ctx, node) -> str | None:
+def _condition(ctx: _Ctx, node, owner: str | None = None) -> str | None:
     """A CALCULATE filter argument as a row condition."""
     if node[0] == "call" and node[1] == "KEEPFILTERS":
-        return _condition(ctx, node[2][0])
+        return _condition(ctx, node[2][0], owner)
     if node[0] == "call" and node[1] == "FILTER":
-        table, filters = _table_arg(ctx, node)
+        table, filters = _table_arg(ctx, node, owner)
         return " AND ".join(f"({f})" for f in filters)
-    if node[0] == "call" and node[1] in ("NOT", "AND", "OR", "ISBLANK"):
-        return _row(ctx, node)
-    if node[0] == "call":
+    if node[0] == "call" and node[1] not in ("NOT", "AND", "OR", "ISBLANK"):
         raise _why(node[1])
-    return _row(ctx, node)
+    return _filtered(ctx, owner, _row_cols(ctx, node), node)
+
+
+def _filtered(ctx: _Ctx, owner: str | None, rows: list | None, node) -> str:
+    """A filter condition over `rows` ([(table, column | None)], what DAX iterates to test it) as SQL; with
+    an owner it may compare with a value computed in the question's cell ({@key}). None: a row expression."""
+    saved, ctx.filter = ctx.filter, (owner, rows) if owner else None
+    try:
+        return _row(ctx, node)
+    finally:
+        ctx.filter = saved
+
+
+def _rows_of(ctx: _Ctx, node) -> list:
+    """What FILTER's table argument iterates: ALL(T) / T -> T's rows; ALL(T[C]) / VALUES(T[C]) -> T[C]."""
+    if node[0] == "table":
+        return [(node[1], None)]
+    if node[0] == "call" and node[1] == "FILTER" and node[2]:
+        return _rows_of(ctx, node[2][0])
+    if node[0] == "call":
+        return [x for a in node[2] if a is not None for x in
+                ([(a[1], None)] if a[0] == "table" else [(a[1], a[2])] if a[0] in ("col", "datevar") else [])]
+    return []
+
+
+def _row_cols(ctx: _Ctx, node, out: list | None = None) -> list:
+    """The columns a filter condition tests row by row (not those inside a value it computes)."""
+    out = [] if out is None else out
+    if isinstance(node, list):
+        for x in node:
+            _row_cols(ctx, x, out)
+        return out
+    if not isinstance(node, tuple) or not node or id(node) in ctx.outer:
+        return out
+    if node[0] == "col":
+        if _measure_ref(ctx, node)[0] == "col" and (node[1], node[2]) not in out:
+            out.append((node[1], node[2]))
+        return out
+    if node[0] == "ref" or (node[0] == "call" and node[1] in _READS):
+        return out
+    for x in node[1:]:
+        if isinstance(x, (tuple, list)):
+            _row_cols(ctx, x, out)
+    return out
+
+
+def _has_outer(ctx: _Ctx, node) -> bool:
+    if isinstance(node, list):
+        return any(_has_outer(ctx, x) for x in node)
+    if not isinstance(node, tuple):
+        return False
+    return id(node) in ctx.outer or any(_has_outer(ctx, x) for x in node[1:] if isinstance(x, (tuple, list)))
+
+
+def _reads(ctx: _Ctx, node) -> bool:
+    """A value computed from the model, not from the row: [M], MAX(T[C]), CALCULATE(...), a VAR of one."""
+    return id(node) in ctx.outer or node[0] == "ref" or (node[0] == "call" and node[1] in _READS) or \
+        (node[0] == "col" and _measure_ref(ctx, node)[0] == "ref")
+
+
+def _free_of(ctx: _Ctx, key: str, rows: list) -> bool:
+    """Whether a metric's value is the same whichever of `rows` DAX's context transition puts in the
+    filter: none of its parts reads rows those filters reach, or each part removes them (ALL)."""
+    todo, seen = [key], set()
+    while todo:
+        k = todo.pop()
+        if k in seen:
+            continue
+        seen.add(k)
+        spec = ctx.out.get(k) or {}
+        if any(x in spec for x in ("iterate", "rank", "by_scope")):
+            return False
+        if "table" in spec:
+            reach = _reach(ctx, spec["table"])
+            for t, c in rows:
+                cols = [c] if c else [x.name for x in ctx.model.tables[t].columns] if t in ctx.model.tables else []
+                if t in reach and not all(_removed(ctx, spec.get("context") or [], t, x) for x in cols):
+                    return False
+        todo += _refs(spec)
+    return True
+
+
+def _scalar(ctx: _Ctx, node) -> str:
+    """A value a filter compares rows with, computed in the question's cell: {@key}. DAX computes a VAR
+    and a plain aggregation (MAX(T[C])) once, in the context around the filter; a measure inside the
+    condition again for each row it tests (context transition), which is the same value only when the
+    rows tested do not reach what the measure reads."""
+    owner, rows = ctx.filter
+    if ctx.iterating:
+        raise Unsupported("context", "filters on a value computed outside an iterator, inside its per-value "
+                                     "expression; DAX computes it once, not per value; not captured")
+    transition = id(node) not in ctx.outer and _has_measure(ctx, node)
+    ctx.filter = None
+    try:
+        key = _part(ctx, node, owner)
+    finally:
+        ctx.filter = (owner, rows)
+    if transition and not _free_of(ctx, key, rows):
+        what = f"[{node[1] if node[0] == 'ref' else node[2]}]" if node[0] in ("ref", "col") else "a measure"
+        tested = ", ".join(col(t, c)[1:-1] if c else t for t, c in rows) or "row"
+        raise Unsupported("context", f"compares rows with {what} inside a filter: DAX computes it again for each "
+                                     f"{tested} it tests (context transition), not once; captured when written "
+                                     f"VAR _v = {what} RETURN CALCULATE(..., ... _v)")
+    return "{@" + key + "}"
 
 
 def _row(ctx: _Ctx, node) -> str:
-    """A row-level expression (inside an iterator or a filter) as SQL over column placeholders."""
+    """A row-level expression (inside an iterator or a filter) as SQL over column placeholders; in a
+    filter, a value computed from the model ([M], MAX(T[C]), a VAR) is that value in the question's cell."""
+    if ctx.filter is not None and _reads(ctx, node):
+        return _scalar(ctx, node)
+    if id(node) in ctx.outer:
+        raise Unsupported("context", "reads a VAR computed once, row by row inside an iterator; not captured")
     kind = node[0]
     if kind == "col":
         _column(ctx, node)
@@ -1098,6 +1267,9 @@ def _row(ctx: _Ctx, node) -> str:
         fn, args = node[1], node[2]
         if fn == "RELATED":
             return _row(ctx, args[0])
+        if fn == "DATE" and len(args) == 3 and all(isinstance(_const(a), int) for a in args):
+            y, m, d = (_const(a) for a in args)
+            return f"DATE '{y:04d}-{m:02d}-{d:02d}'"
         if fn == "NOT":
             return f"(NOT {_row(ctx, args[0])})"
         if fn in ("AND", "OR") and len(args) == 2:

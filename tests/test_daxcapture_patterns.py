@@ -121,7 +121,9 @@ def test_latest_period_from_a_var_and_a_fixed_year_stays_a_filter():
     assert a["latest"]["offset"] == 0 and a["context"][0]["keep"] == "filters"
     assert b["filter"] == ["({Metrics[Year]} = 2021)"] and b["context"][0]["keep"] == "none"
     assert out["narrowed"]["status"] == "not_captured" and "which one is latest" in out["narrowed"]["why"]
-    assert out["other_column"]["status"] == "not_captured"
+    # another column's max is no latest period: a value computed once per cell, which rows are compared with
+    assert out["other_column"]["status"] == "captured" and "latest" not in out["other_column"]
+    assert out["other_column"]["filter"][0].startswith("({Metrics[Year]} = {@other_column__")
 
 
 # ------------------------------------------------------------------ conditionals

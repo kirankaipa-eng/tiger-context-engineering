@@ -29,6 +29,9 @@ reach leaves that metric alone the same way (DAX: a filter that does not reach a
 on it); one that no metric asked for reaches is refused. `latest` reads only the rows where a column
 equals its max (or min) over the question's cell, plus an offset (VAR _y = MAX(T[C]) ... T[C] = _y - 1):
 a cells query gives each cell's value, the metric is grouped by the column and joined on it.
+A filter that compares rows with {@key} (a running total's Date <= the cell's max date) joins each
+row to its cell's value of that metric (computed in a query of its own), so the rows it reads differ
+per cell; a column the metric removes (ALL) does not tie a row to a cell, so the row counts in each.
 
 Formulas combine metrics: {key} is the value with BLANK as 0 (also as a CASE branch's result), {?key}
 the raw value, NULL when the metric has no rows (ISBLANK); {$key} a what-if parameter's value, from
@@ -65,6 +68,7 @@ _COL = re.compile(r"\{('(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_]*)\[([^\]]+)\]\}")
 _METRIC = re.compile(r"\{([a-z0-9_]+)\}")
 _REF = re.compile(r"\{(?:\$([A-Za-z0-9_]+)|(\?)?([a-z0-9_]+))\}")  # {$param} | {?raw metric} | {metric}
 _PARAM = re.compile(r"\{\$([A-Za-z0-9_]+)\}")
+_SCALAR = re.compile(r"\{@([a-z0-9_]+)\}")  # in a filter: that metric's value in the question's cell
 _RESHAPE = ("Table.AddColumn", "Table.NestedJoin", "Table.ExpandTableColumn", "Table.Group", "Table.RenameColumns",
             "Table.ReplaceValue", "Table.SelectRows", "Table.Pivot", "Table.Unpivot", "Table.Combine",
             "Table.TransformColumns", "Table.Distinct")
@@ -498,6 +502,8 @@ class BILayer:
         if refs is None:
             if key not in leaves:
                 leaves.append(key)
+            for k in {x for f in m.get("filter") or [] for x in _SCALAR.findall(f)}:
+                self._walk(k, by, leaves, extra, params)
             return
         for k in refs:
             self._walk(k, by, leaves, extra, params)
@@ -589,12 +595,12 @@ class BILayer:
     def compile(self, metrics: list[str], by: list[str] | None = None, where: dict | None = None,
                 top: int | None = None, order_by: str | None = None, ascending: bool = False,
                 dialect: str = "duckdb", row_filters: dict[str, str] | None = None,
-                params: dict | None = None) -> str:
+                params: dict | None = None, raw: bool = False) -> str:
         """`row_filters` is row-level security: {table: condition over {Table[Column]} placeholders}.
         A table's condition narrows every metric whose rows reach that table (Power BI's RLS
         propagation, many side to one side); bisecurity.filters_for works them out per caller.
         `params` gives what-if parameters their values ({key: number}); a parameter not given takes
-        its default."""
+        its default. `raw` leaves a metric with no rows NULL (a value rows are compared with, maybe a date)."""
         by, where = list(by or []), dict(where or {})
         if not metrics:
             raise LayerError("name at least one metric")
@@ -628,6 +634,10 @@ class BILayer:
             if time:  # the column the date relationship joins on is the period's date (equal on every row)
                 gby = [self._as_date(d, table, time["date"]) for d in by]
                 gwhere = [(self._as_date(d, table, time["date"]), v) for d, v in gwhere]
+            scalars = sorted({x for f in filters for x in _SCALAR.findall(f)})
+            if scalars and (time or m0.get("latest")):
+                raise LayerError(f"{label} compares its rows with a value computed per cell and also reads a period "
+                                 f"or the latest one; that combination is not supported")
             dt = self._time_check(time, gby, [d for d, _ in gwhere], keys[0]) if time else None
             on_date = lambda d: dt is not None and parse_ref(d)[:2] == dt  # noqa: E731
             removal = self._removal(m0, keys[0])
@@ -664,6 +674,17 @@ class BILayer:
                     kept.append((n, "per.p" if per and on_date(d) else self._dim(d, scope), f"k.d{n}"))
             reshaped = len(kept) < len(by) or any(j != f"k.d{n}" for n, _, j in kept)
             dims = [f"{s} AS d{n}" for n, s, _ in kept]
+            cell = None  # comparing rows with values computed per cell: each cell's values, joined to its rows
+            if scalars:
+                if any(j != f"k.d{n}" for n, _, j in kept):
+                    raise LayerError(f"{label} compares its rows with a value computed per cell and reads a date "
+                                     f"at another level; that combination is not supported")
+                inner = self.compile(scalars, by=by, where=where, row_filters=row_filters, params=params, raw=True)
+                ctes.append(f"v{i} AS (\n  {inner}\n)")
+                cell = f"JOIN v{i} sv ON " + (" AND ".join(f"sv.{_ident(by[n])} IS NOT DISTINCT FROM {s}"
+                                                          for n, s, _ in kept) or "TRUE")
+                kept = [(n, None, f"k.d{n}") for n in range(len(by))]  # a removed column's rows count in every cell
+                reshaped, dims = False, [f"sv.{_ident(d)} AS d{n}" for n, d in enumerate(by)]
             lat = m0.get("latest")
             if lat:
                 if lat.get("agg", "max") not in ("max", "min"):
@@ -676,7 +697,7 @@ class BILayer:
                 expr = "*" if m["expr"] == "*" else self._render(m["expr"], scope)
                 aggs.append(_AGG_SQL[m["agg"]].format(expr) + f" AS {k}")
                 src[k] = f"m{i}.{k}"
-            conds = [f"({self._render(f, scope)})" for f in filters]
+            conds = [f"({self._render(_SCALAR.sub(lambda x: f'sv.{x.group(1)}', f), scope)})" for f in filters]
             conds += self._security(table, row_filters, scope)
             for n, (d, v) in enumerate(gwhere):
                 if per and on_date(d):  # a running total's date filters chose its periods
@@ -691,6 +712,8 @@ class BILayer:
                 conds.append(f"{scope.shift[2]} BETWEEN (SELECT min({c}) FROM {rel}) AND (SELECT max({c}) FROM {rel})")
             sql = f"SELECT {', '.join(dims + aggs)}\n  FROM {self._relation(table)} b"
             sql += "".join(f"\n  {j}" for _, j in scope.joins.values())
+            if cell:
+                sql += f"\n  {cell}"
             if per:
                 u = time["to_date"]
                 sql += (f"\n  JOIN p{i} per ON per.u = {_UNIT_KEY[u].format(per[1])} "
@@ -738,7 +761,7 @@ class BILayer:
             if by:
                 raise LayerError(f"{', '.join(self._label(k) for k in metrics)} reads no rows (only what-if "
                                  f"parameters), so it has no value per {', '.join(by)}; ask it without by, or with a metric")
-            sql = f"SELECT {', '.join(f'{self._expr(k, q)} AS {k}' for k in metrics)}"
+            sql = f"SELECT {', '.join(f'{self._expr(k, q, raw)} AS {k}' for k in metrics)}"
             return sql if dialect == "duckdb" else sqlglot.transpile(sql, read="duckdb", write=dialect, pretty=True)[0]
         if by and not keyed:
             raise LayerError(f"no metric asked for reaches every column of {', '.join(by)} (each metric's rows reach "
@@ -750,7 +773,7 @@ class BILayer:
             select = [f"k.d{n} AS {_ident(d)}" for n, d in enumerate(by)]
         else:
             from_, select = " CROSS JOIN ".join(pieces), []
-        select += [f"{self._expr(k, q)} AS {k}" for k in metrics]
+        select += [f"{self._expr(k, q, raw)} AS {k}" for k in metrics]
         sql = "WITH " + ",\n".join(ctes) + f"\nSELECT {', '.join(select)}\nFROM {from_}"
         if top or order_by:
             target = order_by or metrics[0]

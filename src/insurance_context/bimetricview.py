@@ -177,6 +177,9 @@ class _View:
             for shape, why in _NOT_IN_SPEC.items():
                 if m.get(shape):
                     raise _Skip(why)
+            if any("{@" in f for f in m.get("filter") or []):
+                raise _Skip("compares its rows with a value computed in the question's cell (Month <= [Latest "
+                            "Month], a running total); the specification has no such filter; our engine answers it")
             fidelity, window = "exact", None
             if "formula" in m:
                 expr, fidelity = self._formula(m["formula"])
