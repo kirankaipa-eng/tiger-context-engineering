@@ -243,6 +243,30 @@ def explore(mid: str, body: dict = Body(...)):
             "warehouse": kit.wh.describe(), "ms": kit.last.get("ms")}
 
 
+@app.post("/api/pbi/{mid}/rows")
+def rows_behind(mid: str, body: dict = Body(...)):
+    """The rows a metric's value for a cell is added up from, under the metric's own filters, and their
+    totals, so the screen can show that they add up to the value."""
+    m = _model(mid)
+    kit = m.kit()
+    limit = min(int(body.get("limit") or 50), MAX_ROWS)
+    if not body.get("metric"):
+        raise HTTPException(400, "name the metric")
+    try:
+        where, notes = kit.resolve(body.get("filters"))
+        r = m.layer.rows_behind(body["metric"], where, body.get("columns") or None, limit + 1, dialect=kit.wh.dialect)
+        cols, rows = kit._query(r["sql"], limit + 1)
+        ms = kit.last.get("ms")
+        tcols, trows = kit._query(r["total_sql"], 1)
+    except Exception as exc:  # noqa: BLE001
+        _bad(exc)
+    totals = dict(zip(tcols, [_cell(v) for v in trows[0]])) if trows else {}
+    return {"columns": cols, "rows": [[_cell(v) for v in x] for x in rows[:limit]], "truncated": len(rows) > limit,
+            "row_count": totals.pop("row_count", None), "totals": [{**x, "value": totals.get(x["key"])} for x in r["leaves"]],
+            "exact": r["exact"], "why": r["why"], "conditions": r["conditions"], "table": r["table"], "notes": notes,
+            "sql": r["sql"], "warehouse": kit.wh.describe(), "ms": ms}
+
+
 SCREEN = """
 On this screen every compute and explore result is drawn under your answer as a chart and a table, with
 its SQL. Do not repeat those tables: give the answer and the few numbers that matter in a sentence or a

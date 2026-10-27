@@ -21,6 +21,8 @@ layer applies at the grain of the question:
 PREVIOUS/NEXT DAY|MONTH|QUARTER|YEAR, PARALLELPERIOD (shifts that need that grain), DATEADD and
 SAMEPERIODLASTYEAR (shifts at any grain), DATESYTD/QTD/MTD and TOTALYTD/QTD/MTD (to date) are
 captured; a fiscal year end, two periods on one metric, DATESINPERIOD and DATESBETWEEN are not.
+Date arithmetic is captured in filters and formulas: EOMONTH and EDATE by a whole number of months,
+TODAY, NOW, and DATE of expressions (CALCULATE([Paid], Dim_Date[Date] <= EOMONTH(MAX(Dim_Date[Date]), -1))).
 
 What a measure reads of the visual is captured as what the question must say:
 
@@ -36,6 +38,8 @@ What a measure reads of the visual is captured as what the question must say:
     RANKX(ALL(Store[Store]), [Net Sales], , DESC)               rank: over Store[Store], of net_sales
     SWITCH(TRUE(), ISINSCOPE(Product[Product]), ..., ...)       by_scope: the branch the grouping picks
     IF(ISFILTERED(Store[Store]), [Net Sales], BLANK())          by_scope, filtered: grouped or filtered by it
+    SWITCH(TRUE(), ISINSCOPE(Date[Month]) && NOT ISINSCOPE(Date[Day]), ...)   by_scope: a level (also, unless)
+    CALCULATE([Scoped], Claims[Paid] > 100)                     by_scope: each branch narrowed alike
 
 A filter may compare rows with a value computed from the model ({@key}: that metric in the question's
 cell): a VAR of the measure and a plain aggregation are computed once, around the filter, as in DAX. A
@@ -50,7 +54,7 @@ expression; for ABS(x) next to a branch on the sign of x (arrows), the value is 
 
 Anything that would change what such a part means is refused with the reason rather than guessed:
 a filter from outside on a column a part itself removes (DAX would drop it), filters around a
-`latest`, rank or scope switch, a period next to a removal of its date column, ALL() of everything,
+`latest` or a rank, filters on what a scope switch tests, a period next to a removal of its date column, ALL() of everything,
 date levels other than month, ranks over anything but ALL(T[C]), VALUE of text (a sort key).
 
 DAX is parsed, not pattern-matched: a small recursive-descent parser covers the expression
@@ -501,6 +505,26 @@ def _why(fn: str) -> Unsupported:
     return Unsupported("function", f"uses {fn}, which is not captured yet")
 
 
+def _dated(fn: str, args: list, sub) -> str | None:
+    """EOMONTH / EDATE (a whole number of months written in the measure), TODAY, NOW, and DATE of
+    expressions, with `sub` compiling the arguments (a row expression or a measure-level one)."""
+    if fn in ("EOMONTH", "EDATE"):
+        if len(args) != 2 or args[0] is None:
+            raise Unsupported("syntax", f"{fn} needs a date and a number of months")
+        n = _const(args[1])
+        if not isinstance(n, int):
+            raise Unsupported("function", f"{fn} with a number of months that is not a whole number written in "
+                                          "the measure")
+        x = f"CAST({sub(args[0])} AS DATE)" + (f" + INTERVAL {n} MONTH" if n > 0 else
+                                                f" - INTERVAL {-n} MONTH" if n < 0 else "")
+        return f"last_day({x})" if fn == "EOMONTH" else f"CAST({x} AS DATE)"
+    if fn in ("TODAY", "NOW") and not [a for a in args if a is not None]:
+        return "current_date" if fn == "TODAY" else "current_timestamp"
+    if fn == "DATE" and len(args) == 3 and all(a is not None for a in args):
+        return f"make_date({', '.join(f'CAST({sub(a)} AS INTEGER)' for a in args)})"
+    return None
+
+
 _SAME = ("table", "agg", "expr", "filter", "context", "latest", "time", "formula", "rank", "by_scope", "iterate")
 
 
@@ -604,6 +628,10 @@ def _value(ctx: _Ctx, node, owner: str) -> str:
         if fn == "VALUE" and args and args[0] is not None and _is_text(args[0]):
             raise Unsupported("sort_key", "turns text glued together (VALUE of CONCATENATE) back into a number: a "
                                           "sort key for a visual, which measures nothing; sort by its parts instead")
+        # a date is read raw ({?key}): BLANK as 0 is for numbers
+        dated = _dated(fn, args, lambda a: re.sub(r"\{([a-z0-9_]+)\}", r"{?\1}", _value(ctx, a, owner)))
+        if dated is not None:
+            return dated
         it = _iterate(ctx, node, owner)
         if it is not None:
             return it
@@ -672,49 +700,67 @@ def _scope_test(ctx: _Ctx, node) -> tuple[str, bool, bool] | None:
     raise Unsupported("context", f"{node[1]} of something other than a column")
 
 
-def _scoped_if(ctx: _Ctx, args: list, owner: str) -> str | None:
-    """IF(ISFILTERED(c) | ISINSCOPE(c) | NOT ..., a, b) as a scope switch; a blank branch has no value."""
-    def either(node):  # a || b, OR(a, b): any of them
-        if node[0] == "bin" and node[1] == "||":
-            return either(node[2]) + either(node[3])
-        if node[0] == "call" and node[1] == "OR" and len(node[2]) == 2:
-            return either(node[2][0]) + either(node[2][1])
-        return [node]
+def _split_on(node, op: str, fn: str) -> list:
+    """a op b, FN(a, b), nested: the parts (|| / OR: any of them; && / AND: all of them)."""
+    if node[0] == "bin" and node[1] == op:
+        return _split_on(node[2], op, fn) + _split_on(node[3], op, fn)
+    if node[0] == "call" and node[1] == fn and len(node[2]) == 2:
+        return _split_on(node[2][0], op, fn) + _split_on(node[2][1], op, fn)
+    return [node]
 
-    parts = either(args[0])
-    tests = [_scope_test(ctx, t) for t in parts]
+
+def _scope_all(ctx: _Ctx, node) -> list | None:
+    """ISINSCOPE / ISFILTERED tests joined by && (a level of a hierarchy: ISINSCOPE(Month) && NOT
+    ISINSCOPE(Day)) as [(T[C] or T, filtered, negated)]; None when none of it is a scope test."""
+    tests = [_scope_test(ctx, t) for t in _split_on(node, "&&", "AND")]
+    if all(t is None for t in tests):
+        return None
+    if any(t is None for t in tests):
+        raise Unsupported("context", "mixes ISINSCOPE / ISFILTERED with other conditions in one test")
+    return tests
+
+
+def _scope_branch(tests: list, metric: str) -> dict:
+    """A scope switch's branch: taken when its first test (`column`) and the rest (`also`) hold and none
+    of the negated ones (`unless`) does."""
+    pos, neg = [t for t in tests if not t[2]], [t for t in tests if t[2]]
+    if not pos:
+        raise Unsupported("context", "NOT ISFILTERED / NOT ISINSCOPE with no test that must hold, in an OR or a "
+                                     "SWITCH; not captured")
+    one = lambda t: {"column": t[0], **({"filtered": True} if t[1] else {})}  # noqa: E731
+    return {**one(pos[0]), "metric": metric, **({"also": [one(t) for t in pos[1:]]} if pos[1:] else {}),
+            **({"unless": [one(t) for t in neg]} if neg else {})}
+
+
+def _scoped_if(ctx: _Ctx, args: list, owner: str) -> str | None:
+    """IF(ISFILTERED(c) | ISINSCOPE(c) | NOT ... [&& ...] [|| ...], a, b) as a scope switch; a blank
+    branch has no value."""
+    parts = _split_on(args[0], "||", "OR")
+    tests = [_scope_all(ctx, t) for t in parts]
     if any(t is None for t in tests):
         if any(t is not None for t in tests):
             raise Unsupported("context", "mixes ISINSCOPE / ISFILTERED with other conditions in one IF")
         return None
-    if len(tests) > 1 and any(neg for _, _, neg in tests):
-        raise Unsupported("context", "NOT ISFILTERED / NOT ISINSCOPE in an OR; not captured")
     then, other = args[1], args[2] if len(args) > 2 else None
-    if tests[0][2]:
-        then, other = other, then
+    if len(tests) == 1 and len(tests[0]) == 1 and tests[0][0][2]:  # IF(NOT ISFILTERED(c), a, b)
+        then, other, tests = other, then, [[(*tests[0][0][:2], False)]]
     metric = _part(ctx, then if then is not None else ("blank",), owner)
-    branches = [{"column": target, "metric": metric, **({"filtered": True} if filtered else {})}
-                for target, filtered, _ in tests]
+    branches = [_scope_branch(t, metric) for t in tests]
     rest = [{"else": _part(ctx, other, owner)}] if other is not None and other[0] != "blank" else []
     return "{" + _hidden(ctx, owner, {"by_scope": [*branches, *rest]}) + "}"
 
 
 def _switch(ctx: _Ctx, args: list, owner: str) -> str:
-    """SWITCH(TRUE(), ISINSCOPE(c), e, ..., else) as a scope switch; any other SWITCH as CASE."""
+    """SWITCH(TRUE(), ISINSCOPE(c) [&& ...], e, ..., else) as a scope switch; any other SWITCH as CASE."""
     if len(args) < 3 or args[0] is None:
         raise Unsupported("syntax", "SWITCH needs a value and at least one value/result pair")
     pairs = args[1:]
     tests, other = list(zip(pairs[0::2], pairs[1::2])), pairs[-1] if len(pairs) % 2 else None
-    scoped = [t is not None and _scope_test(ctx, t) is not None for t, _ in tests]
-    if args[0] == ("bool", True) and any(scoped):
+    scoped = [t is not None and _scope_all(ctx, t) is not None for t, _ in tests] if args[0] == ("bool", True) else []
+    if any(scoped):
         if not all(scoped):
             raise Unsupported("context", "mixes ISINSCOPE / ISFILTERED with other conditions in one SWITCH")
-        branches = []
-        for t, r in tests:
-            target, filtered, negated = _scope_test(ctx, t)
-            if negated:
-                raise Unsupported("context", "SWITCH on NOT ISINSCOPE / NOT ISFILTERED; write it as IF")
-            branches.append({"column": target, "metric": _part(ctx, r, owner), **({"filtered": True} if filtered else {})})
+        branches = [_scope_branch(_scope_all(ctx, t), _part(ctx, r, owner)) for t, r in tests]
         if other is not None and other[0] != "blank":
             branches.append({"else": _part(ctx, other, owner)})
         return "{" + _hidden(ctx, owner, {"by_scope": branches}) + "}"
@@ -937,6 +983,24 @@ def _with_filters(ctx: _Ctx, formula: str, filters: list[str], owner: str, time:
 
     def narrow(m):
         raw, spec = m.group(1), ctx.out[m.group(2)]
+        if "by_scope" in spec and not time and not latest:
+            # each branch narrowed alike, when the filters leave alone what the switch tests (a filter on a
+            # tested column would make ISFILTERED true; ALL of it would make it false)
+            touched = _columns_of(filters) | {_split(e["remove"]) or (e["remove"], None) for e in context}
+            for b in spec["by_scope"]:
+                for c in [b["column"], *(x["column"] for x in b.get("also", []) + b.get("unless", []))] \
+                        if "column" in b else []:
+                    t = _split(c) or (c, None)
+                    if any(x[0] == t[0] and (t[1] is None or x[1] in (None, t[1])) for x in touched):
+                        raise Unsupported("context", f"applies CALCULATE filters to [{label(spec)}] on {c}, which "
+                                                     "its ISFILTERED / ISINSCOPE tests")
+
+            def each(k):
+                f = _with_filters(ctx, "{" + k + "}", filters, owner, None, context, None)
+                inner = re.fullmatch(r"\{([a-z0-9_]+)\}", f)
+                return inner.group(1) if inner else _hidden(ctx, owner, {"formula": f})
+            branches = [{x: each(v) if x in ("metric", "else") else v for x, v in b.items()} for b in spec["by_scope"]]
+            return ("{?" if raw else "{") + _hidden(ctx, owner, {"by_scope": branches}) + "}"
         if "rank" in spec or "by_scope" in spec:
             raise Unsupported("context", f"applies CALCULATE filters to [{label(spec)}], a rank or scope switch; "
                                          "ask for it with the filters instead")
@@ -1320,6 +1384,9 @@ def _row(ctx: _Ctx, node) -> str:
         if fn == "DATE" and len(args) == 3 and all(isinstance(_const(a), int) for a in args):
             y, m, d = (_const(a) for a in args)
             return f"DATE '{y:04d}-{m:02d}-{d:02d}'"
+        dated = _dated(fn, args, lambda a: _row(ctx, a))
+        if dated is not None:
+            return dated
         if fn == "NOT":
             return f"(NOT {_row(ctx, args[0])})"
         if fn in ("AND", "OR") and len(args) == 2:

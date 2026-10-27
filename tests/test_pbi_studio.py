@@ -33,7 +33,7 @@ def test_the_model_its_coverage_and_measures(client):
     [m] = client.get("/api/pbi/models").json()["models"]
     assert m["id"] == "claims" and m["captured"] >= 10 and "local" in m["warehouse"]
     o = client.get("/api/pbi/claims/overview").json()
-    assert o["coverage"]["not_captured"] == 3 and all(g["examples"] for g in o["coverage"]["groups"])
+    assert o["coverage"]["not_captured"] == 6 and all(g["examples"] for g in o["coverage"]["groups"])
     d = client.get("/api/pbi/claims/metrics/running_paid").json()
     assert d["status"] == "captured" and d["tables"] == ["Claims"] and "Provider[Specialty]" in d["columns"]
     assert client.get("/api/pbi/claims/metrics/nope").status_code == 404
@@ -55,3 +55,17 @@ def test_ask_needs_an_llm(client, monkeypatch):
     from context_studio import pbi_app
     monkeypatch.setattr(pbi_app.llm, "configured", lambda: False)  # .env may hold one
     assert client.post("/api/pbi/claims/ask", json={"message": "hi"}).status_code == 503
+
+
+def test_rows_behind_a_value_add_up_to_it(client):
+    f = {"Provider[Specialty]": "Ortho"}
+    v = client.post("/api/pbi/claims/compute", json={"metrics": ["since_march"], "filters": f}).json()["rows"][0][0]
+    r = client.post("/api/pbi/claims/rows", json={"metric": "since_march", "filters": f}).json()
+    assert r["exact"] and r["totals"] == [{"key": "since_march", "label": "Since March", "value": v}]
+    i = r["columns"].index("Claims[ServiceDate]")
+    assert r["row_count"] == len(r["rows"]) and all(str(x[i]) >= "2025-03-01" for x in r["rows"])
+    assert r["conditions"] and "SELECT" in r["sql"]
+    # a value compared per cell is not one sum over the cell's rows: the rows are shown, not reconciled
+    r = client.post("/api/pbi/claims/rows", json={"metric": "above_threshold", "filters": f}).json()
+    assert not r["exact"] and r["why"] and r["totals"] == []
+    assert client.post("/api/pbi/claims/rows", json={"filters": f}).status_code == 400

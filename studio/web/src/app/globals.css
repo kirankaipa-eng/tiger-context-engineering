@@ -59,10 +59,12 @@ body { background: var(--color-ground); color: var(--color-ink); }
   --d-rule: #d4dce6;
   --d-ink: #142338;
   --d-ink-2: #3d4d63;
-  --d-muted: #6a7a90;
-  --d-teal: #0f7b78;      /* governed, trust */
+  --d-muted: #56667c;
+  --d-teal: #0b6d6a;      /* governed, trust */
   --d-teal-soft: #e2f1f0;
   --d-rise: #c97c06;      /* cost up */
+  --d-rise-soft: #fbf0dc;
+  --d-rise-ink: #8a5300;
   --d-fall: #3f6fa3;      /* cost down */
   --d-slate: #9aabbf;
   color: var(--d-ink);

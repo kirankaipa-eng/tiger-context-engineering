@@ -44,6 +44,26 @@ MEASURES = {
     "Paid When Either": "IF(ISFILTERED(Provider[Specialty]) || ISFILTERED(Dim_Date[Date]), [Paid])",
     "Scoped Paid": "SWITCH(TRUE(), ISFILTERED(Dim_Date[Date]), [Running Paid], ISINSCOPE(Provider[Specialty]), [Avg Paid], "
                    "[Paid])",
+    # date arithmetic: month ends and month shifts of the cell's latest date, today, per-row month ends
+    "Month End": "EOMONTH(MAX(Dim_Date[Date]), 0)",
+    "To Prior Month End": "VAR _e = EOMONTH(MAX(Dim_Date[Date]), -1) RETURN CALCULATE([Paid], ALL(Dim_Date), "
+                          "Dim_Date[Date] <= _e)",
+    "To Prior Month End Inline": "CALCULATE([Paid], FILTER(ALL(Dim_Date), Dim_Date[Date] <= "
+                                 "EOMONTH(MAX(Dim_Date[Date]), -1)))",
+    "Last 3 Months": "VAR _m = MAX(Dim_Date[Date]) RETURN CALCULATE([Paid], ALL(Dim_Date), "
+                     "Dim_Date[Date] > EDATE(_m, -3), Dim_Date[Date] <= _m)",
+    "Up To Today": "CALCULATE([Paid], Claims[ServiceDate] <= TODAY())",
+    "March End Paid": "SUMX(FILTER(Claims, EOMONTH(Claims[ServiceDate], 0) = DATE(2025, 3, 31)), Claims[Paid])",
+    "Months Back": "EOMONTH(MAX(Dim_Date[Date]), [Claim Count])",
+    # a level of a hierarchy: grouped by month but not by specialty, by both, or neither
+    "Level Paid": "SWITCH(TRUE(), ISINSCOPE(Dim_Date[Date]) && NOT ISINSCOPE(Provider[Specialty]), [Running Paid], "
+                  "ISINSCOPE(Dim_Date[Date]) && ISINSCOPE(Provider[Specialty]), [Avg Paid], [Paid])",
+    "Month Only Paid": "IF(ISINSCOPE(Dim_Date[Date]) && NOT ISINSCOPE(Provider[Specialty]), [Paid])",
+    "Neither Paid": "SWITCH(TRUE(), NOT ISINSCOPE(Dim_Date[Date]) && NOT ISINSCOPE(Provider[Specialty]), [Paid])",
+    # CALCULATE filters around a scope switch reach every branch, unless they touch what it tests
+    "Specialty Over 100": "CALCULATE([Paid When Specialty], Claims[Paid] > 100)",
+    "Scoped Over 100": "CALCULATE([Scoped Paid], Claims[Paid] > 100)",
+    "Cardio When Specialty": "CALCULATE([Paid When Specialty], Provider[Specialty] = \"Cardio\")",
     # refused: DAX computes the measure again per row it tests (context transition)
     "High Cost Inline": "CALCULATE([Paid], FILTER(Claims, Claims[Paid] > [Avg Paid]))",
     "Up To Latest Inline": "CALCULATE([Paid], ALL(Dim_Date), Dim_Date[Date] <= [Latest Date])",
@@ -118,6 +138,39 @@ def test_a_measure_that_ignores_the_visual_is_the_same_value_inline(layer):
 
 def test_date_literals(layer):
     assert ask(layer, ["since_march"]) == [(600,)]
+
+
+def test_scope_tests_joined_by_and(layer):
+    from insurance_context.bilayer import LayerError
+    assert ask(layer, ["level_paid"], [MONTH])[1] == ("2025-02", 600)  # running
+    assert ask(layer, ["level_paid"], [MONTH, SPECIALTY])[0] == ("2025-01", "Cardio", 100)  # average
+    assert ask(layer, ["level_paid"], [SPECIALTY]) == [("Cardio", 350), ("Ortho", 850)]  # else
+    assert ask(layer, ["month_only_paid"], [MONTH])[0] == ("2025-01", 400)
+    with pytest.raises(LayerError):
+        ask(layer, ["month_only_paid"], [MONTH, SPECIALTY])
+    assert "no test that must hold" in layer[0].metrics["neither_paid"]["why"]
+
+
+def test_calculate_filters_around_a_scope_switch(layer):
+    assert ask(layer, ["specialty_over_100"], [SPECIALTY]) == [("Cardio", 200), ("Ortho", 850)]
+    assert ask(layer, ["scoped_over_100"], [MONTH]) == [("2025-01", 300), ("2025-02", 500), ("2025-03", 900),
+                                                        ("2025-04", 1050)]
+    assert ask(layer, ["scoped_over_100"], [SPECIALTY]) == [("Cardio", 200), ("Ortho", 283.33)]
+    assert ask(layer, ["scoped_over_100"]) == [(1050,)]
+    # a filter on the column ISFILTERED tests would make it true; refused rather than guessed
+    assert "which its ISFILTERED / ISINSCOPE tests" in layer[0].metrics["cardio_when_specialty"]["why"]
+
+
+def test_month_ends_and_month_shifts(layer):
+    import datetime
+    assert ask(layer, ["month_end"], [MONTH])[1] == ("2025-02", datetime.date(2025, 2, 28))
+    # through the end of the month before the cell's latest date: all of Jan-Mar, or Jan-Feb for March
+    assert ask(layer, ["to_prior_month_end", "to_prior_month_end_inline"]) == [(1050, 1050)]
+    assert ask(layer, ["to_prior_month_end", "to_prior_month_end_inline"], where={MONTH: "2025-03"}) == [(600, 600)]
+    assert ask(layer, ["last_3_months"]) == [(800,)]  # after 2025-01-30: Feb + Mar + Apr
+    assert ask(layer, ["up_to_today"]) == [(1200,)]
+    assert ask(layer, ["march_end_paid"]) == [(450,)]
+    assert "whole number written in the measure" in layer[0].metrics["months_back"]["why"]
 
 
 def test_isfiltered_picks_the_branch_from_what_the_question_narrows_to(layer):

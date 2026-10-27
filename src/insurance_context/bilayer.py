@@ -331,10 +331,13 @@ class BILayer:
         grouped = {parse_ref(d)[:2] for d in by}
         filtered = grouped | {parse_ref(d)[:2] for d in where}
         branches = [b for b in self.metrics[key]["by_scope"] if "column" in b]
-        for b in branches:
+        def holds(b):
             cols = filtered if b.get("filtered") else grouped
             hit = {t for t, _ in cols} if "[" not in b["column"] else cols
-            if (_unq(b["column"].strip()) if "[" not in b["column"] else parse_ref(b["column"])[:2]) in hit:
+            return (_unq(b["column"].strip()) if "[" not in b["column"] else parse_ref(b["column"])[:2]) in hit
+
+        for b in branches:  # a branch with `also` / `unless`: those hold too, none of these does
+            if holds(b) and all(holds(x) for x in b.get("also", [])) and not any(holds(x) for x in b.get("unless", [])):
                 return b["metric"]
         other = next((b["else"] for b in self.metrics[key]["by_scope"] if "else" in b), None)
         if other is None and strict:
@@ -498,7 +501,7 @@ class BILayer:
             pick = self._pick(key, by, strict=False)
             if pick is None:
                 first = next(b for b in m["by_scope"] if "column" in b)
-                extra.append(first["column"])
+                extra += [first["column"], *(x["column"] for x in first.get("also", []))]
                 pick = first["metric"]
             refs = [pick]
         elif "rank" in m:
@@ -945,6 +948,66 @@ class BILayer:
             sql += "\nORDER BY " + ", ".join(order)
         sql += f"\nLIMIT {int(limit)}"
         return sql if dialect == "duckdb" else sqlglot.transpile(sql, read="duckdb", write=dialect, pretty=True)[0]
+
+    def rows_behind(self, key: str, where: dict | None = None, columns: list[str] | None = None, limit: int = 50,
+                    row_filters: dict[str, str] | None = None, dialect: str = "duckdb") -> dict:
+        """The rows a metric's value for `where` (the cell a question narrowed to) is added up from: the
+        table its base metrics read, under their own filters and the question's, with a query that totals
+        them (`total_sql`: the row count and each base metric over those rows, to reconcile with the value).
+        `exact` is False, with `why`, when the value is not one aggregate over one set of rows (a period,
+        the latest one, a value compared per cell, parts over different rows); the rows are then the
+        question's rows of the table, without the metric's own conditions."""
+        where = dict(where or {})
+        leaves = self.leaves(key, by=list(where), where=tuple(where))
+        ms = [self.metrics[k] for k in leaves]
+        table, m0 = ms[0]["table"], ms[0]
+        filters = list(m0.get("filter") or [])
+        why = None
+        if any(m["table"] != table for m in ms):
+            why = f"its parts add up rows of different tables ({', '.join(sorted({m['table'] for m in ms}))})"
+        elif any(list(m.get("filter") or []) != filters for m in ms):
+            why = "its parts add up different rows"
+        elif any(m.get("time") for m in ms):
+            why = f"it reads {_words(next(m['time'] for m in ms if m.get('time')))}, not the rows of the cell itself"
+        elif any(m.get("latest") for m in ms):
+            why = "it reads only the latest period's rows"
+        elif any(_SCALAR.search(f) for f in filters):
+            why = "it compares each row with a value computed for the cell"
+        if why:
+            filters = []
+        scope, reach = _Scope(table, {}), self.reachable(table)
+        removal = None if why else self._removal(m0, leaves[0])
+        conds = [f"({self._render(f, scope)})" for f in filters]
+        for d, v in where.items():
+            if parse_ref(d)[0] not in reach:
+                continue  # a filter that does not reach the table leaves its rows alone
+            fate = removal[0](d, True) if removal else "keep"
+            if fate == "keep":
+                conds.append(_condition(self._dim(d, scope), v))
+            elif fate == "year":
+                conds.append(_condition(_bucket(self._column_sql(*parse_ref(d)[:2], scope), "year"), _year_of(v)))
+        conds += self._security(table, row_filters, scope)
+        if not columns:
+            own = [ref(table, c) for c in self.tables[table].get("columns") or {}
+                   if not re.search(r"image|sort|colou?r|url", c, re.I)][:8]
+            columns = [d for d in where if parse_ref(d)[0] in reach] + own
+        columns = list(dict.fromkeys(columns))
+        select = [f"{self._dim(c, scope)} AS {_ident(c)}" for c in columns]
+        totals = ["count(*) AS row_count"]
+        if not why:
+            totals += [_AGG_SQL[self.metrics[k]["agg"]].format(
+                "*" if self.metrics[k]["expr"] == "*" else self._render(self.metrics[k]["expr"], scope)) + f" AS {k}"
+                for k in leaves]
+        body = f"\nFROM {self._relation(table)} b" + "".join(f"\n{j}" for _, j in scope.joins.values())
+        if conds:
+            body += "\nWHERE " + "\n  AND ".join(conds)
+        sql = f"SELECT {', '.join(select)}{body}\nLIMIT {int(limit)}"
+        total_sql = f"SELECT {', '.join(totals)}{body}"
+        if dialect != "duckdb":
+            sql, total_sql = (sqlglot.transpile(s, read="duckdb", write=dialect, pretty=True)[0] for s in (sql, total_sql))
+        return {"sql": sql, "total_sql": total_sql, "table": table, "columns": columns, "exact": why is None,
+                "why": why, "leaves": [{"key": k, "label": self._label(k)} for k in leaves] if not why else [],
+                "conditions": [re.sub(r"\{([^}]*)\}", r"\1", f) for f in filters]}
 
     def _explore_base(self, named: set[str], table: str | None) -> str:
         for t in named | ({table} if table else set()):

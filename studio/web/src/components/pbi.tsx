@@ -19,7 +19,7 @@ export function ResultTable({ columns, rows, numeric, labels }: { columns: strin
         <tbody>
           {rows.map((r, i) => (
             <tr key={i} className="border-t border-line-soft">
-              {r.map((v, j) => <td key={j} className={`px-3 py-1.5 ${isNum(columns[j], j) ? "text-right tabular-nums" : ""}`}>{isNum(columns[j], j) ? num(v) : v === null || v === undefined ? "—" : String(v)}</td>)}
+              {r.map((v, j) => <td key={j} className={`px-3 py-1.5 ${isNum(columns[j], j) ? "text-right tabular-nums" : ""}`}>{isNum(columns[j], j) ? num(v) : v === null || v === undefined ? "—" : String(v).replace(/^(\d{4}-\d{2}-\d{2})T00:00:00(\.0+)?$/, "$1")}</td>)}
             </tr>
           ))}
           {!rows.length && <tr><td colSpan={columns.length} className="px-3 py-6 text-center text-muted">No rows match.</td></tr>}

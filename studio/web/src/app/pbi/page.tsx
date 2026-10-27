@@ -10,7 +10,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { PbiExhibit, exhibitTitle, type DeskActions, type ExhibitData } from "@/components/pbi-exhibit";
+import { PbiExhibit, exhibitTitle, narrowed, valueAt, type DeskActions, type ExhibitData } from "@/components/pbi-exhibit";
 import { streamNdjson } from "@/lib/api";
 import { colLabel, columnTypes, isDimension, pbi, type PbiMetric } from "@/lib/pbi";
 import { useStudio } from "@/lib/studio";
@@ -123,25 +123,29 @@ export default function PbiDesk() {
     }
   };
 
-  const keep = (e: ExhibitData, values: unknown[]) => {
-    const f: Record<string, unknown> = { ...e.filters };
-    e.by.forEach((d, i) => { if (values[i] !== undefined) f[d] = values[i]; });
-    return f;
-  };
   const actions: DeskActions = {
     drill: (e, values, by) => {
-      const filters = keep(e, values);
+      const filters = narrowed(e, values);
       const within = Object.entries(filters).map(([k, v]) => `${colLabel(k).replace(/ · .*$/, "")} = ${v ?? "(blank)"}`).join(", ");
       direct(`${exhibitTitle({ ...e, by: [by] })}, within ${within}`, async () => {
         const r = await pbi.compute(pbiModel, { metrics: e.metrics, by: [by], filters });
-        return { kind: "compute", columns: r.columns, rows: r.rows, metrics: e.metrics, by: [by], filters, sql: r.sql, ms: r.ms, warehouse: r.warehouse, labels: e.labels, origin: "drill" };
+        const m = e.metrics[0];
+        const parent = m ? { label: e.labels[m] ?? m, value: valueAt(e, values), within } : undefined;
+        return { kind: "compute", columns: r.columns, rows: r.rows, metrics: e.metrics, by: [by], filters, sql: r.sql, ms: r.ms, warehouse: r.warehouse, labels: e.labels, origin: "drill", parent };
       });
     },
     rows: (e, values) => {
-      const filters = keep(e, values);
-      direct(`The rows behind ${exhibitTitle(e).toLowerCase()}, for ${Object.values(filters).map((v) => v ?? "(blank)").join(", ")}`, async () => {
-        const d = e.kind === "compute" && e.metrics[0] ? await pbi.metric(pbiModel, e.metrics[0]).catch(() => null) : null;
-        const table = d?.tables?.[0] ?? e.table;
+      const filters = narrowed(e, values);
+      const m = e.kind === "compute" ? e.metrics[0] : undefined;
+      const within = Object.values(filters).map((v) => v ?? "(blank)").join(", ") || "everything";
+      direct(m ? `The rows behind ${e.labels[m] ?? m}, for ${within}` : `The rows behind ${exhibitTitle(e).toLowerCase()}, for ${within}`, async () => {
+        if (m) {  // the rows the measure itself adds up, under its own filters, with their total to reconcile
+          const r = await pbi.rows(pbiModel, { metric: m, filters, limit: 50 });
+          const label = e.labels[m] ?? m;
+          return { kind: "explore", columns: r.columns, rows: r.rows, metrics: [], by: r.columns, filters, sql: r.sql, ms: r.ms, warehouse: r.warehouse, labels: {}, origin: "drill", table: r.table,
+            receipt: { metric: m, label, row_count: r.row_count, totals: r.totals, exact: r.exact, why: r.why, conditions: r.conditions, shown: r.rows.length, expected: valueAt(e, values), within } };
+        }
+        const table = e.table;
         const t = table ? (await pbi.tables(pbiModel)).tables.find((x) => x.name === table) : undefined;
         const ref = (c: string) => `${/^[A-Za-z_][A-Za-z0-9_]*$/.test(table!) ? table : `'${table!.replace(/'/g, "''")}'`}[${c}]`;
         const own = t ? t.columns.map((c) => ref(c.name)).filter((c) => !/image|sort|colou?r|url/i.test(c)).slice(0, 8) : [];
@@ -276,7 +280,7 @@ export default function PbiDesk() {
             <div className="relative mx-auto max-w-[1180px] px-8 py-8">
               <div className="absolute bottom-8 left-[52px] top-12 w-0.5 bg-[var(--d-rule)]" aria-hidden />
               {cards.map((c, i) => (
-                <div key={i} className="relative mb-8 grid grid-cols-[48px_1fr] gap-4">
+                <div key={i} className="relative mb-8 grid grid-cols-[48px_minmax(0,1fr)] gap-4">
                   <div className="relative pt-5">
                     <span className="num relative z-10 flex h-9 w-9 items-center justify-center rounded-full border-2 border-[var(--d-teal)] bg-white text-[15px] font-semibold text-[var(--d-teal)]">{i + 1}</span>
                   </div>

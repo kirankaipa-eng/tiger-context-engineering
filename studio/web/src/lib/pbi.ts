@@ -27,6 +27,10 @@ export type Result = {
   columns: string[]; rows: unknown[][]; truncated: boolean; notes: string[]; what_if?: string[]; sql: string;
   warehouse: string; ms?: number; metrics?: string[]; aggregates?: string[];
 };
+export type RowsBehind = Result & {
+  row_count: number | null; totals: { key: string; label: string; value: number | null }[];
+  exact: boolean; why: string | null; conditions: string[]; table: string;
+};
 export type ComputeBody = { metrics: string[]; by?: string[]; filters?: Record<string, unknown>; top?: number; order_by?: string; ascending?: boolean; params?: Record<string, number> };
 export type ExploreBody = {
   columns?: string[]; aggregates?: string[]; filters?: Record<string, unknown>; conditions?: string[];
@@ -55,6 +59,7 @@ export const pbi = {
   values: (id: string, column: string) => call<{ column: string; values: unknown[]; more: boolean }>(`${m(id)}/values?column=${encodeURIComponent(column)}`),
   compute: (id: string, body: ComputeBody) => call<Result>(`${m(id)}/compute`, { method: "POST", body: JSON.stringify(body) }),
   explore: (id: string, body: ExploreBody) => call<Result>(`${m(id)}/explore`, { method: "POST", body: JSON.stringify(body) }),
+  rows: (id: string, body: { metric: string; filters?: Record<string, unknown>; limit?: number }) => call<RowsBehind>(`${m(id)}/rows`, { method: "POST", body: JSON.stringify(body) }),
   askPath: (id: string) => `${m(id)}/ask`,
 };
 
