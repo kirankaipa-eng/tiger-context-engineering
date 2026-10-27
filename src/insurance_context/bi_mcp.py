@@ -5,7 +5,7 @@
     ictx pbi serve --dir public --http 8080 --host 0.0.0.0 --keys keys.yaml --audit audit.jsonl
     ictx pbi serve keygen --principal claims-bot@corp.com --groups claims,actuarial
 
-Tools: list_models, model_version, list_metrics, list_columns, column_values, compute (BIToolkit
+Tools: list_models, model_version, list_metrics, list_columns, column_values, compute, explore (BIToolkit
 underneath; compute takes what-if `params`, list_metrics says what each metric needs). Every model folder of the served release is loaded; each tool takes `model`, needed
 only when more than one is served. Every answer starts with the model and capture version it came
 from, so a number can be traced to the release, the commit and the pipeline that verified it.
@@ -509,6 +509,24 @@ def build_server(served: Served, *, verifier: Verifier | None = None, principal:
                 "ascending": ascending, **({"params": params} if params else {})}
         return await run("compute", ctx, model, args,
                          lambda kit: kit.compute(metrics, by, filters, top, order_by, ascending, params))
+
+    @mcp.tool()
+    async def explore(ctx: Context, columns: list[str] | None = None, aggregates: list[str] | None = None,
+                      filters: dict[str, str | int | float | list[str]] | None = None,
+                      conditions: list[str] | None = None, order_by: list[str] | None = None,
+                      descending: bool = False, limit: int | None = None, distinct: bool = False,
+                      table: str | None = None, model: str | None = None) -> str:
+        """Ad-hoc rows of the model's tables, for questions no captured metric answers: `columns`
+        (Table[Column]), `conditions` ("T[C] > 100", "T[C] in ('a', 'b')", "T[C] between 1 and 9",
+        "T[C] like '%x%'", "T[C] is null"), `filters` ({Table[Column]: value}, loosely matched), `aggregates`
+        ("sum(T[C])", "count(*)", "count_distinct(T[C])", avg/min/max) grouped by the columns, `order_by`,
+        `limit`, `distinct`, `table`. Row-level security applies; the agent never sends SQL."""
+        args = {k: v for k, v in {"columns": columns, "aggregates": aggregates, "filters": filters,
+                                  "conditions": conditions, "order_by": order_by, "descending": descending,
+                                  "limit": limit, "distinct": distinct, "table": table}.items() if v}
+        return await run("explore", ctx, model, args,
+                         lambda kit: kit.explore(columns, aggregates, filters, conditions, order_by, descending,
+                                                 limit, distinct, table))
 
     health: dict = {}
 

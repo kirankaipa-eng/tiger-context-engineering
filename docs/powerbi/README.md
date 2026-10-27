@@ -388,7 +388,13 @@ docker run -d -p 8080:8080 \
   stopped SQL warehouse.
 
 Tools: `list_models`, `model_version`, `list_metrics`, `list_columns`, `column_values`,
-`compute(metrics, by, filters, top, order_by, ascending, params, model)`. Each takes `model` when more
+`compute(metrics, by, filters, top, order_by, ascending, params, model)`, and
+`explore(columns, aggregates, filters, conditions, order_by, descending, limit, distinct, table, model)`
+for ad-hoc rows no captured metric answers ("claims over $10,000 in March", "count of claims by place
+of service"): conditions like `Claims[Paid] > 10000`, `T[C] in ('a', 'b')`, `T[C] between 1 and 9`,
+`T[C] like '%x%'`, `T[C] is null`; aggregates like `sum(T[C])`, `count(*)`, `count_distinct(T[C])`
+grouped by the columns. The rows are read from the table whose rows reach every table named, joined as
+Power BI filters, under row-level security; values are literals, never SQL. Each takes `model` when more
 than one is served. `list_models` / `model_version` counts carry `captured`, `presentation`
 (display-only), `presentation_with_value`, `not_captured` and a `summary` line.
 

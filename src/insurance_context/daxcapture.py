@@ -1298,9 +1298,10 @@ def _shape(why: str) -> str:
     return why
 
 
-def coverage(metrics: dict, examples: int = 2, width: int = 160) -> str:
+def coverage_data(metrics: dict) -> dict:
     """Why measures were not captured, by root cause: a measure built on one that is not captured is
-    counted under the reason its root failed, so the report shows which few gaps block the most."""
+    counted under the reason its root failed, so the few gaps that block the most come first.
+    {measures, captured, presentation, not_captured, groups: [{kind, reason, blocks, roots: [key]}]}"""
     metrics = {k: m for k, m in metrics.items() if not m.get("hidden")}  # Power BI's measures, not their parts
     by_label = {m.get("label"): k for k, m in metrics.items()}
     missing = {k: m for k, m in metrics.items() if m.get("status") == "not_captured"}
@@ -1321,13 +1322,22 @@ def coverage(metrics: dict, examples: int = 2, width: int = 160) -> str:
                               {"roots": set(), "blocked": 0})
         g["roots"].add(r)
         g["blocked"] += 1
-    lines = [f"{len(metrics)} measures: {status.get('captured', 0)} captured, {status.get('presentation', 0)} "
-             f"display-only, {len(missing)} not captured", "",
+    return {"measures": len(metrics), "captured": status.get("captured", 0),
+            "presentation": status.get("presentation", 0), "not_captured": len(missing),
+            "groups": [{"kind": gap, "reason": why, "blocks": g["blocked"], "roots": sorted(g["roots"])}
+                       for (gap, why), g in sorted(groups.items(), key=lambda x: (-x[1]["blocked"], x[0]))]}
+
+
+def coverage(metrics: dict, examples: int = 2, width: int = 160) -> str:
+    """coverage_data as a report: a line per root cause, with example measures and their DAX."""
+    d = coverage_data(metrics)
+    lines = [f"{d['measures']} measures: {d['captured']} captured, {d['presentation']} "
+             f"display-only, {d['not_captured']} not captured", "",
              "Not captured, by root cause (`blocks`: measures it stops, its own and those built on them):", "",
              f"{'blocks':>6} {'roots':>5}  {'kind':<17} reason"]
-    for (gap, why), g in sorted(groups.items(), key=lambda x: (-x[1]["blocked"], x[0])):
-        lines.append(f"{g['blocked']:>6} {len(g['roots']):>5}  {gap:<17} {why[:width]}")
-        for r in sorted(g["roots"])[:examples]:
+    for g in d["groups"]:
+        lines.append(f"{g['blocks']:>6} {len(g['roots']):>5}  {g['kind']:<17} {g['reason'][:width]}")
+        for r in g["roots"][:examples]:
             dax = metrics[r].get("dax", "")
             lines.append(f"{'':>14}e.g. [{metrics[r].get('label', r)}] = {dax[:width - 20]}{'...' if len(dax) > width - 20 else ''}")
     return "\n".join(lines)

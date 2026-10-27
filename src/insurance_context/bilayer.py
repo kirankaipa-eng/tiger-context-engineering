@@ -891,6 +891,125 @@ class BILayer:
         return (f"SELECT DISTINCT {expr} AS v FROM {self._relation(table)} b{joins} WHERE {' AND '.join(conds)} "
                 f"ORDER BY 1 LIMIT {limit}")
 
+    # ------------------------------------------------------------ exploring rows
+
+    def explore_sql(self, columns: list[str] | None = None, aggregates: list[str] | None = None,
+                    where: dict | None = None, conditions: list[str] | None = None, order_by: list[str] | None = None,
+                    descending: bool = False, limit: int = 100, distinct: bool = False, table: str | None = None,
+                    row_filters: dict[str, str] | None = None, dialect: str = "duckdb") -> str:
+        """Rows of the model's tables, not its metrics: `columns` (Table[Column], dates may add a grain),
+        `aggregates` ("sum(T[C])", "count(*)", "count_distinct(T[C])", avg/min/max) grouped by the columns,
+        `where` ({Table[Column]: value or [values]}) and `conditions` ("T[C] > 100", "T[C] in ('a', 'b')",
+        "T[C] between 1 and 9", "T[C] like '%x%'", "T[C] is null"), ANDed. The rows are read from one table
+        (`table`, or the one whose rows reach every table named) joined many-to-one, as Power BI filters,
+        under the caller's row-level security."""
+        columns, aggs = list(columns or []), [_aggregate(a) for a in aggregates or []]
+        conds = [_parse_condition(c) for c in conditions or []]
+        if not columns and not aggs:
+            raise LayerError("name at least one column or aggregate")
+        refs = columns + list(where or {}) + [r for _, r in aggs if r] + [r for r, _ in conds]
+        named = {parse_ref(r)[0] for r in refs}
+        base = self._explore_base(named, table)
+        scope = _Scope(base, {})
+        select = [f"{self._dim(c, scope)} AS {_ident(c)}" for c in columns]
+        for (agg, r), text in zip(aggs, aggregates or []):
+            inner = "*" if r is None else self._dim(r, scope)
+            select.append(_AGG_SQL[agg].format(inner) + f" AS {_ident(text.strip())}")
+        sql_where = [_condition(self._dim(d, scope), v) for d, v in (where or {}).items()]
+        sql_where += [f(self._dim(r, scope)) for r, f in conds]
+        sql_where += self._security(base, row_filters, scope)
+        sql = f"SELECT {'DISTINCT ' if distinct and not aggs else ''}{', '.join(select)}\nFROM {self._relation(base)} b"
+        sql += "".join(f"\n{j}" for _, j in scope.joins.values())
+        if sql_where:
+            sql += "\nWHERE " + "\n  AND ".join(f"({c})" for c in sql_where)
+        if aggs and columns:
+            sql += f"\nGROUP BY {', '.join(str(n + 1) for n in range(len(columns)))}"
+        names = [re.sub(r"\s+", "", x) for x in columns + list(aggregates or [])]
+        order = []
+        for o in order_by or []:
+            key = re.sub(r"\s+", "", o)
+            if key not in names:
+                raise LayerError(f"order_by {o!r} is not one of the columns or aggregates asked for: "
+                                 f"{', '.join(columns + list(aggregates or []))}")
+            order.append(f"{names.index(key) + 1} {'DESC' if descending else 'ASC'} NULLS LAST")
+        if order:
+            sql += "\nORDER BY " + ", ".join(order)
+        sql += f"\nLIMIT {int(limit)}"
+        return sql if dialect == "duckdb" else sqlglot.transpile(sql, read="duckdb", write=dialect, pretty=True)[0]
+
+    def _explore_base(self, named: set[str], table: str | None) -> str:
+        for t in named | ({table} if table else set()):
+            if t not in self.tables or not (self.tables[t].get("columns")):
+                raise LayerError(f"no table {t!r} in the warehouse mapping; tables: {', '.join(sorted(self.tables))}")
+        if table:
+            missing = sorted(named - set(self.reachable(table)))
+            if missing:
+                raise LayerError(f"rows of {table} do not reach {', '.join(missing)} through the model's relationships")
+            return table
+        fits = [t for t in sorted(self.tables) if self.tables[t].get("columns") and named <= set(self.reachable(t))]
+        if not fits:
+            raise LayerError(f"no table's rows reach all of {', '.join(sorted(named))} through the model's "
+                             "relationships; ask for columns of related tables")
+        named_fits = [t for t in fits if t in named]
+        if named_fits:  # one of the tables asked about reaches the others: read its rows
+            return min(named_fits, key=lambda t: len(self.reachable(t)))
+        if len(fits) > 1:
+            raise LayerError(f"the rows of {', '.join(fits)} each reach {', '.join(sorted(named))}; say which "
+                             f"table's rows to read with table=")
+        return fits[0]
+
+
+_AGG_CALL = re.compile(r"^\s*(sum|avg|average|min|max|count|count_distinct|distinctcount)\s*\(\s*(.*?)\s*\)\s*$", re.I)
+_LIT = r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|-?\d+(?:\.\d+)?|true|false"
+_CREF = re.compile(r"^\s*((?:'(?:[^']|'')+'|[^\[\]']+?)\[[^\]]+\](?::[a-z]+)?)\s*(.*?)\s*$", re.I | re.S)
+
+
+def _aggregate(text: str) -> tuple[str, str | None]:
+    m = _AGG_CALL.match(text)
+    if not m:
+        raise LayerError(f"aggregate {text!r}: write sum(T[C]), avg(T[C]), min(T[C]), max(T[C]), count(*), "
+                         "count(T[C]) or count_distinct(T[C])")
+    agg = {"average": "avg", "distinctcount": "count_distinct"}.get(m.group(1).lower(), m.group(1).lower())
+    arg = m.group(2)
+    if arg == "*":
+        if agg != "count":
+            raise LayerError(f"aggregate {text!r}: only count takes *")
+        return agg, None
+    if not _CREF.match(arg) or _CREF.match(arg).group(2):
+        raise LayerError(f"aggregate {text!r}: its argument is a column, Table[Column]")
+    return agg, arg
+
+
+def _sql_lit(text: str) -> str:
+    if text[0] == '"':
+        return "'" + text[1:-1].replace('""', '"').replace("'", "''") + "'"
+    return text.upper() if text.lower() in ("true", "false") else text
+
+
+def _parse_condition(text: str):
+    """"T[C] op value" -> (ref, lambda column_sql: condition SQL); values are literals only, never SQL."""
+    m = _CREF.match(text)
+    if not m:
+        raise LayerError(f"condition {text!r}: start with a column, Table[Column]")
+    ref_, rest = m.group(1), m.group(2)
+    one = rf"({_LIT})"
+    pats = [
+        (rf"(?i)^is\s+(not\s+)?null$", lambda g: lambda c: f"{c} IS {'NOT ' if g[0] else ''}NULL"),
+        (rf"(?i)^(not\s+)?in\s*\(\s*((?:{_LIT})(?:\s*,\s*(?:{_LIT}))*)\s*\)$",
+         lambda g: lambda c: f"{c} {'NOT ' if g[0] else ''}IN ({', '.join(_sql_lit(x) for x in re.findall(_LIT, g[1]))})"),
+        (rf"(?i)^between\s+{one}\s+and\s+{one}$", lambda g: lambda c: f"{c} BETWEEN {_sql_lit(g[0])} AND {_sql_lit(g[1])}"),
+        (rf"(?i)^(not\s+)?like\s+{one}$",
+         lambda g: lambda c: f"lower(CAST({c} AS VARCHAR)) {'NOT ' if g[0] else ''}LIKE lower({_sql_lit(g[1])})"),
+        (rf"^(=|==|!=|<>|>=|<=|>|<)\s*{one}$",
+         lambda g: lambda c: f"{c} {'=' if g[0] == '==' else '<>' if g[0] == '!=' else g[0]} {_sql_lit(g[1])}"),
+    ]
+    for pat, make in pats:
+        hit = re.match(pat, rest)
+        if hit:
+            return ref_, make(hit.groups())
+    raise LayerError(f"condition {text!r}: after the column write = != > >= < <= value, in (v1, v2), between a and b, "
+                     "like '%text%', or is [not] null; text values in quotes")
+
 
 def _bucket(c: str, grain: str | None) -> str:
     return {None: c, "year": f"year({c})", "quarter": f"(CAST(year({c}) AS VARCHAR) || '-Q' || CAST(quarter({c}) AS VARCHAR))",

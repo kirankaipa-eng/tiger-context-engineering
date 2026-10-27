@@ -353,6 +353,7 @@ class BIToolkit:
         except Exception as exc:  # noqa: BLE001 - a bad column or a warehouse error goes back to the agent
             return f"Error: {exc}"
         shown = rows[:self.max_rows]
+        self.last.update(kind="compute", columns=cols, shown=shown, metrics=list(metrics), by=list(by or []))
         table = _markdown(cols, [[_fmt(v) if c in metrics else str(v) for c, v in zip(cols, r)] for r in shown])
         out = f"Data: {self.wh.describe()}\n\n{table}"
         if len(rows) > self.max_rows:
@@ -373,6 +374,32 @@ class BIToolkit:
             "".join(f"\n  - {k}: {describe(self.layer, k)}" for k in sorted(leaves - set(metrics)))
         return out + f"\n\nSQL ({self.wh.dialect}):\n{sql}"
 
+    def explore(self, columns: list[str] | None = None, aggregates: list[str] | None = None,
+                filters: dict | None = None, conditions: list[str] | None = None, order_by: list[str] | None = None,
+                descending: bool = False, limit: int | None = None, distinct: bool = False,
+                table: str | None = None) -> str:
+        """Rows of the model's tables (not its metrics): the columns asked for, filtered, optionally summed
+        or counted by them; see BILayer.explore_sql."""
+        limit = min(int(limit or 50), self.max_rows)
+        try:
+            where, notes = self.resolve(filters)
+            sql = self.layer.explore_sql(columns, aggregates, where, conditions, order_by, descending, limit + 1,
+                                         distinct, table, row_filters=self.row_filters, dialect=self.wh.dialect)
+            cols, rows = self._query(sql, limit + 1)
+        except Exception as exc:  # noqa: BLE001 - a bad column or condition goes back to the agent
+            return f"Error: {exc}"
+        aggs = set(aggregates or [])
+        self.last.update(kind="explore", columns=cols, shown=rows[:limit], metrics=list(aggregates or []),
+                         by=list(columns or []))
+        table_md = _markdown(cols, [[_fmt(v) if c in aggs else ("" if v is None else str(v)) for c, v in zip(cols, r)]
+                                    for r in rows[:limit]])
+        out = f"Data: {self.wh.describe()} (rows of the model's tables, not a Power BI measure)\n\n{table_md}"
+        out += (f"\n(more than {limit} rows; first {limit} shown. Narrow it or raise limit, up to {self.max_rows}.)"
+                if len(rows) > limit else f"\n({len(rows)} row{'s' if len(rows) != 1 else ''})")
+        if notes:
+            out += "\nFilters: " + "; ".join(notes) + "."
+        return out + f"\n\nSQL ({self.wh.dialect}):\n{sql}"
+
     def system_prompt(self) -> str:
         return f"""You answer business questions about the Power BI model "{self.layer.model}".
 Numbers come only from the compute tool, which runs the model's captured metrics as SQL on
@@ -384,8 +411,14 @@ How to work:
    take :year/:quarter/:month/:week/:day), `filters` as {{Table[Column]: value or [values]}}, and
    `top` for "top/bottom N" (ascending=true for bottom). Never estimate or do arithmetic the tool
    could do; for a comparison between periods, compute by month or year and compare those rows.
-   To LIST things ("which drugs are type T", "what plans are there") call column_values with
-   `filters`; do not invent a metric for a question that asks for no number.
+   To LIST the values of one column ("which drugs are type T", "what plans are there") call
+   column_values with `filters`; do not invent a metric for a question that asks for no number.
+   For rows and ad-hoc questions no captured metric answers ("claims over $10,000 in March",
+   "members in county X with their plan", "count of claims by place of service") call explore:
+   `columns`, `conditions` like "Claims[Paid] > 10000" or "T[C] in ('a','b')", `filters`
+   ({{Table[Column]: value}}, loosely matched), `aggregates` like "sum(T[C])" / "count(*)" grouped by
+   the columns, `order_by`, `limit`. Prefer compute when a captured metric is the number asked for
+   (it carries the report's definition); say when a number is a raw aggregate from explore.
 3. Hints after a metric in list_metrics say how it must be asked:
    - [needs by=...]: put those columns in `by`. A period metric needs the date at that grain;
      a rank needs the column it ranks (e.g. Store[Store]).
@@ -435,7 +468,20 @@ Data is {"the local stand-in built from the .pbix's own rows; say so once if the
             with what-if `params` ({parameter key: value}; the report's default when left out)."""
             return kit.compute(metrics, by, filters, top, order_by, ascending, params)
 
-        return [list_metrics, list_columns, column_values, compute]
+        async def explore(ctx: RunContext, columns: list[str] | None = None, aggregates: list[str] | None = None,
+                          filters: dict[str, str | int | float | list[str]] | None = None,
+                          conditions: list[str] | None = None, order_by: list[str] | None = None,
+                          descending: bool = False, limit: int | None = None, distinct: bool = False,
+                          table: str | None = None) -> str:
+            """Ad-hoc rows of the model's tables, for questions no captured metric answers: `columns`
+            (Table[Column], dates may add :month etc.), `conditions` ("T[C] > 100", "T[C] in ('a', 'b')",
+            "T[C] between 1 and 9", "T[C] like '%x%'", "T[C] is null"), `filters` ({Table[Column]: value or
+            [values]}, loosely matched), `aggregates` ("sum(T[C])", "avg(T[C])", "count(*)",
+            "count_distinct(T[C])") grouped by the columns, `order_by` (columns or aggregates as written,
+            `descending`), `limit` (default 50), `distinct`, and `table` when several tables' rows could be read."""
+            return kit.explore(columns, aggregates, filters, conditions, order_by, descending, limit, distinct, table)
+
+        return [list_metrics, list_columns, column_values, compute, explore]
 
     def registry(self) -> dict:
         return {fn.__name__: (fn, (fn.__doc__ or "").strip().split("\n")[0]) for fn in self.tools()}
