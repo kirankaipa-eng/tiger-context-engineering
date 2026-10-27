@@ -12,11 +12,14 @@ import time
 import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import pytest
+pytest.importorskip("jwt", reason="needs the mcp extra: uv sync --extra mcp")
+pytest.importorskip("mcp", reason="needs the mcp extra: uv sync --extra mcp")
+
 import anyio
 import duckdb
 import httpx
 import jwt
-import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client

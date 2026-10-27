@@ -10,6 +10,9 @@ import duckdb
 import pytest
 import yaml
 
+pytest.importorskip("jwt", reason="needs the mcp extra: uv sync --extra mcp")
+pytest.importorskip("mcp", reason="needs the mcp extra: uv sync --extra mcp")
+
 from insurance_context import bici
 from insurance_context.bi_agent import BIToolkit, metric_needs, needs
 from insurance_context.bilayer import BILayer, LayerError, save

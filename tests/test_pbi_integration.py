@@ -3,6 +3,10 @@ caller with the real bisecurity.filters_for; and and denial and column values un
 
 import json
 
+import pytest
+pytest.importorskip("jwt", reason="needs the mcp extra: uv sync --extra mcp")
+pytest.importorskip("mcp", reason="needs the mcp extra: uv sync --extra mcp")
+
 from insurance_context.bi_mcp import Audit, LocalCaptures, Served, build_server
 from insurance_context.bilayer import build_spec, save
 from insurance_context.bisecurity import Principal
