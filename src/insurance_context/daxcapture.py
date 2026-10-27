@@ -35,6 +35,7 @@ What a measure reads of the visual is captured as what the question must say:
     SELECTEDVALUE('% Return Rate'[% Return Rate])               {$pct_return_rate}: a what-if parameter
     RANKX(ALL(Store[Store]), [Net Sales], , DESC)               rank: over Store[Store], of net_sales
     SWITCH(TRUE(), ISINSCOPE(Product[Product]), ..., ...)       by_scope: the branch the grouping picks
+    IF(ISFILTERED(Store[Store]), [Net Sales], BLANK())          by_scope, filtered: grouped or filtered by it
 
 A filter may compare rows with a value computed from the model ({@key}: that metric in the question's
 cell): a VAR of the measure and a plain aggregation are computed once, around the filter, as in DAX. A
@@ -589,6 +590,9 @@ def _value(ctx: _Ctx, node, owner: str) -> str:
         if fn == "IF":
             if len(args) < 2 or args[0] is None or args[1] is None:
                 raise Unsupported("syntax", "IF needs a condition and a result")
+            scoped = _scoped_if(ctx, args, owner)
+            if scoped is not None:
+                return scoped
             other = _value(ctx, args[2], owner) if len(args) > 2 and args[2] is not None else "NULL"
             return f"CASE WHEN {_test(ctx, args[0], owner)} THEN {_value(ctx, args[1], owner)} ELSE {other} END"
         if fn == "SWITCH":
@@ -648,24 +652,70 @@ def _test(ctx: _Ctx, node, owner: str) -> str:
     raise Unsupported("conditional", f"branches on something other than a comparison ({kind})")
 
 
+def _scope_test(ctx: _Ctx, node) -> tuple[str, bool, bool] | None:
+    """ISINSCOPE(T[C]) / ISFILTERED(T[C] or T), maybe under NOT: (T[C] or T, filtered, negated). Which is
+    true is known from the question: ISINSCOPE when it groups by the column, ISFILTERED when it groups
+    by it or filters on it (a table: any of its columns)."""
+    negated = False
+    while node is not None and (node[0] == "not" or (node[0] == "call" and node[1] == "NOT" and node[2])):
+        node, negated = (node[1] if node[0] == "not" else node[2][0]), not negated
+    if node is None or node[0] != "call" or node[1] not in ("ISINSCOPE", "ISFILTERED") or len(node[2]) != 1:
+        return None
+    a = node[2][0]
+    if a is not None and a[0] == "col":
+        _column(ctx, a)
+        return col(a[1], a[2])[1:-1], node[1] == "ISFILTERED", negated
+    if a is not None and a[0] == "table" and node[1] == "ISFILTERED":
+        if a[1] not in ctx.model.tables:
+            raise Unsupported("reference", f"no table {a[1]!r} in the model")
+        return a[1], True, negated
+    raise Unsupported("context", f"{node[1]} of something other than a column")
+
+
+def _scoped_if(ctx: _Ctx, args: list, owner: str) -> str | None:
+    """IF(ISFILTERED(c) | ISINSCOPE(c) | NOT ..., a, b) as a scope switch; a blank branch has no value."""
+    def either(node):  # a || b, OR(a, b): any of them
+        if node[0] == "bin" and node[1] == "||":
+            return either(node[2]) + either(node[3])
+        if node[0] == "call" and node[1] == "OR" and len(node[2]) == 2:
+            return either(node[2][0]) + either(node[2][1])
+        return [node]
+
+    parts = either(args[0])
+    tests = [_scope_test(ctx, t) for t in parts]
+    if any(t is None for t in tests):
+        if any(t is not None for t in tests):
+            raise Unsupported("context", "mixes ISINSCOPE / ISFILTERED with other conditions in one IF")
+        return None
+    if len(tests) > 1 and any(neg for _, _, neg in tests):
+        raise Unsupported("context", "NOT ISFILTERED / NOT ISINSCOPE in an OR; not captured")
+    then, other = args[1], args[2] if len(args) > 2 else None
+    if tests[0][2]:
+        then, other = other, then
+    metric = _part(ctx, then if then is not None else ("blank",), owner)
+    branches = [{"column": target, "metric": metric, **({"filtered": True} if filtered else {})}
+                for target, filtered, _ in tests]
+    rest = [{"else": _part(ctx, other, owner)}] if other is not None and other[0] != "blank" else []
+    return "{" + _hidden(ctx, owner, {"by_scope": [*branches, *rest]}) + "}"
+
+
 def _switch(ctx: _Ctx, args: list, owner: str) -> str:
     """SWITCH(TRUE(), ISINSCOPE(c), e, ..., else) as a scope switch; any other SWITCH as CASE."""
     if len(args) < 3 or args[0] is None:
         raise Unsupported("syntax", "SWITCH needs a value and at least one value/result pair")
     pairs = args[1:]
     tests, other = list(zip(pairs[0::2], pairs[1::2])), pairs[-1] if len(pairs) % 2 else None
-    scoped = [t is not None and t[0] == "call" and t[1] == "ISINSCOPE" for t, _ in tests]
+    scoped = [t is not None and _scope_test(ctx, t) is not None for t, _ in tests]
     if args[0] == ("bool", True) and any(scoped):
         if not all(scoped):
-            raise Unsupported("context", "mixes ISINSCOPE with other conditions in one SWITCH")
+            raise Unsupported("context", "mixes ISINSCOPE / ISFILTERED with other conditions in one SWITCH")
         branches = []
         for t, r in tests:
-            c = t[2][0] if t[2] else None
-            if c is None or c[0] != "col":
-                raise Unsupported("context", "ISINSCOPE of something other than a column")
-            _column(ctx, c)
-            branches.append({"column": col(c[1], c[2])[1:-1], "metric": _part(ctx, r, owner)})
-        if other is not None:
+            target, filtered, negated = _scope_test(ctx, t)
+            if negated:
+                raise Unsupported("context", "SWITCH on NOT ISINSCOPE / NOT ISFILTERED; write it as IF")
+            branches.append({"column": target, "metric": _part(ctx, r, owner), **({"filtered": True} if filtered else {})})
+        if other is not None and other[0] != "blank":
             branches.append({"else": _part(ctx, other, owner)})
         return "{" + _hidden(ctx, owner, {"by_scope": branches}) + "}"
     whens = []

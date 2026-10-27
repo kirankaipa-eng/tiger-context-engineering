@@ -255,6 +255,7 @@ class _Q:
     src: dict  # leaf key -> its column in the final FROM (m0.net_sales)
     by: list
     param: Callable[[str, str], str]
+    where: tuple = ()  # the columns the question filters on (ISFILTERED)
 
 
 class BILayer:
@@ -286,7 +287,8 @@ class BILayer:
     def captured(self) -> dict[str, dict]:
         return {k: v for k, v in self.metrics.items() if v.get("status") == "captured" and not v.get("hidden")}
 
-    def leaves(self, key: str, seen: tuple = (), by: list[str] | None = None, units: bool = False) -> list[str]:
+    def leaves(self, key: str, seen: tuple = (), by: list[str] | None = None, units: bool = False,
+               where: tuple = ()) -> list[str]:
         """The base metrics (one aggregate over a table) a metric is computed from. With `by`, a scope
         switch follows the branch that question takes; without it, every branch. With `units`, an
         `iterate` metric is returned as itself (compile computes it in a query of its own)."""
@@ -297,17 +299,17 @@ class BILayer:
             known = ", ".join(self.captured())
             raise LayerError(f"no captured metric {key!r}" + (f" ({m.get('why')})" if m else "") + f". Captured: {known}")
         if units and "iterate" in m:
-            self.leaves(key, seen, by)  # its own parts are checked (missing, cycles) all the same
+            self.leaves(key, seen, by, where=where)  # its own parts are checked (missing, cycles) all the same
             return [key]
-        refs = self._refs(key, by)
+        refs = self._refs(key, by, where)
         if refs is None:
             return [key]
         out = []
         for k in refs:
-            out += [x for x in self.leaves(k, (*seen, key), by, units) if x not in out]
+            out += [x for x in self.leaves(k, (*seen, key), by, units, where) if x not in out]
         return out
 
-    def _refs(self, key: str, by: list[str] | None) -> list[str] | None:
+    def _refs(self, key: str, by: list[str] | None, where: tuple = ()) -> list[str] | None:
         """The metrics a derived metric reads (None for a base metric)."""
         m = self.metrics[key]
         if "formula" in m:
@@ -320,20 +322,27 @@ class BILayer:
         if "by_scope" in m:
             if by is None:
                 return [b.get("metric") or b.get("else") for b in m["by_scope"]]
-            return [self._pick(key, by)]
+            return [self._pick(key, by, where=where)]
         return None
 
-    def _pick(self, key: str, by: list[str], strict: bool = True) -> str | None:
-        """A scope switch's branch for a question: the first whose column is grouped by, else `else`."""
-        cols = {parse_ref(d)[:2] for d in by}
+    def _pick(self, key: str, by: list[str], strict: bool = True, where=()) -> str | None:
+        """A scope switch's branch for a question: the first whose column is grouped by (ISINSCOPE), or
+        grouped by or filtered on (ISFILTERED; a table: any of its columns), else `else`."""
+        grouped = {parse_ref(d)[:2] for d in by}
+        filtered = grouped | {parse_ref(d)[:2] for d in where}
         branches = [b for b in self.metrics[key]["by_scope"] if "column" in b]
         for b in branches:
-            if parse_ref(b["column"])[:2] in cols:
+            cols = filtered if b.get("filtered") else grouped
+            hit = {t for t, _ in cols} if "[" not in b["column"] else cols
+            if (_unq(b["column"].strip()) if "[" not in b["column"] else parse_ref(b["column"])[:2]) in hit:
                 return b["metric"]
         other = next((b["else"] for b in self.metrics[key]["by_scope"] if "else" in b), None)
         if other is None and strict:
-            raise LayerError(f"{self._label(key)} is defined per level of the grouping and has no value without "
-                             f"one: group by {' or '.join(b['column'] for b in branches)}")
+            if not any(b.get("filtered") for b in branches):
+                raise LayerError(f"{self._label(key)} is defined per level of the grouping and has no value without "
+                                 f"one: group by {' or '.join(b['column'] for b in branches)}")
+            how = " or ".join(f"{'group by or filter on' if b.get('filtered') else 'group by'} {b['column']}" for b in branches)
+            raise LayerError(f"{self._label(key)} has a value only when the question narrows to it: {how}")
         return other
 
     def reachable(self, table: str) -> dict[str, list[tuple[str, str, str]]]:
@@ -607,7 +616,7 @@ class BILayer:
         param = self._params(params)
         leaves = []
         for k in metrics:
-            leaves += [x for x in self.leaves(k, by=by, units=True) if x not in leaves]
+            leaves += [x for x in self.leaves(k, by=by, units=True, where=tuple(where)) if x not in leaves]
         iters = [k for k in leaves if "iterate" in self.metrics[k]]
         leaves = [k for k in leaves if k not in iters]
         groups: dict[tuple, list[str]] = {}
@@ -756,7 +765,7 @@ class BILayer:
                 joins.append((f"x{i}", [f"x{i}.d{n} IS NOT DISTINCT FROM k.d{n}" for n in range(len(by))]))
             else:
                 pieces.append(f"x{i}")
-        q = _Q(src, by, param)
+        q = _Q(src, by, param, tuple(where))
         if not groups and not iters:  # only what-if parameters: nothing to read
             if by:
                 raise LayerError(f"{', '.join(self._label(k) for k in metrics)} reads no rows (only what-if "
@@ -835,7 +844,7 @@ class BILayer:
         arithmetic); {?key} (raw) stays NULL when the metric has no rows, for ISBLANK."""
         m, label = self.metrics[key], self._label(key)
         if "by_scope" in m:
-            return self._expr(self._pick(key, q.by), q, raw, ranking)
+            return self._expr(self._pick(key, q.by, where=q.where), q, raw, ranking)
         if "rank" in m:
             r = m["rank"]
             over = parse_ref(r["over"])
@@ -861,7 +870,7 @@ class BILayer:
             return self._expr(x.group(3), q, raw=bool(x.group(2)), ranking=ranking)
         body = "(" + _REF.sub(sub, m["formula"]) + ")"
         if raw:  # BLANK when every number it reads is blank
-            cols = [q.src[x] for x in self.leaves(key, by=q.by, units=True)]
+            cols = [q.src[x] for x in self.leaves(key, by=q.by, units=True, where=q.where)]
             if cols:
                 return f"(CASE WHEN {' AND '.join(f'{c} IS NULL' for c in cols)} THEN NULL ELSE {body} END)"
         return body

@@ -136,7 +136,8 @@ def describe(layer: BILayer, key: str) -> str:
         return (f"{ {'sum': 'sum', 'avg': 'average', 'min': 'smallest', 'max': 'largest'}[it['agg']] } of {each}"
                 + (f" where {it['having']} holds" if it.get("having") else ""))
     if m.get("by_scope"):
-        parts = [f"by {b['column']}: {b['metric']}" for b in m["by_scope"] if "column" in b]
+        parts = [f"{'grouped or filtered' if b.get('filtered') else ''} by {b['column']}: {b['metric']}".strip()
+                 for b in m["by_scope"] if "column" in b]
         other = next((b["else"] for b in m["by_scope"] if "else" in b), None)
         return ("depends on the grouping: " + "; ".join(parts)
                 + (f"; otherwise {other}" if other else "; otherwise not answered (group by one of those columns)"))

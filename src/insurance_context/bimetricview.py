@@ -54,7 +54,7 @@ _NOT_IN_SPEC = {
                "over a measure); the specification has no per-group-then-combine measures; our engine answers it",
     "rank": "ranks are not part of the metric view specification; our engine answers it (RANK() over the rows "
             "a question returns)",
-    "by_scope": "the answer depends on which column the question groups by (ISINSCOPE); the specification has no "
+    "by_scope": "the answer depends on which column the question groups by or filters on (ISINSCOPE, ISFILTERED); the specification has no "
                 "per-grouping measures",
     "context": "ignores part of the question's grouping or filters (ALL / ALLSELECTED / REMOVEFILTERS); the "
                "specification has no equivalent outside a date window",

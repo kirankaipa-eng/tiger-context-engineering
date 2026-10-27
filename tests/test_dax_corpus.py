@@ -37,6 +37,13 @@ MEASURES = {
     "Above Threshold": "CALCULATE([Paid], Claims[Paid] > [Threshold])",
     "Since March": "CALCULATE([Paid], Claims[ServiceDate] >= DATE(2025, 3, 1))",
     "High Cost Share": "DIVIDE([High Cost Paid], [Paid])",
+    # what the question narrows to (ISFILTERED: grouped by or filtered on; ISINSCOPE: grouped by)
+    "Paid When Specialty": "IF(ISFILTERED(Provider[Specialty]), [Paid], BLANK())",
+    "Paid Unless Specialty": "IF(NOT ISFILTERED(Provider[Specialty]), [Paid], [Avg Paid])",
+    "Paid When Provider": "IF(ISFILTERED(Provider), [Paid])",
+    "Paid When Either": "IF(ISFILTERED(Provider[Specialty]) || ISFILTERED(Dim_Date[Date]), [Paid])",
+    "Scoped Paid": "SWITCH(TRUE(), ISFILTERED(Dim_Date[Date]), [Running Paid], ISINSCOPE(Provider[Specialty]), [Avg Paid], "
+                   "[Paid])",
     # refused: DAX computes the measure again per row it tests (context transition)
     "High Cost Inline": "CALCULATE([Paid], FILTER(Claims, Claims[Paid] > [Avg Paid]))",
     "Up To Latest Inline": "CALCULATE([Paid], ALL(Dim_Date), Dim_Date[Date] <= [Latest Date])",
@@ -111,6 +118,24 @@ def test_a_measure_that_ignores_the_visual_is_the_same_value_inline(layer):
 
 def test_date_literals(layer):
     assert ask(layer, ["since_march"]) == [(600,)]
+
+
+def test_isfiltered_picks_the_branch_from_what_the_question_narrows_to(layer):
+    from insurance_context.bilayer import LayerError
+    assert ask(layer, ["paid_when_specialty"], [SPECIALTY]) == [("Cardio", 350), ("Ortho", 850)]
+    assert ask(layer, ["paid_when_specialty"], where={SPECIALTY: "Ortho"}) == [(850,)]  # filtered, not grouped
+    with pytest.raises(LayerError, match="group by or filter on Provider\\[Specialty\\]"):
+        ask(layer, ["paid_when_specialty"])
+    assert ask(layer, ["paid_unless_specialty"]) == [(1200,)]
+    assert ask(layer, ["paid_unless_specialty"], [SPECIALTY]) == [("Cardio", 116.67), ("Ortho", 283.33)]
+    assert ask(layer, ["paid_when_provider"], where={SPECIALTY: "Cardio"}) == [(350,)]  # a table: any of its columns
+    assert ask(layer, ["paid_when_either"], [MONTH])[0] == ("2025-01", 400)
+    assert ask(layer, ["paid_when_either"], where={SPECIALTY: "Ortho"}) == [(850,)]
+    # a date grouped at a grain filters the date; a grouping, not a filter, is what ISINSCOPE reads
+    assert ask(layer, ["scoped_paid"], [MONTH])[-1] == ("2025-04", 1200)
+    assert ask(layer, ["scoped_paid"], [SPECIALTY]) == [("Cardio", 116.67), ("Ortho", 283.33)]
+    assert ask(layer, ["scoped_paid"], where={SPECIALTY: "Cardio"}) == [(350,)]
+    assert ask(layer, ["scoped_paid"]) == [(1200,)]
 
 
 def test_per_row_measures_are_refused_with_the_reason(layer):
