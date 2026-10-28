@@ -201,7 +201,10 @@ def test_isinscope_switch_is_a_scope_switch():
     assert out[scope[0]["metric"]]["rank"]["over"] == "Product[Product]" and out[scope[0]["metric"]]["hidden"]
     assert out[scope[2]["else"]]["rank"]["over"] == "Product[Category]"
     assert out["no_else"]["by_scope"] == [{"column": "Product[Product]", "metric": "net_sales"}]
-    assert out["mixed"]["status"] == "not_captured"
+    # a scope test among other conditions: the scope picks the branch, the rest stays a CASE in the else
+    mixed = out["mixed"]["by_scope"]
+    assert mixed[0]["column"] == "Product[Product]" and out[mixed[1]["else"]]["formula"] == \
+        "CASE WHEN ({net_sales} > 0) THEN 2 ELSE NULL END"
 
 
 # ------------------------------------------------------------------ presentation

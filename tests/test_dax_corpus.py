@@ -68,6 +68,11 @@ MEASURES = {
     "Level": "ISINSCOPE(Dim_Date[Date]) + ISINSCOPE(Provider[Specialty])",
     "By Level": "SWITCH([Level], 1, [Avg Paid], [Paid])",
     "Specialty Is True": "IF(ISINSCOPE(Provider[Specialty]) = TRUE(), [Avg Paid], [Paid])",
+    # scope tests among other conditions: the scope picks the branch, the rest stays an IF inside it
+    "Big Specialty Paid": "IF(ISINSCOPE(Provider[Specialty]) && [Paid] > 500, [Paid], BLANK())",
+    "Month Or Big": "IF(ISINSCOPE(Dim_Date[Date]) || [Paid] > 1000, [Avg Paid], [Paid])",
+    "Not Specialty Unless Big": "IF(NOT ISINSCOPE(Provider[Specialty]) && [Paid] > 500, [Paid], [Avg Paid])",
+    "Mixed Switch": "SWITCH(TRUE(), [Claim Count] IN {1, 2}, -1, ISINSCOPE(Provider[Specialty]), [Avg Paid], [Paid])",
     # CALCULATE filters around a scope switch reach every branch, unless they touch what it tests
     "Specialty Over 100": "CALCULATE([Paid When Specialty], Claims[Paid] > 100)",
     "Scoped Over 100": "CALCULATE([Scoped Paid], Claims[Paid] > 100)",
@@ -173,6 +178,21 @@ def test_isinscope_as_a_number_and_compared_with_true(layer):
     assert ask(layer, ["paid", "level", "by_level"], [SPECIALTY])[0] == ("Cardio", 350, 1, 116.67)
     assert ask(layer, ["specialty_is_true"], [SPECIALTY]) == [("Cardio", 116.67), ("Ortho", 283.33)]
     assert ask(layer, ["specialty_is_true"]) == [(1200,)]
+
+
+def test_scope_tests_mixed_with_other_conditions(layer):
+    from insurance_context.bilayer import LayerError
+    assert ask(layer, ["big_specialty_paid"], [SPECIALTY]) == [("Cardio", None), ("Ortho", 850)]
+    with pytest.raises(LayerError):  # not grouped by specialty: no value, as DAX shows blank
+        ask(layer, ["big_specialty_paid"])
+    assert ask(layer, ["month_or_big"], [MONTH])[0] == ("2025-01", 200)  # month in scope: average
+    assert ask(layer, ["month_or_big"]) == [(200,)]  # 1200 > 1000: the average, 1200 / 6
+    assert ask(layer, ["month_or_big"], [SPECIALTY]) == [("Cardio", 350), ("Ortho", 850)]  # neither: paid
+    assert ask(layer, ["not_specialty_unless_big"]) == [(1200,)]
+    assert ask(layer, ["not_specialty_unless_big"], [SPECIALTY]) == [("Cardio", 116.67), ("Ortho", 283.33)]
+    assert ask(layer, ["claim_count", "mixed_switch"], [SPECIALTY]) == [("Cardio", 3, 116.67), ("Ortho", 3, 283.33)]
+    assert {r[2] for r in ask(layer, ["claim_count", "mixed_switch"], [MONTH])} == {-1}  # 1 or 2 claims a month
+    assert ask(layer, ["claim_count", "mixed_switch"]) == [(6, 1200)]  # neither: paid
 
 
 def test_masked_dax_keeps_the_shape_and_drops_the_names():

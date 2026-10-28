@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import json
 from collections import deque
 from collections.abc import Callable
@@ -220,13 +221,13 @@ def build_standin(pbix: str | Path, layer: "BILayer", path: str | Path) -> Path:
     path = Path(path)
     path.unlink(missing_ok=True)
     con = duckdb.connect(str(path))
+    todo = [(name, t["table"].split(".")) for name, t in layer.tables.items() if t.get("table")]
+    todo = [(name, parts) for name, parts in todo if len(parts) == 3 and parts[0] == path.stem]
     try:
-        for name, t in layer.tables.items():
-            if not t.get("table"):
-                continue
-            parts = t["table"].split(".")
-            if len(parts) != 3 or parts[0] != path.stem:
-                continue
+        for n, (name, parts) in enumerate(todo, 1):
+            t = layer.tables[name]
+            # a large model takes minutes: say where it is, so it never looks stuck
+            print(f"\r  stand-in {n}/{len(todo)} {name[:50]:<50}", end="", file=sys.stderr, flush=True)
             frame = read_pbix_data(pbix, name)
             frame = frame[[c for c in t["columns"] if c in frame.columns]].rename(
                 columns={c: v["column"] for c, v in t["columns"].items()})
@@ -236,6 +237,8 @@ def build_standin(pbix: str | Path, layer: "BILayer", path: str | Path) -> Path:
             con.unregister("frame")
     finally:
         con.close()
+        if todo:
+            print("\r" + " " * 70 + "\r", end="", file=sys.stderr, flush=True)
     return path
 
 

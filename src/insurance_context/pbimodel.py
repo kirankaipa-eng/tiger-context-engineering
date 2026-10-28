@@ -87,15 +87,40 @@ class Model:
 
 # ------------------------------------------------------------------ .pbix
 
+_OPEN: dict = {}
+
+
+def _pbixray(path: str | Path):
+    """One decoded .pbix, kept for the next call: decoding is the slow part (the whole model, every
+    time), and an import reads the model and then each table's rows. pbixray also sizes every column
+    by scanning its file list once per file, which is quadratic on a large model; we look them up."""
+    from pbixray import PBIXRay
+    try:
+        from pbixray.meta.metadata import Metadata
+    except ImportError:  # another pbixray layout: it works, only slower
+        Metadata = None
+    if Metadata is not None and not getattr(Metadata, "_indexed", False) and hasattr(Metadata, "_get_file_size_from_log"):
+        def size(self, file_name):
+            if not hasattr(self, "_sizes"):
+                self._sizes = {x["FileName"]: x["SizeFromLog"] for x in self._data_model.file_log}
+            return self._sizes.get(file_name, 0)
+        Metadata._get_file_size_from_log, Metadata._indexed = size, True
+    key = str(Path(path).resolve())
+    if key not in _OPEN:
+        _OPEN.clear()  # one file at a time: a decoded model is large
+        _OPEN[key] = PBIXRay(key)
+    return _OPEN[key]
+
+
 def read_pbix(path: str | Path) -> Model:
     try:
-        from pbixray import PBIXRay
+        import pbixray  # noqa: F401
     except ImportError:
         raise ValueError(f"{path}: reading a .pbix needs pbixray (pip install insurance-context[powerbi]). "
                          "Or save it from Power BI Desktop as a PBIP project with TMDL turned on.") from None
     path = Path(path)
     try:
-        px = PBIXRay(str(path))
+        px = _pbixray(path)
         names = list(px.tables)
     except Exception as e:  # live-connected reports have no model; pbixray raises its own error
         raise ValueError(f"{path}: could not read a model from this file ({type(e).__name__}: {e}). "
@@ -144,8 +169,7 @@ def read_pbix(path: str | Path) -> Model:
 
 def read_pbix_data(path: str | Path, table: str):
     """One imported table's rows (a pandas DataFrame), for a local stand-in of the warehouse."""
-    from pbixray import PBIXRay
-    return PBIXRay(str(path)).get_table(table)
+    return _pbixray(path).get_table(table)
 
 
 def _records(frame) -> list[dict]:

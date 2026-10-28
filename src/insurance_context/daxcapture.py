@@ -67,6 +67,7 @@ leave; BLANK reads as 0 in arithmetic and comparisons ({key}), so IF(..., [m], 0
 
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass, field
 
@@ -693,6 +694,10 @@ def _test(ctx: _Ctx, node, owner: str) -> str:
         return f"({_test(ctx, node[2][0], owner)} {node[1]} {_test(ctx, node[2][1], owner)})"
     if kind == "bin" and node[1] in _COMPARE:
         return f"({_number(ctx, node[2], owner)} {node[1]} {_number(ctx, node[3], owner)})"
+    if kind == "bin" and node[1] == "IN":
+        if node[3][0] != "set":
+            raise Unsupported("conditional", "IN with something other than a list of values")
+        return f"({_number(ctx, node[2], owner)} IN ({', '.join(_number(ctx, x, owner) for x in node[3][1])}))"
     if kind == "call" and node[1] == "ISBLANK" and node[2] and node[2][0] is not None:
         inner = re.fullmatch(r"\{([a-z0-9_]+)\}", _value(ctx, node[2][0], owner))
         if not inner:
@@ -765,13 +770,14 @@ def _scope_branch(tests: list, metric: str) -> dict:
 
 def _scoped_if(ctx: _Ctx, args: list, owner: str) -> str | None:
     """IF(ISFILTERED(c) | ISINSCOPE(c) | NOT ... [&& ...] [|| ...], a, b) as a scope switch; a blank
-    branch has no value."""
-    parts = _split_on(args[0], "||", "OR")
-    tests = [_scope_all(ctx, t) for t in parts]
-    if any(t is None for t in tests):
-        if any(t is not None for t in tests):
-            raise Unsupported("context", "mixes ISINSCOPE / ISFILTERED with other conditions in one IF")
+    branch has no value. Scope tests mixed with other conditions: see _mixed_if."""
+    terms = [_split_on(p, "&&", "AND") for p in _split_on(args[0], "||", "OR")]
+    scoped = [[_scope_test(ctx, t) for t in p] for p in terms]
+    if all(x is None for p in scoped for x in p):
         return None
+    if any(x is None for p in scoped for x in p):
+        return _mixed_if(ctx, terms, scoped, args, owner)
+    tests = scoped
     then, other = args[1], args[2] if len(args) > 2 else None
     if len(tests) == 1 and len(tests[0]) == 1 and tests[0][0][2]:  # IF(NOT ISFILTERED(c), a, b)
         then, other, tests = other, then, [[(*tests[0][0][:2], False)]]
@@ -781,16 +787,50 @@ def _scoped_if(ctx: _Ctx, args: list, owner: str) -> str | None:
     return "{" + _hidden(ctx, owner, {"by_scope": [*branches, *rest]}) + "}"
 
 
+def _mixed_if(ctx: _Ctx, terms: list, scoped: list, args: list, owner: str) -> str:
+    """IF(S && R || P, a, b), S scope tests and R, P other conditions: where S holds it is IF(R || P, a, b),
+    elsewhere IF(P, a, b). The scope tests pick the branch; what is left stays an IF inside it (and P, if
+    it tests scope too, is taken apart the same way)."""
+    then = args[1] if args[1] is not None else ("blank",)
+    other = args[2] if len(args) > 2 and args[2] is not None else ("blank",)
+    i = next(n for n, p in enumerate(scoped) if any(x is not None for x in p))
+    tests = [x for x in scoped[i] if x is not None]
+    rest = [t for t, x in zip(terms[i], scoped[i]) if x is None]
+    others = terms[:i] + terms[i + 1:]
+    join = lambda op, xs: functools.reduce(lambda a, b: ("bin", op, a, b), xs)  # noqa: E731
+    branch = lambda parts: ("call", "IF", [join("||", [join("&&", p) for p in parts]), then, other])  # noqa: E731
+    holds = branch([rest, *others]) if rest else then
+    fails = branch(others) if others else other
+    pos = [t for t in tests if not t[2]]
+    if pos:
+        branches, last = [_scope_branch(tests, _part(ctx, holds, owner))], fails
+    else:  # only NOT tests: any of them in scope and the test fails
+        branches, last = [_scope_branch([(*t[:2], False)], _part(ctx, fails, owner)) for t in tests], holds
+    rest_ = [{"else": _part(ctx, last, owner)}] if last[0] != "blank" else []
+    return "{" + _hidden(ctx, owner, {"by_scope": [*branches, *rest_]}) + "}"
+
+
+def _has_scope(ctx: _Ctx, node) -> tuple[bool, bool]:
+    """Whether a condition tests ISINSCOPE / ISFILTERED anywhere in its && / || parts, and whether that is all it tests."""
+    found = [_scope_test(ctx, t) is not None for p in _split_on(node, "||", "OR") for t in _split_on(p, "&&", "AND")]
+    return any(found), all(found)
+
+
 def _switch(ctx: _Ctx, args: list, owner: str) -> str:
     """SWITCH(TRUE(), ISINSCOPE(c) [&& ...], e, ..., else) as a scope switch; any other SWITCH as CASE."""
     if len(args) < 3 or args[0] is None:
         raise Unsupported("syntax", "SWITCH needs a value and at least one value/result pair")
     pairs = args[1:]
     tests, other = list(zip(pairs[0::2], pairs[1::2])), pairs[-1] if len(pairs) % 2 else None
-    scoped = [t is not None and _scope_all(ctx, t) is not None for t, _ in tests] if args[0] == ("bool", True) else []
-    if any(scoped):
-        if not all(scoped):
-            raise Unsupported("context", "mixes ISINSCOPE / ISFILTERED with other conditions in one SWITCH")
+    scoped = [_has_scope(ctx, t) if t is not None else (False, False) for t, _ in tests] \
+        if args[0] == ("bool", True) else []
+    if any(a for a, _ in scoped) and not all(b for _, b in scoped):
+        # scope tests among other conditions: SWITCH(TRUE(), t1, r1, t2, r2, e) is IF(t1, r1, IF(t2, r2, e))
+        node = other if other is not None else ("blank",)
+        for t, r in reversed(tests):
+            node = ("call", "IF", [t, r if r is not None else ("blank",), node])
+        return _value(ctx, node, owner)
+    if any(a for a, _ in scoped):
         branches = [_scope_branch(_scope_all(ctx, t), _part(ctx, r, owner)) for t, r in tests]
         if other is not None and other[0] != "blank":
             branches.append({"else": _part(ctx, other, owner)})
