@@ -15,6 +15,7 @@ import datetime as _dt
 import json
 import os
 import re
+import time
 from decimal import Decimal
 from pathlib import Path
 
@@ -311,7 +312,7 @@ async def ask(mid: str, body: dict = Body(...)):
                 continue
             d = ev.get("data") or {}
             if ev.get("type") == "agent_tool_call" and d.get("status") == "completed" and \
-                    d.get("tool") in ("compute", "explore"):
+                    d.get("tool") in ("compute", "explore", "explain"):
                 new = [r for r in kit.results if r["seq"] > seen]  # parallel calls may finish in any order
                 seen = max([seen, *[r["seq"] for r in new]])
                 for last in new:
@@ -320,8 +321,180 @@ async def ask(mid: str, body: dict = Body(...)):
                         "metrics": last["metrics"], "by": last["by"], "sql": last.get("sql"), "ms": last.get("ms"),
                         "filters": {k: _cell(v) for k, v in (last.get("filters") or {}).items()},
                         "conditions": last.get("conditions") or [],
+                        **({"explain": last["explain"]} if last.get("explain") else {}),
                         "warehouse": kit.wh.describe(),
                         "labels": {k: m.layer.metrics[k].get("label", k) for k in last["metrics"] if k in m.layer.metrics}}},
                         default=str) + "\n"
 
     return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+
+# ------------------------------------------------------------------ the team space
+
+from context_studio import pbi_team  # noqa: E402
+
+
+@app.get("/api/pbi/{mid}/team")
+def team(mid: str):
+    """The team's findings, most open and most certain first; the Scout runs the first time."""
+    m = _model(mid)
+    data = pbi_team.load(m.folder)
+    if not data.get("scouted"):
+        try:
+            data = pbi_team.scout(m)
+        except Exception as exc:  # noqa: BLE001
+            raise _bad(exc) from exc
+    return {"model": m.layer.model, "scouted": data.get("scouted"), "findings": pbi_team.ranked(data)}
+
+
+@app.post("/api/pbi/{mid}/team/scout")
+def team_scout(mid: str):
+    m = _model(mid)
+    try:
+        data = pbi_team.scout(m)
+    except Exception as exc:  # noqa: BLE001
+        raise _bad(exc) from exc
+    return {"model": m.layer.model, "scouted": data.get("scouted"), "findings": pbi_team.ranked(data)}
+
+
+def _finding(data: dict, fid: str) -> dict:
+    f = data.get("findings", {}).get(fid)
+    if f is None:
+        raise HTTPException(404, "This finding is no longer here: the numbers have changed since it was found. "
+                                 "The list now shows what moved today.")
+    return f
+
+
+def _ensure(m, fid: str) -> None:
+    """A finding a page still shows but the store lost (cleared, or not yet scouted since a restart): the Scout
+    runs once to find it again; if it is still not there, the numbers changed and _finding says so."""
+    if fid not in pbi_team.load(m.folder).get("findings", {}):
+        pbi_team.scout(m)
+
+
+@app.post("/api/pbi/{mid}/team/{fid}/comment")
+def team_comment(mid: str, fid: str, body: dict = Body(...)):
+    """A teammate's comment. `@check` (or `@skeptic`) in it has the fact-checker check the finding again and reply."""
+    m = _model(mid)
+    who, text = str(body.get("who") or "Someone").strip()[:60], str(body.get("text") or "").strip()[:2000]
+    if not text:
+        raise HTTPException(400, "empty comment")
+    _ensure(m, fid)
+    said = text.lower()
+    recheck = any(x in said for x in ("@skeptic", "@check", "@fact-checker"))
+    f0 = _finding(pbi_team.load(m.folder), fid)
+    checks = pbi_team.skeptic(m.kit(), f0["explain"]) if recheck else None
+    again = None
+    if "@investigator" in said:  # worked out again, on today's numbers
+        v = f0["explain"]
+        m.kit().explain(v["metric"], v["period"], v["now"], v["before"])
+        again = m.kit().results[-1].get("explain")
+
+    def add(data):
+        f = _finding(data, fid)
+        f.setdefault("comments", []).append({"who": who, "text": text, "at": time.time()})
+        if again is not None:
+            same = [x["value"] for x in again.get("steps", [])] == [x["value"] for x in f["explain"].get("steps", [])]
+            f["explain"] = again
+            path = " → ".join(x["value"] for x in again.get("steps", [])) or "no single cause"
+            f["comments"].append({"who": "Investigator", "agent": True, "at": time.time(),
+                                  "text": f"Worked out again on today's numbers: {path}. "
+                                          + ("Same answer as before." if same else "The answer has changed; the finding above is updated.")})
+        if checks is not None:
+            f["checks"] = checks
+            held = sum(1 for c in checks if c["passed"])
+            f["comments"].append({"who": "Fact-checker", "agent": True, "at": time.time(), "checks": checks,
+                                  "text": f"Checked again. It holds up on all {len(checks)} checks:" if held == len(checks)
+                                  else f"Checked again. {held} of {len(checks)} checks hold up:"})
+    data = pbi_team.update(m.folder, add)
+    if "@scout" in said:  # after the comment is kept, so this finding (now in a thread) survives the new run
+        scouted = pbi_team.scout(m)
+        n = len(scouted.get("findings", {}))
+
+        def reply(d):
+            _finding(d, fid).setdefault("comments", []).append({
+                "who": "Scout", "agent": True, "at": time.time(),
+                "text": f"I checked all {scouted['scouted']['measures']} numbers again: {n} moved more than usual. "
+                        "The list on the left is up to date."})
+        data = pbi_team.update(m.folder, reply)
+    return _finding(data, fid)
+
+
+@app.post("/api/pbi/{mid}/team/{fid}/status")
+def team_status(mid: str, fid: str, body: dict = Body(...)):
+    """claimed (by `who`), acted (what was done, in `note`), resolved, or back to new."""
+    m = _model(mid)
+    status, who = str(body.get("status") or ""), str(body.get("who") or "Someone").strip()[:60]
+    if status not in ("new", "claimed", "acted", "resolved"):
+        raise HTTPException(400, "status is new, claimed, acted or resolved")
+    note = str(body.get("note") or "").strip()[:500]
+    _ensure(m, fid)
+
+    def set_(data):
+        f = _finding(data, fid)
+        f["status"] = status
+        if status == "claimed":
+            f["owner"] = who
+        say = {"new": "reopened it", "claimed": "took it", "acted": "marked it acted on", "resolved": "resolved it"}[status]
+        f.setdefault("comments", []).append({"who": who, "event": status, "at": time.time(),
+                                             "text": f"{say}" + (f": {note}" if note else "")})
+    return _finding(pbi_team.update(m.folder, set_), fid)
+
+
+# ------------------------------------------------------------------ agents on call, and each person's dashboard
+
+@app.post("/api/pbi/{mid}/explain")
+def explain(mid: str, body: dict = Body(...)):
+    """Why a measure moved between two periods (the Investigator), as the investigation itself."""
+    m = _model(mid)
+    kit = m.kit()
+    try:
+        out = kit.explain(str(body["metric"]), str(body["period"]), str(body["now"]), str(body["before"]),
+                          body.get("filters") or None)
+    except KeyError as exc:
+        raise HTTPException(400, f"give {exc.args[0]}") from None
+    if out.startswith("Error"):
+        raise HTTPException(400, out[len("Error: "):])
+    return {"explain": kit.results[-1]["explain"], "said": out}
+
+
+@app.post("/api/pbi/{mid}/check")
+def check(mid: str, body: dict = Body(...)):
+    """The fact-checker on an investigation: is the month complete, many transactions, spread out, not the season."""
+    m = _model(mid)
+    inv = body.get("explain")
+    if not inv or not inv.get("steps"):
+        raise HTTPException(400, "nothing to check: the investigation found no single cause")
+    return {"checks": pbi_team.skeptic(m.kit(), inv)}
+
+
+def _boards(folder) -> Path:
+    return Path(folder) / "boards.json"
+
+
+@app.get("/api/pbi/{mid}/board")
+def board(mid: str, owner: str):
+    """A person's dashboard: the questions they pinned, each re-run when it is opened."""
+    p = _boards(_model(mid).folder)
+    data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    return data.get(owner.strip().lower(), {"owner": owner, "tiles": []})
+
+
+@app.post("/api/pbi/{mid}/board")
+def board_save(mid: str, body: dict = Body(...)):
+    owner = str(body.get("owner") or "").strip()[:60]
+    if not owner:
+        raise HTTPException(400, "say who you are: the dashboard is yours")
+    tiles = body.get("tiles")
+    if not isinstance(tiles, list) or len(tiles) > 40:
+        raise HTTPException(400, "tiles is a list of at most 40 pinned questions")
+    m = _model(mid)
+
+    def put(data):
+        data[owner.lower()] = {"owner": owner, "tiles": tiles, "at": time.time()}
+    with pbi_team._LOCK:
+        p = _boards(m.folder)
+        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        put(data)
+        p.write_text(json.dumps(data, indent=1, default=str), encoding="utf-8")
+    return data[owner.lower()]

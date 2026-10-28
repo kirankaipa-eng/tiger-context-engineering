@@ -140,7 +140,7 @@ def load_access(path: str | Path, roles=None) -> dict[str, list[str]]:
     import yaml
     path = Path(path)
     try:
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as e:
         raise ValueError(f"{path}: cannot read ({e})") from None
     if not isinstance(data, dict) or not isinstance(data.get("roles", {}), dict) or set(data) - {"roles"}:

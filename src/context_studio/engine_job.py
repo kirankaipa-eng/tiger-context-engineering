@@ -53,7 +53,7 @@ def run(job: dict) -> dict:
         import re
         from insurance_context import powerbi
         from insurance_context.overlay import CONTENT_ROOT
-        current = (CONTENT_ROOT / job["tmdl"]).read_text()
+        current = (CONTENT_ROOT / job["tmdl"]).read_text(encoding="utf-8")
         names = [n for n in re.findall(r"annotation GovernedMetric = (\w+)", current) if n in sl.metrics]
         names += [n for n in job.get("set_metrics") or [] if n in sl.metrics and n not in names]
         out["tmdl"] = powerbi.to_tmdl(sl, names)[0] + "\n"

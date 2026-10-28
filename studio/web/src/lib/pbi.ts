@@ -61,6 +61,29 @@ export const pbi = {
   explore: (id: string, body: ExploreBody) => call<Result>(`${m(id)}/explore`, { method: "POST", body: JSON.stringify(body) }),
   rows: (id: string, body: { metric: string; filters?: Record<string, unknown>; limit?: number }) => call<RowsBehind>(`${m(id)}/rows`, { method: "POST", body: JSON.stringify(body) }),
   askPath: (id: string) => `${m(id)}/ask`,
+  explain: (id: string, body: { metric: string; period: string; now: string; before: string; filters?: Record<string, unknown> }) =>
+    call<{ explain: import("@/components/pbi-investigation").Investigation; said: string }>(`${m(id)}/explain`, { method: "POST", body: JSON.stringify(body) }),
+  check: (id: string, explain: unknown) => call<{ checks: Check[] }>(`${m(id)}/check`, { method: "POST", body: JSON.stringify({ explain }) }),
+  board: (id: string, owner: string) => call<Board>(`${m(id)}/board?owner=${encodeURIComponent(owner)}`),
+  saveBoard: (id: string, owner: string, tiles: Tile[]) => call<Board>(`${m(id)}/board`, { method: "POST", body: JSON.stringify({ owner, tiles }) }),
+  team: (id: string) => call<Team>(`${m(id)}/team`),
+  scout: (id: string) => call<Team>(`${m(id)}/team/scout`, { method: "POST" }),
+  comment: (id: string, fid: string, who: string, text: string) =>
+    call<Finding>(`${m(id)}/team/${fid}/comment`, { method: "POST", body: JSON.stringify({ who, text }) }),
+  status: (id: string, fid: string, who: string, status: Finding["status"], note?: string) =>
+    call<Finding>(`${m(id)}/team/${fid}/status`, { method: "POST", body: JSON.stringify({ who, status, note }) }),
+};
+
+export type Check = { check: string; passed: boolean | null; said: string };
+export type Finding = {
+  id: string; metric: string; label: string; now: string; before: string; impact: number; also: string[];
+  explain: import("@/components/pbi-investigation").Investigation; checks: Check[]; status: "new" | "claimed" | "acted" | "resolved";
+  owner?: string | null; created: number; source: string;
+  comments: { who: string; text: string; at: number; agent?: boolean; event?: string; checks?: Check[] }[];
+};
+export type Team = {
+  model: string; findings: Finding[];
+  scouted: { at: number; ms: number; measures: number; checked: { metric: string; label: string; now: string; before: string; verdict: string }[] } | null;
 };
 
 /** "'Associated Product'[Product]:month" -> { table, column, grain } */
@@ -92,3 +115,11 @@ export function columnTypes(tables: PbiTable[]) {
   for (const t of tables) for (const c of t.columns) types[`${/^[A-Za-z_][A-Za-z0-9_]*$/.test(t.name) ? t.name : `'${t.name.replace(/'/g, "''")}'`}[${c.name}]`] = c.type ?? "";
   return { types, dates: Object.keys(types).filter((k) => /^date/i.test(types[k])) };
 }
+
+/** A pinned question on a person's dashboard: re-run each time it is opened, never a copy of the numbers. */
+export type Tile = {
+  id: string; title: string; kind: "compute" | "explain"; at: number;
+  metrics?: string[]; by?: string[]; filters?: Record<string, unknown>; labels?: Record<string, string>;
+  explain?: { metric: string; period: string; now: string; before: string; filters?: Record<string, unknown> };
+};
+export type Board = { owner: string; tiles: Tile[]; at?: number };

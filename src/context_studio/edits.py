@@ -38,13 +38,13 @@ def _yaml() -> YAML:
 def _load(path: Path):
     if not path.exists():
         raise EditError(f"{path.name} does not exist")
-    return _yaml().load(path.read_text())
+    return _yaml().load(path.read_text(encoding="utf-8"))
 
 
 def _dump(path: Path, data) -> None:
     buf = io.StringIO()
     _yaml().dump(data, buf)
-    path.write_text(buf.getvalue())
+    path.write_text(buf.getvalue(), encoding="utf-8")
 
 
 def _child(m: CommentedMap, key: str) -> CommentedMap:
@@ -62,7 +62,7 @@ def _pack_files(root: Path) -> list[Path]:
 
 
 def _client_line(root: Path, client: str) -> str:
-    return pyyaml.safe_load(_client_file(root, client).read_text())["line"]
+    return pyyaml.safe_load(_client_file(root, client).read_text(encoding="utf-8"))["line"]
 
 
 def _safe(root: Path, rel: str) -> Path:
@@ -124,7 +124,7 @@ def set_definition(root: Path, op: dict) -> list[str]:
               "layer": "client", "verified": None,
               "updated": datetime.now(timezone.utc).date().isoformat()}
     if path.exists():
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
         if raw.startswith("---"):
             _, head, _ = raw.split("---", 2)
             header = {**(pyyaml.safe_load(head) or {}), "updated": header["updated"]}
@@ -132,7 +132,7 @@ def set_definition(root: Path, op: dict) -> list[str]:
     body = f"# {header['title']}\n\n## Business definition\n\n{op['text'].strip()}\n"
     if examples:
         body += "\n## Examples\n\n" + "\n".join(f"- {e}" for e in examples) + "\n"
-    path.write_text("---\n" + pyyaml.safe_dump(header, sort_keys=False) + "---\n" + body)
+    path.write_text("---\n" + pyyaml.safe_dump(header, sort_keys=False) + "---\n" + body, encoding="utf-8")
     return [str(path.relative_to(root))]
 
 
@@ -161,7 +161,7 @@ def set_metric(root: Path, op: dict) -> list[str]:
 
 def _unit_dir(root: Path, client: str, unit: str) -> Path:
     """A unit by its code (PLH) or its name (Plains Health Plan), as client.yaml lists it."""
-    units = (pyyaml.safe_load(_client_file(root, client).read_text()) or {}).get("units") or []
+    units = (pyyaml.safe_load(_client_file(root, client).read_text(encoding="utf-8")) or {}).get("units") or []
     want = str(unit).strip().lower()
     for u in units:
         if want in (str(u.get("code", "")).lower(), str(u.get("name", "")).lower()):
@@ -193,7 +193,7 @@ def set_mapping(root: Path, op: dict) -> list[str]:
 def write_file(root: Path, op: dict) -> list[str]:
     path = _safe(root, op["path"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(op["content"])
+    path.write_text(op["content"], encoding="utf-8")
     return [op["path"]]
 
 

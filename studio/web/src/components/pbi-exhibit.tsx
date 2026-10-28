@@ -5,14 +5,16 @@
    captured definition and the SQL). Clicking a mark opens the drill menu: break that value down by
    another column, see its trend, open the rows behind it, or ask about it. */
 
-import { Check, TriangleAlert, X } from "lucide-react";
+import { Check, Pin, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AutoChart, DESK_PALETTE, blank, type ChartKind } from "./auto-chart";
+import { AutoChart, DESK_PALETTE, blank, isRatio, pctText, periodName, type ChartKind } from "./auto-chart";
 import { ResultTable, num } from "./pbi";
 import { colLabel, isDimension, pbi, splitRef, type PbiMetricDetail } from "@/lib/pbi";
 
 export type ExhibitData = {
-  kind: "compute" | "explore"; columns: string[]; rows: unknown[][]; metrics: string[]; by: string[];
+  kind: "compute" | "explore" | "explain";
+  /** An investigation (kind explain): why a measure changed, see pbi-investigation. */
+  explain?: import("./pbi-investigation").Investigation; columns: string[]; rows: unknown[][]; metrics: string[]; by: string[];
   filters: Record<string, unknown>; conditions?: string[]; sql?: string; ms?: number; warehouse?: string;
   labels: Record<string, string>; origin: "agent" | "drill"; question?: string; table?: string;
   /** The rows behind a measure's value: how many, what they add up to, and the value they explain. */
@@ -47,14 +49,37 @@ export type DeskActions = {
   drill: (e: ExhibitData, values: unknown[], by: string) => void;
   rows: (e: ExhibitData, values: unknown[]) => void;
   ask: (text: string) => void;
+  /** Pin the exhibit's question to the person's dashboard (it is re-run there, live). */
+  pin?: (e: ExhibitData) => void;
+  pinned?: (e: ExhibitData) => boolean;
 };
 
 const PERIOD = /:(year|quarter|month|week|day)$/;
 const pct = (x: number) => `${x >= 0 ? "+" : "−"}${Math.abs(x * 100).toFixed(1)}%`;
 
 export function exhibitTitle(e: ExhibitData) {
-  const what = e.metrics.length ? e.metrics.map((m) => e.labels[m] ?? m).join(" and ") : "Rows";
-  return e.by.length ? `${what} by ${e.by.map((d) => colLabel(d).replace(/ · .*$/, "")).join(" and ")}` : what;
+  const names = e.metrics.map((m) => e.labels[m] ?? m);
+  const what = !names.length ? "Transactions" : names.length <= 2 ? names.join(" and ") : `${names[0]} and ${names.length - 1} more`;
+  const by = (d: string) => PERIOD.test(d) ? d.match(PERIOD)![1] : colLabel(d).replace(/ · .*$/, "").toLowerCase();
+  return e.by.length ? `${what} by ${e.by.map(by).join(" and ")}` : what;
+}
+
+/** One row of numbers as figures, each in its own units. */
+function Tiles({ e }: { e: ExhibitData }) {
+  const row = e.rows[0];
+  return (
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-3">
+      {e.metrics.map((k) => {
+        const v = row[e.columns.indexOf(k)], label = e.labels[k] ?? k;
+        return (
+          <div key={k} className="rounded-xl border border-[var(--d-rule)] px-4 py-3.5">
+            <div className="text-[13px] leading-snug text-[var(--d-muted)]">{label}</div>
+            <div className="num cond mt-1.5 text-[28px] font-semibold leading-none text-[var(--d-ink)]">{isRatio(label, [v]) ? pctText(v) : num(v)}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function Headline({ e }: { e: ExhibitData }) {
@@ -67,7 +92,7 @@ function Headline({ e }: { e: ExhibitData }) {
         {e.metrics.map((k) => (
           <div key={k} className="mb-3">
             <div className="text-[13px] text-[var(--d-muted)]">{e.labels[k] ?? k}</div>
-            <div className="num text-[52px] font-semibold leading-none text-[var(--d-navy)]">{num(e.rows[0]?.[e.columns.indexOf(k)])}</div>
+            <div className="num text-[52px] font-semibold leading-none text-[var(--d-ink)]">{num(e.rows[0]?.[e.columns.indexOf(k)])}</div>
           </div>
         ))}
       </div>
@@ -78,11 +103,13 @@ function Headline({ e }: { e: ExhibitData }) {
     const rows = [...e.rows].sort((a, b) => String(a[i0]).localeCompare(String(b[i0])));
     const lastRow = rows[rows.length - 1], prev = rows[rows.length - 2];
     const v = Number(lastRow[iM] ?? 0), p = prev ? Number(prev[iM] ?? 0) : null;
+    const ratio = isRatio(e.labels[m] ?? m, rows.map((r) => r[iM]));
     return (
       <div className="self-center">
-        <div className="text-[13px] text-[var(--d-muted)]">{e.labels[m] ?? m}, {blank(lastRow[i0])}</div>
-        <div className="num text-[52px] font-semibold leading-none text-[var(--d-navy)]">{num(v)}</div>
-        {p !== null && p !== 0 && <div className="mt-3 text-[15px]"><span className="num font-semibold" style={{ color: v >= p ? "var(--d-teal)" : "var(--d-rise)" }}>{pct(v / p - 1)}</span> <span className="text-[var(--d-muted)]">vs {blank(prev![i0])}</span></div>}
+        <div className="text-[13px] text-[var(--d-muted)]">{e.labels[m] ?? m}, {periodName(lastRow[i0])}</div>
+        <div className="num text-[52px] font-semibold leading-none text-[var(--d-ink)]">{ratio ? pctText(v) : num(v)}</div>
+        {p !== null && (ratio ? <div className="mt-3 text-[15px] text-[var(--d-muted)]">{pctText(p)} in {periodName(prev![i0])}</div>
+          : p !== 0 && <div className="mt-3 text-[15px]"><span className="num font-semibold" style={{ color: v >= p ? "var(--d-teal)" : "var(--d-rise)" }}>{pct(v / p - 1)}</span> <span className="text-[var(--d-muted)]">vs {periodName(prev![i0])}</span></div>)}
       </div>
     );
   }
@@ -92,15 +119,15 @@ function Headline({ e }: { e: ExhibitData }) {
     return (
       <div className="self-center">
         <div className="text-[13px] text-[var(--d-muted)]">Highest {e.labels[m] ?? m}</div>
-        <div className="cond mt-0.5 truncate text-[22px] font-semibold text-[var(--d-navy)]" title={blank(top[i0])}>{blank(top[i0])}</div>
-        <div className="num text-[40px] font-semibold leading-none text-[var(--d-navy)]">{num(top[iM])}</div>
+        <div className="cond mt-0.5 truncate text-[22px] font-semibold text-[var(--d-ink)]" title={blank(top[i0])}>{blank(top[i0])}</div>
+        <div className="num text-[40px] font-semibold leading-none text-[var(--d-ink)]">{num(top[iM])}</div>
         {rows.length > 1 && <div className="mt-3 text-[13px] text-[var(--d-muted)]">Lowest: <span className="font-semibold text-[var(--d-ink-2)]">{blank(low[i0])}</span> {num(low[iM])}<br />{rows.length} {colLabel(e.by[0]).replace(/ · .*$/, "").toLowerCase()} values</div>}
       </div>
     );
   }
   return (
     <div className="self-center text-[13px] text-[var(--d-muted)]">
-      <div className="num text-[40px] font-semibold leading-none text-[var(--d-navy)]">{e.rows.length}</div>
+      <div className="num text-[40px] font-semibold leading-none text-[var(--d-ink)]">{e.rows.length}</div>
       combinations of {e.by.map((d) => colLabel(d).replace(/ · .*$/, "").toLowerCase()).join(" and ")}
     </div>
   );
@@ -120,6 +147,7 @@ export function PbiExhibit({ e, n, model, actions, landed, dates, types }: { e: 
   const next = (detail?.columns ?? []).filter((c) => !calendars.has(splitRef(c).table) && isDimension(c, types[c]) && !used.includes(c)).slice(0, 12);
   const trend = (detail?.columns ?? []).filter((c) => dates.includes(c) && !used.includes(c)).slice(0, 1);
   const chartable = e.metrics.length > 0 && e.by.length <= 2 && e.rows.length > 0;
+  const single = chartable && e.rows.length === 1;  // one row of numbers: figures, never a chart
   const showHead = chartable && (e.by.length <= 1);
   const filters = Object.entries(e.filters);
 
@@ -127,20 +155,25 @@ export function PbiExhibit({ e, n, model, actions, landed, dates, types }: { e: 
     <section id={`exhibit-${n}`} className={`rounded-xl border border-[var(--d-rule)] bg-[var(--d-sheet)] shadow-[0_1px_2px_rgba(20,35,56,.06)] ${landed ? "landed" : ""}`}>
       <div className="flex flex-wrap items-start gap-3 border-b border-[var(--d-rule)] px-6 pb-3 pt-4">
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-semibold uppercase tracking-[.08em] text-[var(--d-muted)]">Exhibit {n}{e.origin === "drill" ? (Object.keys(e.filters).length ? " · drill-down" : " · from the measure") : " · answer"}</div>
-          <h2 className="cond text-[21px] font-semibold leading-snug text-[var(--d-navy)]">{e.receipt ? `The rows behind ${e.receipt.label}` : exhibitTitle(e)}</h2>
-          {e.parent && <div className="mt-0.5 text-[13px] text-[var(--d-ink-2)]">Breaking down {e.parent.label} for {e.parent.within}: <span className="num font-semibold text-[var(--d-navy)]">{num(e.parent.value)}</span></div>}
+          <div className="text-[11px] font-semibold uppercase tracking-[.08em] text-[var(--d-muted)]">{n ? `Exhibit ${n} · ` : ""}{e.origin === "drill" ? (e.receipt ? "the transactions" : Object.keys(e.filters).length ? "drill-down" : "from the measure") : "answer"}</div>
+          <h2 className="cond text-[21px] font-semibold leading-snug text-[var(--d-ink)]">{e.receipt ? `The rows behind ${e.receipt.label}` : exhibitTitle(e)}</h2>
+          {e.parent && <div className="mt-0.5 text-[13px] text-[var(--d-ink-2)]">Breaking down {e.parent.label} for {e.parent.within}: <span className="num font-semibold text-[var(--d-ink)]">{num(e.parent.value)}</span></div>}
           {(filters.length > 0 || (e.conditions?.length ?? 0) > 0) && (
             <div className="mt-1.5 flex flex-wrap gap-1.5">
-              {filters.map(([k, v]) => <span key={k} className="rounded-full bg-[var(--d-teal-soft)] px-2.5 py-0.5 text-[12px] text-[var(--d-teal)]">{colLabel(k).replace(/ · .*$/, "")} = <b>{blank(v)}</b></span>)}
+              {filters.map(([k, v]) => <span key={k} className="rounded-full bg-[var(--d-teal-soft)] px-2.5 py-0.5 text-[12px] text-[var(--d-teal)]">{PERIOD.test(k) ? k.match(PERIOD)![1][0].toUpperCase() + k.match(PERIOD)![1].slice(1) : colLabel(k).replace(/ · .*$/, "")}: <b>{Array.isArray(v) ? v.map((x) => periodName(x)).join(", ") : periodName(v)}</b></span>)}
               {e.conditions?.map((c) => <span key={c} className="rounded-full bg-[var(--d-paper)] px-2.5 py-0.5 font-mono text-[11px] text-[var(--d-ink-2)]">{c}</span>)}
             </div>
           )}
         </div>
         <span className={`rounded-full px-2.5 py-0.5 text-[12px] font-semibold ${e.kind === "compute" ? "bg-[var(--d-teal-soft)] text-[var(--d-teal)]" : "bg-[var(--d-paper)] text-[var(--d-ink-2)]"}`}
           title={e.kind === "compute" ? "Computed from the Power BI model's own measure definitions" : "Rows of the model's tables, not a Power BI measure"}>
-          {e.kind === "compute" ? "Power BI measure" : e.receipt ? "Receipt" : "Raw rows"}
+          {e.kind === "compute" ? "From your Power BI report" : e.receipt ? "Checked against the transactions" : "Transactions"}
         </span>
+        {actions.pin && e.kind === "compute" && (
+          <button onClick={() => actions.pin!(e)} aria-pressed={actions.pinned?.(e)} title="Pin to my dashboard"
+            className={`flex items-center gap-1 rounded-md px-2 py-1 text-[12px] ${actions.pinned?.(e) ? "text-[var(--d-teal)]" : "text-[var(--d-ink-2)] hover:bg-[var(--d-paper)]"}`}>
+            <Pin size={13} className={actions.pinned?.(e) ? "fill-current" : ""} />{actions.pinned?.(e) ? "Pinned" : "Pin"}</button>
+        )}
         <div className="flex gap-1">
           {(chartable ? ["chart", "table", "how"] as const : ["table", "how"] as const).map((t) => (
             <button key={t} onClick={() => setTab(t)} className={`rounded-md px-2.5 py-1 text-[12px] ${tab === t ? "bg-[var(--d-navy)] text-white" : "text-[var(--d-ink-2)] hover:bg-[var(--d-paper)]"}`}>
@@ -152,8 +185,9 @@ export function PbiExhibit({ e, n, model, actions, landed, dates, types }: { e: 
 
       {e.receipt && <ReceiptBand r={e.receipt} />}
       <div ref={box} className="relative px-6 pb-5 pt-4">
-        {tab === "chart" && chartable && (
-          <div className={showHead ? "grid gap-6 md:grid-cols-[230px_1fr]" : ""}>
+        {tab === "chart" && single && <Tiles e={e} />}
+        {tab === "chart" && chartable && !single && (
+          <div className={showHead ? "grid gap-6 md:grid-cols-[230px_minmax(0,1fr)]" : ""}>
             {showHead && <Headline e={e} />}
             {e.by.length > 0 ? (
               <AutoChart columns={e.columns} rows={e.rows} dims={e.by} metrics={e.metrics} labels={e.labels} kind={kind} onKind={setKind} palette={DESK_PALETTE} height={300}
@@ -174,7 +208,9 @@ export function PbiExhibit({ e, n, model, actions, landed, dates, types }: { e: 
         {menu && <DrillMenu e={e} at={menu} model={model} detail={detail} next={next} trend={trend} actions={actions} onClose={() => setMenu(null)} />}
       </div>
       <div className="border-t border-[var(--d-rule)] px-6 py-2 text-[12px] text-[var(--d-muted)]">
-        {e.receipt?.row_count != null && e.receipt.row_count > e.rows.length ? `${e.rows.length} of ${num(e.receipt.row_count)} rows shown` : `${e.rows.length} row${e.rows.length === 1 ? "" : "s"}`}{tab === "how" ? ` · ${e.warehouse ?? ""}` : ""}{tab === "chart" && e.kind === "compute" && e.by.length ? " · click a bar, point or cell to drill in" : ""}
+        {tab === "chart" && e.kind === "compute" && e.by.length ? "Click any point to see what's behind it"
+          : e.receipt?.row_count != null && e.receipt.row_count > e.rows.length ? `Showing ${e.rows.length} of ${num(e.receipt.row_count)} transactions`
+          : `${e.rows.length} ${e.receipt || e.kind === "explore" ? "transaction" : "line"}${e.rows.length === 1 ? "" : "s"}`}{tab === "how" ? ` · ${e.warehouse ?? ""}` : ""}
       </div>
     </section>
   );
@@ -185,7 +221,7 @@ function MetricHow({ model, k, label }: { model: string; k: string; label: strin
   useEffect(() => { pbi.metric(model, k).then(setD).catch(() => {}); }, [model, k]);
   return (
     <div>
-      <div className="font-semibold text-[var(--d-navy)]">{label}</div>
+      <div className="font-semibold text-[var(--d-ink)]">{label}</div>
       {d?.definition && <div className="font-mono text-[12px]">{d.definition}</div>}
       {d?.parts?.map((p) => <div key={p.key} className="ml-3 font-mono text-[11px] text-[var(--d-muted)]">{p.key} = {p.definition}</div>)}
       {d?.dax && <details className="mt-1"><summary className="cursor-pointer text-[var(--d-muted)]">The DAX in Power BI</summary><pre className="mt-1 whitespace-pre-wrap font-mono text-[11px]">{d.dax}</pre></details>}
@@ -276,17 +312,17 @@ function DrillMenu({ e, at, model, detail, next, trend, actions, onClose }: {
   const item = "block w-full rounded-md px-2 py-1.5 text-left hover:bg-[var(--d-teal-soft)] focus:bg-[var(--d-teal-soft)] focus:outline-none";
 
   return (
-    <div role="menu" aria-label={`Drill into ${within}`} className="absolute z-20 max-h-[460px] w-[340px] overflow-y-auto rounded-xl border border-[var(--d-rule)] bg-white p-2 text-[13px] shadow-xl"
+    <div role="menu" aria-label={`Drill into ${within}`} className="absolute z-20 max-h-[460px] w-[340px] overflow-y-auto rounded-xl border border-[var(--d-rule)] bg-[var(--d-sheet)] p-2 text-[13px] shadow-xl"
       style={{ left: Math.min(at.x, Math.max(8, at.x - 40)), top: at.y }}>
       <div className="flex items-start gap-2 px-2 pb-2">
         <div className="min-w-0 flex-1">
-          <div className="cond truncate text-[17px] font-semibold text-[var(--d-navy)]">{within || label}</div>
+          <div className="cond truncate text-[17px] font-semibold text-[var(--d-ink)]">{within || label}</div>
           {value !== undefined && (
-            <div className="text-[13px] text-[var(--d-ink-2)]">{label} <span className="num font-semibold text-[var(--d-navy)]">{num(value)}</span>
+            <div className="text-[13px] text-[var(--d-ink-2)]">{label} <span className="num font-semibold text-[var(--d-ink)]">{num(value)}</span>
               {total && typeof value === "number" ? <> · <span className="num font-semibold">{(100 * value / total).toFixed(0)}%</span> of {num(total)}</> : null}</div>
           )}
         </div>
-        <button onClick={onClose} aria-label="Close" className="text-[var(--d-muted)] hover:text-[var(--d-navy)]"><X size={14} /></button>
+        <button onClick={onClose} aria-label="Close" className="text-[var(--d-muted)] hover:text-[var(--d-ink)]"><X size={14} /></button>
       </div>
       {e.kind === "compute" && (
         <>
@@ -296,27 +332,27 @@ function DrillMenu({ e, at, model, detail, next, trend, actions, onClose }: {
           {shown.map((x, i) => (
             <button key={x.by} ref={i === 0 ? first : undefined} role="menuitem" onClick={() => { onClose(); actions.drill(e, at.values, x.by); }} className={item}>
               <div className="flex items-baseline gap-2">
-                <span className="min-w-0 flex-1 truncate font-semibold text-[var(--d-navy)]">{colLabel(x.by).replace(/ · .*$/, "")}</span>
+                <span className="min-w-0 flex-1 truncate font-semibold text-[var(--d-ink)]">{colLabel(x.by).replace(/ · .*$/, "")}</span>
                 <span className="shrink-0 text-[12px] text-[var(--d-ink-2)]">{x.n} values</span>
               </div>
               <div className="mt-0.5 flex items-center gap-2 text-[12px] text-[var(--d-ink-2)]">
-                <span className="min-w-0 flex-1 truncate">{x.share !== null ? <>{blank(x.top)} holds <b className="num text-[var(--d-navy)]">{(100 * x.share).toFixed(0)}%</b></> : <>highest {blank(x.top)} <b className="num text-[var(--d-navy)]">{num(x.topValue)}</b></>}</span>
+                <span className="min-w-0 flex-1 truncate">{x.share !== null ? <>{blank(x.top)} holds <b className="num text-[var(--d-ink)]">{(100 * x.share).toFixed(0)}%</b></> : <>highest {blank(x.top)} <b className="num text-[var(--d-ink)]">{num(x.topValue)}</b></>}</span>
                 {x.share !== null && <span className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--d-paper)]"><span className="block h-full bg-[var(--d-teal)]" style={{ width: `${Math.round(100 * x.share)}%` }} /></span>}
               </div>
             </button>
           ))}
           {(useful.length > 4 || flat.length > 0) && (
             <button role="menuitem" onClick={() => setMore(!more)} className={`${item} text-[12px] text-[var(--d-ink-2)]`}>
-              {more ? "Fewer" : `More (${useful.length - shown.length} more${flat.length ? `, ${flat.length} with one value` : ""})`}
+              {more ? "Fewer" : `${useful.length - shown.length} more way${useful.length - shown.length === 1 ? "" : "s"} to split it`}
             </button>
           )}
           {more && flat.map((x) => <div key={x.by} className="px-2 py-1 text-[12px] text-[var(--d-ink-2)]">{colLabel(x.by).replace(/ · .*$/, "")}: only {blank(x.top)}</div>)}
-          {trend.map((d) => <button key={d} role="menuitem" onClick={() => { onClose(); actions.drill(e, at.values, `${d}:month`); }} className={`${item} mt-1 border-t border-[var(--d-rule)] pt-2`}>Trend by month</button>)}
+          {trend.map((d) => <button key={d} role="menuitem" onClick={() => { onClose(); actions.drill(e, at.values, `${d}:month`); }} className={`${item} mt-1 border-t border-[var(--d-rule)] pt-2`}>See it month by month</button>)}
           {!detail && <div className="px-2 py-1 text-[12px] text-[var(--d-muted)]">Reading the columns…</div>}
         </>
       )}
       <div className="mt-1 border-t border-[var(--d-rule)] pt-1">
-        <button role="menuitem" onClick={() => { onClose(); actions.rows(e, at.values); }} className={item}>Show the rows behind it</button>
+        <button role="menuitem" onClick={() => { onClose(); actions.rows(e, at.values); }} className={item}>See the transactions</button>
         <button role="menuitem" onClick={() => {
           onClose();
           const where = e.by.map((d, i) => (at.values[i] !== undefined ? `${colLabel(d).replace(/ · .*$/, "")} = ${blank(at.values[i])}` : "")).filter(Boolean).join(", ");

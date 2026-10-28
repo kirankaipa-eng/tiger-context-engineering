@@ -41,14 +41,14 @@ class Unit:
         path = self.path / "mappings.yaml"
         if not path.exists():
             raise OverlayError(f"Unit {self.code} has no mappings.yaml at {path}")
-        return yaml.safe_load(path.read_text())
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
 
     @cached_property
     def overlay(self) -> dict | None:
         path = self.path / "overlay.yaml"
         if not path.exists():
             return None
-        ov = yaml.safe_load(path.read_text())
+        ov = yaml.safe_load(path.read_text(encoding="utf-8"))
         ov.setdefault("client", f"{self.client.name}_{self.code.lower()}")
         ov.setdefault("prefix", f"{self.client.prefix}_{self.code.lower()}")
         ov.setdefault("namespace", f"{self.client.namespace}units/{self.code.lower()}/")
@@ -69,7 +69,7 @@ class Client:
         path = self.dir / "client.yaml"
         if not path.exists():
             raise OverlayError(f"No client config at {path}")
-        self.config: dict = yaml.safe_load(path.read_text())
+        self.config: dict = yaml.safe_load(path.read_text(encoding="utf-8"))
         if self.config.get("client") != name:
             raise OverlayError(f"{path}: client is {self.config.get('client')!r}, expected {name!r}")
 
@@ -80,7 +80,7 @@ class Client:
     @cached_property
     def line_version(self) -> str:
         """Version of the line pack itself (overlays carry their own version)."""
-        pack = yaml.safe_load((LINES_DIR / f"{self.line}.yaml").read_text())
+        pack = yaml.safe_load((LINES_DIR / f"{self.line}.yaml").read_text(encoding="utf-8"))
         return str(pack.get("version", "0"))
 
     @property

@@ -67,7 +67,7 @@ def corpus_dir(studio: Studio, client: str) -> Path:
 def load_corpus(folder: Path) -> list[Passage]:
     out = []
     for path in sorted(folder.glob("*.md")):
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
         if not raw.startswith("---"):
             continue
         _, header, body = raw.split("---", 2)
@@ -85,7 +85,7 @@ def documents(studio: Studio, client: str) -> list[dict]:
     folder = corpus_dir(studio, client)
     docs = []
     for path in sorted(folder.glob("*.md")) if folder.exists() else []:
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
         meta = yaml.safe_load(raw.split("---", 2)[1]) if raw.startswith("---") else {}
         docs.append({"doc": path.name, "title": meta.get("title", path.stem), "kind": meta.get("kind", ""),
                      "date": str(meta.get("date", "")), "source": meta.get("source", ""),
@@ -161,7 +161,7 @@ DOCUMENT "{title}" ({kind}):
 
 
 def _doc_text(folder: Path, doc: str) -> tuple[str, dict]:
-    raw = (folder / doc).read_text()
+    raw = (folder / doc).read_text(encoding="utf-8")
     _, header, body = raw.split("---", 2)
     return body.strip(), yaml.safe_load(header) or {}
 
@@ -171,7 +171,7 @@ def read_document(folder: Path, doc: str, vocab: dict, complete, cache: Path | N
     key = hashlib.sha1((body + json.dumps(vocab, sort_keys=True)).encode()).hexdigest()[:16]
     hit = cache / f"{doc}.{key}.json" if cache else None
     if hit and hit.exists():
-        items = json.loads(hit.read_text())
+        items = json.loads(hit.read_text(encoding="utf-8"))
     else:
         prompt = _PROMPT.format(enums=json.dumps(vocab["enums"]), used_by=json.dumps(vocab["used_by"]),
                                 concepts=json.dumps(vocab["concepts"]), metrics=json.dumps(vocab["metrics"]),
@@ -191,7 +191,7 @@ def read_document(folder: Path, doc: str, vocab: dict, complete, cache: Path | N
                 time.sleep(3 * (attempt + 1))
         if hit:
             hit.parent.mkdir(parents=True, exist_ok=True)
-            hit.write_text(json.dumps(items))
+            hit.write_text(json.dumps(items), encoding="utf-8")
     claims = []
     for it in items:
         claims.append(Claim(doc, str(meta.get("title", doc)), str(meta.get("kind", "")), int(it.get("page") or 1),
@@ -477,13 +477,13 @@ def scan(studio: Studio, client: str, docs: list[str] | None = None, complete=No
               "set_aside": set_aside, "llm": complete is not None}
     out = studio.s.home / "curator" / client / "last_scan.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(report, indent=2, default=str))
+    out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     return report
 
 
 def last_scan(studio: Studio, client: str) -> dict | None:
     path = studio.s.home / "curator" / client / "last_scan.json"
-    return json.loads(path.read_text()) if path.exists() else None
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
 def evaluate(studio: Studio, client: str, report: dict) -> dict:
@@ -491,7 +491,7 @@ def evaluate(studio: Studio, client: str, report: dict) -> dict:
     key_path = corpus_dir(studio, client) / "answer_key.yaml"
     if not key_path.exists():
         return {}
-    key = yaml.safe_load(key_path.read_text())
+    key = yaml.safe_load(key_path.read_text(encoding="utf-8"))
     acted = {(r.get("doc"), r.get("page")) for r in report.get("results", [])}
     for r in report.get("results", []):
         if r.get("id"):

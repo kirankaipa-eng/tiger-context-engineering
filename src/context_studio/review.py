@@ -51,13 +51,13 @@ class LocalReviews:
         path = self._path(pid)
         if not path.exists():
             raise KeyError(pid)
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def list(self) -> list[dict]:
         out = []
         for p in self.folder.glob("*.json"):
             try:
-                out.append(json.loads(p.read_text()))
+                out.append(json.loads(p.read_text(encoding="utf-8")))
             except ValueError:  # one damaged record must not take the whole inbox down
                 print(f"context-studio: skipping unreadable review record {p.name}", file=sys.stderr)
         return sorted(out, key=lambda r: r.get("updated_at", ""), reverse=True)
@@ -68,7 +68,7 @@ class LocalReviews:
             path = self._path(record["id"])
             # Write then rename: a reader (or another process) never sees a half-written record.
             tmp = path.with_suffix(f".{os.getpid()}.tmp")
-            tmp.write_text(json.dumps(record, indent=2))
+            tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
             os.replace(tmp, path)
         return record
 

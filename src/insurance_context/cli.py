@@ -206,7 +206,7 @@ def cmd_drift(args):
         out = c.dir / "proposals"
         out.mkdir(exist_ok=True)
         for p in proposals:
-            (out / f"{p.id}.yaml").write_text(yaml.safe_dump(p.as_dict(), sort_keys=False, allow_unicode=True))
+            (out / f"{p.id}.yaml").write_text(yaml.safe_dump(p.as_dict(), sort_keys=False, allow_unicode=True), encoding="utf-8")
         print(f"wrote {len(proposals)} proposal(s) to {out}/")
     for p in proposals:
         print(f"\n{p.id}  [{p.status}]  {p.kind}  -> {p.layer}")
@@ -367,7 +367,7 @@ def cmd_pbi_export(args):
     else:
         raise SystemExit(f"{src}: give a .pbix, a .pbit, a TMDL folder or a folder `ictx pbi import` wrote")
     files = export(layer, out)
-    print((out / "export.md").read_text())
+    print((out / "export.md").read_text(encoding="utf-8"))
     print("files:")
     for f in files:
         print(f"  {f}")
@@ -540,7 +540,7 @@ def cmd_pbi_drift(args):
         ok, report = run_drift(path, prefer=args.target)
     print(report)
     if args.out:
-        Path(args.out).write_text(report)
+        Path(args.out).write_text(report, encoding="utf-8")
     if args.issue:
         print(drift_issue(ok, report, args.project), file=sys.stderr)
     return 0 if ok else 1
@@ -594,7 +594,16 @@ def cmd_pbi_serve(args):
     return 0
 
 
+def utf8_console() -> None:
+    """Windows consoles default to a code page (cp1252) that cannot print the arrows and dashes in our
+    reports; write UTF-8 instead, and never fail on a character the console cannot show."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure") and (stream.encoding or "").lower().replace("-", "") != "utf8":
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    utf8_console()
     p = argparse.ArgumentParser(prog="ictx", description="Insurance enterprise context layer")
     sub = p.add_subparsers(dest="cmd", required=True)
 

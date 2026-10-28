@@ -94,7 +94,7 @@ class SemanticLayer:
         self.client = client
         self.sv = client.resolved.view
         path = metrics_file or METRICS_DIR / f"{client.line}.yaml"
-        spec = yaml.safe_load(path.read_text()) if path.exists() else {}
+        spec = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
         self.version = spec.get("version", "0")
         self.derived: dict[str, dict] = spec.get("derived") or {}
         self.dimensions = {

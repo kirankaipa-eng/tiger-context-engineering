@@ -141,18 +141,18 @@ class Transcripts:
         from datetime import datetime, timezone
         path = self._path(client, session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        data = json.loads(path.read_text()) if path.exists() else {
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {
             "id": session_id, "user": user, "title": turn["user"][:80], "turns": []}
         turn["at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         data["turns"].append(turn)
         data["updated_at"] = turn["at"]
-        path.write_text(json.dumps(data, default=str))
+        path.write_text(json.dumps(data, default=str), encoding="utf-8")
 
     def list(self, client: str, user: str) -> list[dict]:
         folder = self.folder / client
         out = []
         for p in folder.glob("*.json") if folder.exists() else []:
-            d = json.loads(p.read_text())
+            d = json.loads(p.read_text(encoding="utf-8"))
             if d.get("user") == user:
                 out.append({"id": d["id"], "title": d["title"], "turns": len(d["turns"]),
                             "updated_at": d.get("updated_at")})
@@ -162,7 +162,7 @@ class Transcripts:
         path = self._path(client, session_id)
         if not path.exists():
             raise KeyError(session_id)
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def delete(self, client: str, session_id: str, user: str) -> None:
         d = self.get(client, session_id)
@@ -295,7 +295,7 @@ class StudioChat:
             import yaml as _yaml
             out = []
             for path in sorted((studio.s.main / "clients" / client / "units").glob("*/mappings.yaml")):
-                spec = (_yaml.safe_load(path.read_text()) or {})
+                spec = (_yaml.safe_load(path.read_text(encoding="utf-8")) or {})
                 cls = (spec.get("classes") or {}).get(concept)
                 if cls is not None:
                     out.append(f"Unit {spec.get('unit')} (source schema {spec.get('source_schema')}):\n"

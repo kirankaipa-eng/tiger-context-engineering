@@ -76,7 +76,7 @@ class LocalCaptures:
         self.folder = Path(folder)
 
     def current(self) -> tuple[str, Path]:
-        v = json.loads((self.folder / VERSION).read_text()) if (self.folder / VERSION).exists() else {}
+        v = json.loads((self.folder / VERSION).read_text(encoding="utf-8")) if (self.folder / VERSION).exists() else {}
         return v.get("version", "local"), self.folder
 
 
@@ -165,7 +165,7 @@ class Served:
         for name in self.only or names:
             layer = BILayer.load(folder / name)
             models[name] = (layer, self._warehouse(folder / name, layer))
-        info = json.loads((folder / VERSION).read_text()) if (folder / VERSION).exists() else {}
+        info = json.loads((folder / VERSION).read_text(encoding="utf-8")) if (folder / VERSION).exists() else {}
         return Release(version, info, key, models)
 
     def reload(self, force: bool = False) -> None:
@@ -251,7 +251,7 @@ class ApiKeys:
         import yaml
         mtime = self.path.stat().st_mtime_ns
         if mtime != self._mtime:
-            raw = yaml.safe_load(self.path.read_text()) or {}
+            raw = yaml.safe_load(self.path.read_text(encoding="utf-8")) or {}
             self._keys = {str(h).lower(): Principal(str(v["principal"]), tuple(v.get("groups") or ()))
                           for h, v in raw.items()}
             self._mtime = mtime
@@ -349,7 +349,7 @@ class Audit:
                           default=str, ensure_ascii=False)
         with self._lock:
             if self.path:
-                with self.path.open("a") as f:
+                with self.path.open("a", encoding="utf-8") as f:
                     f.write(line + "\n")
             else:
                 print(line, file=sys.stderr, flush=True)

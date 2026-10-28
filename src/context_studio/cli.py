@@ -20,6 +20,8 @@ import sys
 
 
 def main(argv: list[str] | None = None) -> None:
+    from insurance_context.cli import utf8_console
+    utf8_console()
     ap = argparse.ArgumentParser(prog="ctx-studio")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init")
@@ -153,14 +155,14 @@ def onboard(st, client: str) -> dict:
     src = Path(__file__).resolve().parents[2] / "clients" / client
     if not src.exists():
         raise SystemExit(f"no client {client!r} in this checkout")
-    ops = [{"op": "write_file", "path": str(p.relative_to(src.parents[1])), "content": p.read_text()}
+    ops = [{"op": "write_file", "path": str(p.relative_to(src.parents[1])), "content": p.read_text(encoding="utf-8")}
            for p in sorted(src.rglob("*")) if p.is_file() and "data" not in p.relative_to(src).parts
            and p.suffix in (".yaml", ".yml", ".md", ".tmdl")]
     # Owners: add the client's people and areas from the seed to the repo's owners.yaml.
     y = YAML()
     y.preserve_quotes = True
-    live = y.load((st.s.main / "owners.yaml").read_text())
-    seed = y.load((Path(__file__).parent / "seed" / "owners.yaml").read_text())
+    live = y.load((st.s.main / "owners.yaml").read_text(encoding="utf-8"))
+    seed = y.load((Path(__file__).parent / "seed" / "owners.yaml").read_text(encoding="utf-8"))
     prefix = client.split("_")[0]
     for section in ("people", "areas"):
         for key, val in seed[section].items():

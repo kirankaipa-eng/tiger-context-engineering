@@ -132,7 +132,7 @@ class Insights:
         folder = self.studio.s.main / "clients" / self.client / "powerbi"
         out = []
         for path in sorted(folder.glob("*.crosswalk.yaml")) if folder.exists() else []:
-            doc = yaml.safe_load(path.read_text()) or {}
+            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             out += [{"model": doc.get("model"), "measure": m["name"]} for m in doc.get("measures", [])
                     if m.get("metric") == metric and m.get("status") == "governed"]
         return out

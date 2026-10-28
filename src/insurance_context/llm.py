@@ -26,7 +26,7 @@ def _dotenv_value(raw: str) -> str:
 def _load_dotenv(path: Path = Path(".env")) -> None:
     if not path.exists():
         return
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)

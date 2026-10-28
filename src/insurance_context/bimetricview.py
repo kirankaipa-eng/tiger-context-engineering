@@ -344,13 +344,13 @@ def export(layer: BILayer, out: str | Path) -> list[Path]:
         doc = v.view_yaml()
         text = yaml.safe_dump(doc, sort_keys=False, allow_unicode=True, width=120)
         yaml.safe_load(text)  # what we write must read back
-        (out / f"{v.name}.yaml").write_text(text)
+        (out / f"{v.name}.yaml").write_text(text, encoding="utf-8")
         (out / f"{v.name}.sql").write_text(f"CREATE OR REPLACE VIEW {v.view_name}\nWITH METRICS\nLANGUAGE YAML\nAS $$\n"
-                                           f"{text}$$;\n")
+                                           f"{text}$$;\n", encoding="utf-8")
         (out / f"{v.name}.context.yaml").write_text(
             "# Context for the metric view the Databricks specification has no place for. Keys match\n"
             f"# {v.name}.yaml's measure names; `not_in_view` metrics are answered by our engine.\n"
-            + yaml.safe_dump(v.context_yaml(), sort_keys=False, allow_unicode=True, width=120))
+            + yaml.safe_dump(v.context_yaml(), sort_keys=False, allow_unicode=True, width=120), encoding="utf-8")
         files += [out / f"{v.name}{s}" for s in (".yaml", ".sql", ".context.yaml")]
         exact = sum(1 for c in v.context.values() if c["fidelity"] == "exact" and "part_of" not in c)
         shown = sum(1 for k in v.context if not layer.metrics[k].get("hidden"))
@@ -365,7 +365,7 @@ def export(layer: BILayer, out: str | Path) -> list[Path]:
     if mixed:
         report += ["## Not exported", ""] + [f"- `{k}`: combines measures of more than one fact table; a metric "
                                              "view has one source" for k in mixed] + [""]
-    (out / "export.md").write_text("\n".join(report))
+    (out / "export.md").write_text("\n".join(report), encoding="utf-8")
     return files + [out / "export.md"]
 
 

@@ -79,7 +79,7 @@ def _insert(con, table: str, rows: list[tuple]) -> None:
     import tempfile
     fd, tmp = tempfile.mkstemp(suffix=".csv")
     try:
-        with os.fdopen(fd, "w", newline="") as f:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             for r in rows:
                 w.writerow(["" if v is None else v.isoformat() if isinstance(v, date) else v for v in r])

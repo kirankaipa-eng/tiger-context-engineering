@@ -260,7 +260,7 @@ def layers(client: str | None = None):
         by_layer.setdefault(k["layer"], []).append(k["name"])
     import yaml as _y
     pack_file = SETTINGS.main / "ontology" / "lines" / f"{c.line}.yaml"
-    pack = _y.safe_load(pack_file.read_text()) if pack_file.exists() else {}
+    pack = _y.safe_load(pack_file.read_text(encoding="utf-8")) if pack_file.exists() else {}
     return {
         "kernel": {"title": "Core kernel", "concepts": sorted(by_layer.get("core", [])),
                    "says": "What every insurance line shares: party, product, coverage, claim, decision."},
@@ -283,7 +283,7 @@ def _okf_definition(name: str, concept: str) -> dict | None:
     path = SETTINGS.main / "clients" / name / "okf" / "entities" / f"{concept}.md"
     if not path.exists():
         return None
-    raw = path.read_text()
+    raw = path.read_text(encoding="utf-8")
     _, head, body = raw.split("---", 2)
     m = re.search(r"## Business definition\s+(.+?)(\n## |\Z)", body, flags=re.S)
     import yaml
@@ -373,7 +373,7 @@ def preview(body: dict = Body(...)):
                "metrics": metric_names, "by": by, "as_of": as_of.isoformat() if as_of else None}
         import os
         proc = subprocess.run([sys.executable, "-m", "context_studio.engine_job"], input=json.dumps(job),
-                              capture_output=True, text=True, env={**os.environ, "ICTX_CONTENT_DIR": str(root)},
+                              capture_output=True, text=True, encoding="utf-8", env={**os.environ, "ICTX_CONTENT_DIR": str(root), "PYTHONUTF8": "1"},
                               timeout=600)
     after = json.loads(proc.stdout or "{}")
     before = _values(name, metric_names, by) if after.get("values") else None

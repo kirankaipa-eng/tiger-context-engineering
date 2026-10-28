@@ -209,7 +209,7 @@ def save(spec: dict, out: str | Path) -> Path:
     head = ("# A Power BI model's metrics captured for SQL. Generated from the TMDL beside this file;\n"
             "# owners confirm each table's warehouse source and may correct a captured definition.\n"
             "# status: captured (compiles to SQL) | presentation (formats a value) | not_captured (why says)\n")
-    path.write_text(head + yaml.safe_dump(spec, sort_keys=False, width=120, allow_unicode=True))
+    path.write_text(head + yaml.safe_dump(spec, sort_keys=False, width=120, allow_unicode=True), encoding="utf-8")
     return path
 
 
@@ -280,7 +280,7 @@ class BILayer:
         if not path.exists():
             raise LayerError(f"no {CAPTURE} in {folder} (nor in {Path(folder) / 'capture'}); run "
                              f"`ictx pbi import <file.pbix> --out {folder}` first")
-        return cls(yaml.safe_load(path.read_text()))
+        return cls(yaml.safe_load(path.read_text(encoding="utf-8")))
 
     # ------------------------------------------------------------ what can be asked
 

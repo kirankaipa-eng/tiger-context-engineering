@@ -190,10 +190,10 @@ def write_tmdl(model: Model, folder: str | Path) -> Path:
     """Write the model as <folder>/<name>.SemanticModel/definition and return that path."""
     root = Path(folder) / f"{model.name}.SemanticModel" / "definition"
     (root / "tables").mkdir(parents=True, exist_ok=True)
-    (root / "database.tmdl").write_text("database\n\tcompatibilityLevel: 1567\n")
+    (root / "database.tmdl").write_text("database\n\tcompatibilityLevel: 1567\n", encoding="utf-8")
     head = ["model Model", "\tculture: en-US", "\tdefaultPowerBIDataSourceVersion: powerBI_V3", ""]
     (root / "model.tmdl").write_text("\n".join(head + [f"ref table {quote(t)}" for t in model.tables]
-                                               + [f"ref role {quote(r.name)}" for r in model.roles]) + "\n")
+                                               + [f"ref role {quote(r.name)}" for r in model.roles]) + "\n", encoding="utf-8")
     for t in model.tables.values():
         out = [f"table {quote(t.name)}", ""]
         for m in t.measures:
@@ -216,7 +216,7 @@ def write_tmdl(model: Model, folder: str | Path) -> Path:
             out.append(f"\t\tmode: import")
             out += ["\t\t" + x if i == 0 else x for i, x in enumerate(_expr_lines("source", t.source, 3))]
             out.append("")
-        (root / "tables" / f"{_file_name(t.name)}.tmdl").write_text("\n".join(out).rstrip() + "\n")
+        (root / "tables" / f"{_file_name(t.name)}.tmdl").write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
     rels = []
     for i, r in enumerate(model.relationships):
         rels += [f"relationship r{i + 1}",
@@ -232,14 +232,14 @@ def write_tmdl(model: Model, folder: str | Path) -> Path:
             rels.append("\tisActive: false")
         rels.append("")
     if rels:
-        (root / "relationships.tmdl").write_text("\n".join(rels).rstrip() + "\n")
+        (root / "relationships.tmdl").write_text("\n".join(rels).rstrip() + "\n", encoding="utf-8")
     for r in model.roles:
         out = [f"role {quote(r.name)}", f"\tmodelPermission: {r.model_permission}", ""]
         out += [f"\tmember {quote(m)}" for m in r.members] + ([""] if r.members else [])
         for t, dax in r.tables.items():
             out += _expr_lines(f"\ttablePermission {quote(t)}", dax, 3) + [""]
         (root / "roles").mkdir(exist_ok=True)
-        (root / "roles" / f"{_file_name(r.name)}.tmdl").write_text("\n".join(out).rstrip() + "\n")
+        (root / "roles" / f"{_file_name(r.name)}.tmdl").write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
     return root
 
 

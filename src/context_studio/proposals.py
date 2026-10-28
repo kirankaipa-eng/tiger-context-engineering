@@ -97,7 +97,7 @@ class Studio:
         from insurance_context.client import list_clients
         out = []
         for name in list_clients(self.s.main / "clients"):
-            cfg = yaml.safe_load((self.s.main / "clients" / name / "client.yaml").read_text())
+            cfg = yaml.safe_load((self.s.main / "clients" / name / "client.yaml").read_text(encoding="utf-8"))
             out.append({"name": name, "title": cfg.get("title", name), "line": cfg.get("line"),
                         "units": [u["code"] for u in cfg.get("units", [])],
                         "has_data": warehouse.supported(name)})
@@ -294,7 +294,7 @@ class Studio:
     def _write_okf(self, wt: Path, r: dict) -> None:
         path = wt / "okf" / "proposals" / f"{r['id']}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(okf_proposal(r))
+        path.write_text(okf_proposal(r), encoding="utf-8")
 
     def _commit_push(self, wt: Path, r: dict, message: str, author: dict) -> None:
         email = f"{author['id']}@studio.local"
@@ -429,14 +429,14 @@ class Studio:
                    "scratch": str(Path(tmp) / "branch.duckdb"), "metrics": metrics, "by": by,
                    "as_of": as_of.isoformat() if as_of else None,
                    "tmdl": tmdl if (wt / tmdl).exists() and set_metrics else None, "set_metrics": set_metrics}
-            env = {**os.environ, "ICTX_CONTENT_DIR": str(wt)}
+            env = {**os.environ, "ICTX_CONTENT_DIR": str(wt), "PYTHONUTF8": "1"}
             proc = subprocess.run([sys.executable, "-m", "context_studio.engine_job"], input=json.dumps(job),
-                                  capture_output=True, text=True, env=env, timeout=900)
+                                  capture_output=True, text=True, encoding="utf-8", env=env, timeout=900)
         if proc.returncode != 0 or not proc.stdout.strip():
             raise RuntimeError((proc.stderr or "engine check produced no output").strip().splitlines()[-1])
         branch = json.loads(proc.stdout)
-        if branch.get("tmdl") and job.get("tmdl") and (wt / job["tmdl"]).read_text() != branch["tmdl"]:
-            (wt / job["tmdl"]).write_text(branch["tmdl"])
+        if branch.get("tmdl") and job.get("tmdl") and (wt / job["tmdl"]).read_text(encoding="utf-8") != branch["tmdl"]:
+            (wt / job["tmdl"]).write_text(branch["tmdl"], encoding="utf-8")
             self._commit_push(wt, r, f"Regenerate governed Power BI measures\n\nProposal: {pid}",
                               {"id": "studio", "name": "Context Studio", "kind": "curator"})
             r = self.get(pid)
@@ -543,9 +543,9 @@ class Studio:
         wt = self.repo.open_worktree(r["id"], r["branch"])
         okf = wt / "okf" / "proposals" / f"{r['id']}.md"
         if okf.exists():
-            text = okf.read_text().replace("status: draft", "status: accepted", 1)
+            text = okf.read_text(encoding="utf-8").replace("status: draft", "status: accepted", 1)
             verified = "".join(f"\n- human:{a['by']}" for a in r["approvals"])
-            okf.write_text(text.replace("---\n", f"---\nverified:{verified}\n", 1) if verified else text)
+            okf.write_text(text.replace("---\n", f"---\nverified:{verified}\n", 1) if verified else text, encoding="utf-8")
         approver = self.owners().person(person)
         self.repo.commit(wt, f"Record approval\n\nProposal: {r['id']}", approver.name, f"{person}@studio.local")
         self.repo.push(wt, r["branch"])

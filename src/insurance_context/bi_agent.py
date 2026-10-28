@@ -380,10 +380,225 @@ class BIToolkit:
         except Exception:  # noqa: BLE001 - definitions are a courtesy; the numbers already ran
             leaves = set(metrics)
         leaves |= {x for k in metrics for x in _tree(self.layer, k)}
-        out += "\n\nDefinitions (captured from the Power BI measures):\n" + "\n".join(
+        out += "\n\nDefinitions (captured from the Power BI measures; for your reasoning, not to repeat unless asked):\n" + "\n".join(
             f"- {k}: {describe(self.layer, k)}" for k in metrics) + \
             "".join(f"\n  - {k}: {describe(self.layer, k)}" for k in sorted(leaves - set(metrics)))
         return out + f"\n\nSQL ({self.wh.dialect}):\n{sql}"
+
+    def _splits(self, metric: str, period: str) -> list[str]:
+        """Columns a change in the metric can be broken down by: text columns of the tables its rows reach,
+        not the period's own (calendar) table, ids, images, sort keys or colours; one column per name, from
+        the table named like it (Product[Product]) or else the narrowest."""
+        dated = {parse_ref(period)[0]}
+        skip = re.compile(r"(?i)(^id$|id$|image|sort|colou?r|url|latitude|longitude)")
+        best: dict[str, tuple[tuple, str]] = {}
+        for d in self.layer.columns_for([metric]):
+            t, c, _ = parse_ref(d)
+            cols = self.layer.tables.get(t, {}).get("columns") or {}
+            if t in dated or skip.search(c) or (cols.get(c, {}).get("type") or "string").lower() != "string":
+                continue
+            rank = (0 if t.lower() == c.lower() else 1, len(cols))
+            if c.lower() not in best or rank < best[c.lower()][0]:
+                best[c.lower()] = (rank, d)
+        return [d for _, d in best.values()]
+
+    def explain(self, metric: str, period: str, now: str, before: str, filters: dict | None = None,
+                depth: int = 3) -> str:
+        """Why `metric` changed between two periods of `period` (a date column with its grain, e.g.
+        Calendar[Date]:month): at each level, split the change by every candidate column, keep the column
+        where one value carries the most of it, narrow to that value, and go again. Deterministic; every
+        number is a query the warehouse ran, and each chosen split is kept as an exhibit."""
+        if metric not in self.layer.metrics:
+            return f"Error: no metric {metric!r}; list_metrics gives the keys"
+        try:
+            where, notes = self.resolve(filters)
+        except Exception as exc:  # noqa: BLE001
+            return f"Error: {exc}"
+        label = self.layer.metrics[metric].get("label", metric)
+
+        def by(cols: list[str], w: dict) -> tuple[str, list[str], list[tuple]]:
+            sql = self.layer.compile([metric], [*cols, period], {**w, period: [now, before]},
+                                     dialect=self.wh.dialect, row_filters=self.row_filters)
+            c, r = self.wh.query(sql, limit=2000)
+            return sql, c, r
+
+        def change(rows, n: int) -> dict:  # value -> (before, now), n: how many leading columns name it
+            out: dict = {}
+            for r in rows:
+                k = r[:n] if n else ()
+                b, a = out.get(k, (0.0, 0.0))
+                v = float(r[n + 1] or 0)
+                out[k] = (b + v, a) if str(r[n]) == before else (b, a + v)
+            return out
+
+        try:
+            sql, cols, rows = by([], where)
+        except Exception as exc:  # noqa: BLE001
+            return f"Error: {exc}"
+        b0, a0 = change(rows, 0).get((), (0.0, 0.0))
+        total = a0 - b0
+        lines = [f"{label}: {b0:,.0f} in {before}, {a0:,.0f} in {now}, a change of {'+' if total >= 0 else ''}"
+                 f"{total:,.0f}" + (f" ({total / b0:+.1%})" if b0 else "") + "."]
+        if notes:
+            lines.append("Filters: " + "; ".join(notes) + ".")
+        if not total:
+            return "\n".join(lines + ["Nothing changed, so there is nothing to explain."])
+        def swing(w2: dict) -> float:
+            """The median change from one period to the next over the year up to `now`, under `w2`."""
+            try:
+                rows2 = self.wh.query(self.layer.compile([metric], [period], w2, dialect=self.wh.dialect,
+                                                         row_filters=self.row_filters), limit=2000)[1]
+            except Exception:  # noqa: BLE001 - without history there is no usual swing
+                return 0.0
+            vals = [float(r[1] or 0) for r in sorted(rows2, key=lambda r: str(r[0])) if str(r[0]) <= now][-13:]
+            out = sorted(abs(b / a - 1) for a, b in zip(vals, vals[1:]) if a)
+            return out[len(out) // 2] if out else 0.0
+
+        try:  # every period of the metric, so a part with no rows in a period counts it as 0
+            periods = sorted({str(r[0]) for r in self.wh.query(self.layer.compile(
+                [metric], [period], where, dialect=self.wh.dialect, row_filters=self.row_filters), limit=5000)[1]})
+        except Exception:  # noqa: BLE001
+            periods = []
+        past = [p for p in periods if p < before][-12:]
+
+        def unusual(w2: dict, pb: float, pa: float) -> bool:
+            """Whether a part's change is out of the ordinary for it: at least 4 standard deviations of its
+            own values over the 12 periods before `before` (history the change cannot have touched). Strict
+            on purpose: searching many columns finds something that looks unusual by chance, and a driver
+            made of noise is worse than none."""
+            if len(past) < 6:
+                return True  # too little history to test; the disproportion alone decides
+            try:
+                rows2 = self.wh.query(self.layer.compile([metric], [period], {**w2, period: past},
+                                                         dialect=self.wh.dialect, row_filters=self.row_filters),
+                                      limit=2000)[1]
+            except Exception:  # noqa: BLE001
+                return False
+            got = {str(r[0]): float(r[1] or 0) for r in rows2}
+            hist = [got.get(p, 0.0) for p in past]
+            mu = sum(hist) / len(hist)
+            sd = (sum((x - mu) ** 2 for x in hist) / len(hist)) ** 0.5
+            return abs(pa - pb) / max(sd, 0.05 * abs(mu), 1e-9) >= 4
+
+        usual = swing(where or {})
+        quiet = bool(b0 and usual and abs(total / b0) < 1.5 * usual)
+        if quiet:
+            lines.append(f"The total is within its usual swing (the median change from one "
+                         f"{period.rsplit(':', 1)[-1]} to the next over the last year was {usual:.1%}).")
+        n0 = lambda x: f"{x:,.0f}"  # noqa: E731
+        path, used, w, whole = [], set(), dict(where or {}), total
+        steps: list[dict] = []  # the investigation as data, for the screen
+        verdict = "quiet" if quiet else "spread"
+        distinct: dict[str, int] = {}
+
+        def grain(d: str) -> int:  # how many values a column has in the model (finer = more)
+            if d not in distinct:
+                try:
+                    distinct[d] = len(self.wh.query(self.layer.compile([metric], [d], dialect=self.wh.dialect,
+                                                                       row_filters=self.row_filters), limit=5000)[1])
+                except Exception:  # noqa: BLE001
+                    distinct[d] = 0
+            return distinct[d]
+
+        for level in range(depth):
+            found, ordinary, single = [], [], []
+            for d in self._splits(metric, period):
+                if d in used or parse_ref(d)[:2] in {parse_ref(k)[:2] for k in w}:
+                    continue
+                try:
+                    q, c, r = by([d], w)
+                except Exception:  # noqa: BLE001 - a column this metric cannot be split by is skipped
+                    continue
+                parts = change(r, 1)
+                if len(parts) < 2:
+                    # one value here: a finer name for the step before (Category XBOX -> Product XBOX ONE) says
+                    # more; an attribute of it (Price Range) does not
+                    if parts and path and parse_ref(d)[0] == parse_ref(path[-1][0])[0] and \
+                            grain(d) > grain(path[-1][0]) and str(next(iter(parts))[0]) != str(path[-1][1]):
+                        single.append((grain(d), d, next(iter(parts.items())), q))
+                    continue
+                # each value's part of the movement the same way as the whole (net changes can offset, so
+                # not of the net change), against its part of the base: what moved out of proportion
+                sign = 1 if whole > 0 else -1
+                moving = sum(max(0.0, (pa - pb) * sign) for pb, pa in parts.values()) or 1.0
+                base = sum(pb for pb, _ in parts.values())
+                ref = {k: pb / base for k, (pb, _) in parts.items()} if base >= 0.25 * abs(whole) else None
+                wide_ref = ref is None
+                if ref is None:  # this scope barely existed before: compare with everyone, before the change
+                    try:
+                        wide = {k: pb for k, (pb, _) in change(by([d], where or {})[2], 1).items()}
+                    except Exception:  # noqa: BLE001
+                        continue
+                    ref = {k: wide.get(k, 0.0) / (sum(wide.values()) or 1.0) for k in parts}
+                scored = [((pa - pb) * sign / moving - ref[k], (pa - pb) * sign / moving, ref[k], k[0], pb, pa)
+                          for k, (pb, pa) in parts.items()]
+                excess, carries, held, v, pb, pa = max(scored)
+                if not unusual({**w, d: v}, pb, pa):  # its own ordinary variation, not a driver
+                    ordinary.append(d)
+                    continue
+                rest = sum(x[5] - x[4] for x in scored if x[3] != v)
+                found.append((excess, carries, held, d, v, pb, pa, rest, q, c, r, len(parts), wide_ref))
+            if single and (not found or max(x[0] for x in found) < 0.2):  # nothing splits further; a finer name
+                _, d, ((v,), (pb, pa)), q = max(single)
+                steps.append({"by": d, "value": str(v), "before": pb, "after": pa, "carries": 1.0, "held": 0.0,
+                              "held_wide": False, "values": [[str(v), pb, pa]], "n": 1, "rest": 0.0, "sql": q,
+                              "finer": True, "tested": [{"by": d, "value": str(v), "status": "driver"}]})
+                lines.append(f"Level {level + 1}, by {d}: all of it is {v} ({n0(pb)} to {n0(pa)}), the finer name "
+                             f"for {path[-1][1]}.")
+                path.append((d, v))
+                used.add(d)
+                w = {**w, d: v}
+                continue
+            if not found:
+                if not path:
+                    lines.append("No part of it broke from its own pattern either. There is no driver to find; say "
+                                 "so rather than offering one." if quiet else "No part of it broke from its own "
+                                 "pattern; the change is spread across ordinary variation.")
+                break
+            if quiet and not path:
+                lines.append("But underneath, one part broke from its own pattern:")
+            top = max(x[0] for x in found)  # within a hair of the best, the more specific column says more
+            excess, carries, held, d, v, pb, pa, rest, q, c, r, n, held_wide = max(
+                (x for x in found if x[0] >= top - 0.03), key=lambda x: (x[11], x[0]))
+            if excess < 0.2:
+                lines.append(f"Level {level + 1}: nothing stands out; the most out-of-proportion split, {d}, has {v} "
+                             f"carrying {carries:.0%} of the movement against {held:.0%} of the base. The change is "
+                             "spread evenly from here.")
+                break
+            values = sorted(([str(k[0]), xb, xa] for k, (xb, xa) in change(r, 1).items()),
+                            key=lambda x: -abs(x[2] - x[1]))
+            steps.append({"by": d, "value": str(v), "before": pb, "after": pa, "carries": carries, "held": held,
+                          "held_wide": held_wide, "values": values[:12], "n": n, "rest": rest, "sql": q,
+                          "tested": [{"by": x[3], "value": str(x[4]), "carries": x[1], "held": x[2],
+                                      "status": "driver" if x[3] == d else "also" if x[0] >= 0.2 else "even"}
+                                     for x in sorted(found, key=lambda x: -x[0])]
+                          + [{"by": o, "status": "ordinary"} for o in ordinary]})
+            verdict = "path"
+            others = [x for x in sorted(found, key=lambda x: -x[0]) if x[3] != d][:2]
+            up = "increases" if whole > 0 else "decreases"
+            lines.append(f"Level {level + 1}, by {d} ({n} values): {v} went from {n0(pb)} to {n0(pa)} "
+                         f"({'+' if pa >= pb else ''}{n0(pa - pb)}). It carries {carries:.0%} of all the {up} while "
+                         f"it was {held:.0%} of the base{' (everyone, before)' if held_wide else ''}; the other {n - 1} together moved {'+' if rest >= 0 else ''}"
+                         f"{n0(rest)}." + (" Also out of proportion: " + "; ".join(
+                             f"{x[3]} = {x[4]} ({x[1]:.0%} of the {up}, {x[2]:.0%} of the base)" for x in others
+                             if x[0] >= 0.2) + "." if any(x[0] >= 0.2 for x in others) else ""))
+            path.append((d, v))
+            used.add(d)
+            w = {**w, d: v}
+            whole = pa - pb
+        if path:
+            lines.append("Where it comes from: " + " → ".join(f"{d} = {v}" for d, v in path) + ".")
+        lines.append("The screen shows this investigation as one exhibit (the path, what moved at each step, what "
+                     "was ruled out, the rows). Answer in two or three plain sentences: no tables, no lists, no headings, and "
+                     "do not repeat the path's numbers.")
+        lines.append(f"Data: {self.wh.describe()}")
+        self.last = {"kind": "explain", "sql": steps[-1]["sql"] if steps else sql, "columns": [], "shown": [],
+                     "metrics": [metric], "by": [], "filters": dict(where or {}),
+                     "explain": {"metric": metric, "label": label, "period": period, "before": before, "now": now,
+                                 "total_before": b0, "total_after": a0, "usual": usual, "quiet": quiet,
+                                 "verdict": verdict, "steps": steps}}
+        self._keep(self.last)
+        return "\n".join(lines)
 
     def explore(self, columns: list[str] | None = None, aggregates: list[str] | None = None,
                 filters: dict | None = None, conditions: list[str] | None = None, order_by: list[str] | None = None,
@@ -448,8 +663,16 @@ How to work:
    display-only measure is text for a visual (a label, an arrow): compute the metric it shows.
 5. When a question is ambiguous but has a sensible default, pick it, state the assumption in one
    line, and answer. Ask only if there is no sensible default.
-6. Lead with the answer, then a small table, then the definition used. Show the SQL only if asked.
-Data is {"the local stand-in built from the .pbix's own rows; say so once if the user asks where numbers come from" if self.wh.kind == "local" else "live from Databricks"}."""
+6. Write for a business reader: lead with the answer in one or two plain sentences, name at most three
+   numbers, and write months as people say them ("September 2026", not 2026-09). The screen already shows
+   the chart and the table, so do not repeat them as a list. Do not show metric keys, definitions, formulas
+   or SQL, and do not mention the data source, unless asked.
+7. For "why did X change", "what drove", "what's behind the jump", or a message that names
+   @Investigator, call explain with the two periods
+   (default: the latest month against the same month a year before, or the month before if the
+   question says so). Report the path it found, level by level, with its numbers, and say plainly
+   where the change stops being concentrated. Do not add causes the data did not show.
+Data is {f"a local stand-in ({self.wh.about}); say so only if the user asks where numbers come from" if self.wh.kind == "local" else "live from Databricks"}."""
 
     def tools(self) -> list:
         kit = self
@@ -493,7 +716,16 @@ Data is {"the local stand-in built from the .pbix's own rows; say so once if the
             `descending`), `limit` (default 50), `distinct`, and `table` when several tables' rows could be read."""
             return kit.explore(columns, aggregates, filters, conditions, order_by, descending, limit, distinct, table)
 
-        return [list_metrics, list_columns, column_values, compute, explore]
+        async def explain(ctx: RunContext, metric: str, period: str, now: str, before: str,
+                          filters: dict[str, str | int | float | list[str]] | None = None) -> str:
+            """Why a metric changed between two periods ("why are returns up in September", "what drove the
+            drop"): `period` is the date column with its grain (e.g. Calendar[Date]:month), `now` and `before`
+            two of its values (e.g. "2026-09", "2026-06"), `filters` as for compute. It splits the change by
+            every column, narrows to the value that carries most of it, and repeats up to three levels; each
+            step becomes an exhibit."""
+            return kit.explain(metric, period, now, before, filters)
+
+        return [list_metrics, list_columns, column_values, compute, explore, explain]
 
     def registry(self) -> dict:
         return {fn.__name__: (fn, (fn.__doc__ or "").strip().split("\n")[0]) for fn in self.tools()}

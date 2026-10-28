@@ -62,7 +62,7 @@ class ResolvedSchema:
 
     def dump(self, path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml_dumper.dumps(self.schema))
+        path.write_text(yaml_dumper.dumps(self.schema), encoding="utf-8")
         return path
 
 

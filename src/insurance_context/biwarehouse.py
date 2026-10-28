@@ -146,6 +146,13 @@ class Warehouse:
             except Exception:  # noqa: BLE001, S110
                 pass
 
+    @property
+    def about(self) -> str:
+        """Where a local stand-in's rows come from: the .pbix's own, unless a note beside it says otherwise
+        (<db>.about, written by whatever generated the rows)."""
+        note = Path(str(self.target) + ".about")
+        return note.read_text(encoding="utf-8").strip() if note.exists() else "the .pbix's own rows"
+
     def describe(self) -> str:
         return f"Databricks ({self.target})" if self.kind == "databricks" else \
-            f"local stand-in {Path(self.target).name} (the .pbix's own rows; Databricks not configured)"
+            f"local stand-in {Path(self.target).name} ({self.about}; Databricks not configured)"

@@ -79,3 +79,86 @@ body { background: var(--color-ground); color: var(--color-ink); }
 @keyframes exhibit-land { from { box-shadow: 0 0 0 3px rgba(15,123,120,.55); } to { box-shadow: 0 0 0 0 rgba(15,123,120,0); } }
 .desk .landed { animation: exhibit-land 2.4s ease-out 1; }
 @media (prefers-reduced-motion: reduce) { .desk .landed { animation: none; } }
+
+/* the investigation's dive: segments swell and split; each sentence rises in */
+.desk .dive-seg { transition: flex-grow .65s cubic-bezier(.2,.7,.2,1), opacity .4s ease; animation: dive-in .5s cubic-bezier(.2,.7,.2,1) both; }
+.desk .dive-say { animation: dive-say .5s cubic-bezier(.2,.7,.2,1) both; }
+@keyframes dive-in { from { transform: scaleY(.6); opacity: .2; } to { transform: none; opacity: 1; } }
+@keyframes dive-say { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .desk .dive-seg, .desk .dive-say { transition: none; animation: none; } }
+
+/* the dive's own colors, so a theme can make it light */
+.desk { --d-dive: var(--d-navy); --d-dive-ink: #ffffff; --d-dive-muted: var(--d-rail-muted); --d-dive-hit: #4fc2bb;
+  --d-dive-hit-ink: var(--d-navy); --d-dive-seg: #24364f; --d-dive-seg-ink: var(--d-rail-muted); --d-dive-chip: rgba(255,255,255,.1); }
+
+/* Themes for business readers, chosen per person (desk theme switcher) or per install (NEXT_PUBLIC_DESK_THEME).
+   Accent text is always a deeper shade that holds 4.5:1 on white; the bright brand color is a fill. */
+.desk.theme-tiger {  /* Tiger Analytics: the solution's own brand. Orange, ink, steel; Poppins headings */
+  --d-navy: #141414; --d-navy-2: #2a2a2a; --d-rail-ink: #f7f7f9; --d-rail-muted: #a3a8b1;
+  --d-paper: #f7f7f9; --d-sheet: #ffffff; --d-rule: #e5e7eb; --d-ink: #141414; --d-ink-2: #374151; --d-muted: #5f6673;
+  --d-teal: #b5530c; --d-teal-soft: #fef1e6; --d-rise: #c2410c; --d-rise-soft: #fdf3df; --d-rise-ink: #8a5a00;
+  --d-fall: #0079a3; --d-slate: #c8ced7;
+  --d-dive: #fafafc; --d-dive-ink: #141414; --d-dive-muted: #5f6673; --d-dive-hit: #f37820; --d-dive-hit-ink: #141414;
+  --d-dive-seg: #e5e7eb; --d-dive-seg-ink: #374151; --d-dive-chip: #ffffff;
+  --d-display: var(--font-poppins), "Segoe UI", system-ui, sans-serif;
+  font-family: Calibri, Carlito, "Segoe UI", system-ui, sans-serif;
+}
+.desk.theme-hcsc {  /* the client's: deep teal ink, sky blue accent, soft grey-greens; Open Sans */
+  --d-navy: #003333; --d-navy-2: #194747; --d-rail-ink: #eef4f4; --d-rail-muted: #acbbbb;
+  --d-paper: #eff3f3; --d-sheet: #ffffff; --d-rule: #dde2e2; --d-ink: #003333; --d-ink-2: #194747; --d-muted: #4f6b6b;
+  --d-teal: #1f5f99; --d-teal-soft: #e8f3ff; --d-rise: #b4541a; --d-rise-soft: #fbf0e6; --d-rise-ink: #8a3f12;
+  --d-fall: #628181; --d-slate: #c4cece;
+  --d-dive: #003333; --d-dive-ink: #ffffff; --d-dive-muted: #acbbbb; --d-dive-hit: #90cbff; --d-dive-hit-ink: #003333;
+  --d-dive-seg: #194747; --d-dive-seg-ink: #dde2e2; --d-dive-chip: rgba(255,255,255,.12);
+  --d-display: var(--font-open-sans), Arial, Helvetica, sans-serif;
+  font-family: var(--font-open-sans), Arial, Helvetica, sans-serif;
+}
+.desk.theme-neutral {  /* no brand: greys and one blue, the system font */
+  --d-navy: #1d1d1f; --d-navy-2: #2c2c2e; --d-rail-ink: #f5f5f7; --d-rail-muted: #a1a1a6;
+  --d-paper: #f5f5f7; --d-sheet: #ffffff; --d-rule: #e5e5ea; --d-ink: #1d1d1f; --d-ink-2: #3a3a3c; --d-muted: #6e6e73;
+  --d-teal: #0a66c2; --d-teal-soft: #eaf3fc; --d-rise: #c8611f; --d-rise-soft: #fcf1e8; --d-rise-ink: #9c4812;
+  --d-fall: #5b7fa8; --d-slate: #c7c7cc;
+  --d-dive: #f5f5f7; --d-dive-ink: #1d1d1f; --d-dive-muted: #6e6e73; --d-dive-hit: #0a66c2; --d-dive-hit-ink: #ffffff;
+  --d-dive-seg: #e5e5ea; --d-dive-seg-ink: #3a3a3c; --d-dive-chip: #ffffff;
+  --d-display: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.desk[class*="theme-"] .cond { font-family: var(--d-display); letter-spacing: -0.01em; }
+.desk[class*="theme-"] .num { font-variant-numeric: tabular-nums; }
+
+/* dark mode, per theme: deep, low-glare grounds; brand color kept for fills, lifted for text */
+.desk.theme-tiger.mode-dark {
+  --d-navy: #0b0b0c; --d-navy-2: #232326; --d-rail-ink: #f4f4f5; --d-rail-muted: #9a9aa3;
+  --d-paper: #111113; --d-sheet: #19191c; --d-rule: #2b2b30; --d-ink: #f4f4f5; --d-ink-2: #d4d4d8; --d-muted: #a1a1aa;
+  --d-teal: #ff9a52; --d-teal-soft: #2b1a0d; --d-rise: #f59e0b; --d-rise-soft: #2a2110; --d-rise-ink: #fbbf54;
+  --d-fall: #4cc3ec; --d-slate: #3f3f46;
+  --d-dive: #141416; --d-dive-ink: #f4f4f5; --d-dive-muted: #a1a1aa; --d-dive-hit: #f37820; --d-dive-hit-ink: #141414;
+  --d-dive-seg: #2b2b30; --d-dive-seg-ink: #d4d4d8; --d-dive-chip: #232326; color-scheme: dark;
+}
+.desk.theme-hcsc.mode-dark {
+  --d-navy: #001f1f; --d-navy-2: #0d3838; --d-rail-ink: #e6f0f0; --d-rail-muted: #8fa6a6;
+  --d-paper: #001a1a; --d-sheet: #022626; --d-rule: #123b3b; --d-ink: #e9f3f3; --d-ink-2: #c4d6d6; --d-muted: #93abab;
+  --d-teal: #90cbff; --d-teal-soft: #0d2d40; --d-rise: #f0a35e; --d-rise-soft: #2b2112; --d-rise-ink: #f5c28d;
+  --d-fall: #8fb3b3; --d-slate: #2c5050;
+  --d-dive: #002b2b; --d-dive-ink: #ffffff; --d-dive-muted: #93abab; --d-dive-hit: #90cbff; --d-dive-hit-ink: #003333;
+  --d-dive-seg: #124040; --d-dive-seg-ink: #c4d6d6; --d-dive-chip: rgba(255,255,255,.1); color-scheme: dark;
+}
+.desk.theme-neutral.mode-dark {
+  --d-navy: #0a0a0a; --d-navy-2: #262628; --d-rail-ink: #f5f5f7; --d-rail-muted: #98989d;
+  --d-paper: #0f0f10; --d-sheet: #1c1c1e; --d-rule: #2c2c2e; --d-ink: #f5f5f7; --d-ink-2: #d1d1d6; --d-muted: #98989d;
+  --d-teal: #4da3ff; --d-teal-soft: #0d2440; --d-rise: #ff9f43; --d-rise-soft: #2a1e10; --d-rise-ink: #ffc078;
+  --d-fall: #8eb4e0; --d-slate: #3a3a3c;
+  --d-dive: #161618; --d-dive-ink: #f5f5f7; --d-dive-muted: #98989d; --d-dive-hit: #0a84ff; --d-dive-hit-ink: #ffffff;
+  --d-dive-seg: #2c2c2e; --d-dive-seg-ink: #d1d1d6; --d-dive-chip: #262628; color-scheme: dark;
+}
+/* the Studio's own tokens follow the desk's inside it (tables, panels) */
+.desk[class*="theme-"] {
+  --color-panel: var(--d-sheet); --color-sunk: var(--d-paper); --color-line: var(--d-rule); --color-line-soft: var(--d-rule);
+  --color-ink: var(--d-ink); --color-ink-2: var(--d-ink-2); --color-muted: var(--d-muted); color: var(--d-ink);
+}
+/* a faint glow of the brand in the ground: soft on the eyes, never behind text at strength */
+.desk.theme-tiger { background-image: radial-gradient(1100px 520px at 8% -10%, rgba(243,120,32,.09), transparent 65%), radial-gradient(900px 500px at 100% 110%, rgba(0,164,219,.06), transparent 60%); }
+.desk.theme-hcsc { background-image: radial-gradient(1100px 520px at 8% -10%, rgba(144,203,255,.18), transparent 65%); }
+.desk.theme-tiger.mode-dark { background-image: radial-gradient(1100px 560px at 8% -10%, rgba(243,120,32,.14), transparent 65%), radial-gradient(900px 500px at 100% 110%, rgba(0,164,219,.08), transparent 60%); }
+.desk.theme-hcsc.mode-dark { background-image: radial-gradient(1100px 560px at 8% -10%, rgba(144,203,255,.12), transparent 65%); }
+.desk[class*="theme-"] main, .desk[class*="theme-"] aside.team-list { background: transparent; }

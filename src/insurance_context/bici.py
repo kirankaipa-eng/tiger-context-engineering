@@ -140,7 +140,7 @@ def build_model(src: str | Path, out: str | Path, catalog: str = "pilot") -> dic
     """One model folder of the repo -> out/ holding TMDL, capture.yaml and (with a .pbix) the stand-in."""
     src, out = Path(src), Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    conf = (yaml.safe_load((src / "warehouse.yaml").read_text()) or {}) if (src / "warehouse.yaml").exists() else {}
+    conf = (yaml.safe_load((src / "warehouse.yaml").read_text(encoding="utf-8")) or {}) if (src / "warehouse.yaml").exists() else {}
     catalog = conf.get("catalog", catalog)
     pbix = next(iter(sorted(src.glob("*.pbix"))), None)
     tmdl = next(iter(sorted(src.glob("*.SemanticModel"))), None)
@@ -520,7 +520,7 @@ def run_ci(models: str | Path, out: str | Path, previous: str | Path | None = No
             built[src.name] = {"error": str(exc)}
             lines += [f"## {src.name}", "", f"**Not captured**: {exc}", ""]
             continue
-        old = (yaml.safe_load((Path(previous) / src.name / CAPTURE).read_text())
+        old = (yaml.safe_load((Path(previous) / src.name / CAPTURE).read_text(encoding="utf-8"))
                if previous and (Path(previous) / src.name / CAPTURE).exists() else _previous(zf, out, src.name))
         layer = BILayer(spec)
         targets, checked, wh_ok = warehouses(dest, layer)
@@ -563,9 +563,9 @@ def run_ci(models: str | Path, out: str | Path, previous: str | Path | None = No
         lines.append("")
     version = _version(ci)
     version.update(built_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), models=built, ok=ok)
-    (out / VERSION).write_text(json.dumps(version, indent=2))
+    (out / VERSION).write_text(json.dumps(version, indent=2), encoding="utf-8")
     report = f"# Power BI capture {version['version']} ({version['commit'] or 'local'})\n\n" + "\n".join(lines)
-    (out / REPORT).write_text(report)
+    (out / REPORT).write_text(report, encoding="utf-8")
     env = os.environ.get
     if ci == "gitlab" and env("CI_MERGE_REQUEST_IID"):
         if not env("GITLAB_TOKEN"):
@@ -632,7 +632,7 @@ def publish(out: str | Path) -> str:
     if _ci() != "gitlab":
         raise LayerError("publish makes a GitLab release and runs in the models repo's GitLab CI; elsewhere the "
                          "`ictx pbi ci` output folder is the release (serve it with `ictx pbi serve --dir`)")
-    v = json.loads((Path(out) / VERSION).read_text())
+    v = json.loads((Path(out) / VERSION).read_text(encoding="utf-8"))
     if not re.fullmatch(r"v\d+", str(v.get("version"))):
         raise LayerError(f"{out} holds capture {v.get('version')!r}, not a release from the default branch")
     if not v.get("ok"):
@@ -642,7 +642,7 @@ def publish(out: str | Path) -> str:
             not _missing(f"/projects/{pid}/repository/tags/{urllib.parse.quote(tag)}"):
         raise LayerError(f"{tag} already exists: a release was made outside this job's resource group "
                          "(capture-release). Re-run this pipeline; its capture takes the next version")
-    report = (Path(out) / REPORT).read_text()
+    report = (Path(out) / REPORT).read_text(encoding="utf-8")
     link = f"{os.environ['CI_API_V4_URL']}/projects/{os.environ['CI_PROJECT_ID']}/jobs/{v['job']}/artifacts"
     _api(f"/projects/{pid}/releases", "POST", {
         "tag_name": tag, "ref": os.environ["CI_COMMIT_SHA"], "name": f"Power BI capture {v['version']}",
@@ -743,7 +743,7 @@ def run_drift(path: str | Path, prefer: str = "auto") -> tuple[bool, str]:
     """Drift between what each model captured and the warehouse it runs on (Databricks when DATABRICKS_*
     is set, else the capture's local stand-in). Returns (no drift, markdown report)."""
     path = Path(path)
-    v = json.loads((path / VERSION).read_text()) if (path / VERSION).exists() else {}
+    v = json.loads((path / VERSION).read_text(encoding="utf-8")) if (path / VERSION).exists() else {}
     lines, ok = [], True
     with tempfile.TemporaryDirectory() as work:
         for folder in _capture_folders(path, Path(work)):

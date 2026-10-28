@@ -36,7 +36,7 @@ class Owners:
 
     @classmethod
     def load(cls, repo: Path) -> "Owners":
-        return cls(yaml.safe_load((repo / "owners.yaml").read_text()) or {})
+        return cls(yaml.safe_load((repo / "owners.yaml").read_text(encoding="utf-8")) or {})
 
     def person(self, pid: str) -> Person:
         return self.people.get(pid) or Person(pid, pid)

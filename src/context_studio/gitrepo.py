@@ -27,7 +27,7 @@ class GitError(RuntimeError):
 
 
 def git(args: list[str], cwd: Path, check: bool = True, env: dict | None = None) -> str:
-    out = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=env)
+    out = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", env=env)
     if check and out.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed: {(out.stderr or out.stdout).strip()}")
     return out.stdout.strip()
@@ -74,7 +74,7 @@ class ContentRepo:
             shutil.copy(SEED_OWNERS, seed / "owners.yaml")
             (seed / "README.md").write_text(
                 "# Ontology content\n\nManaged by Context Studio. Every change arrives as a proposal "
-                "and merges only after its owners approve. See owners.yaml.\n")
+                "and merges only after its owners approve. See owners.yaml.\n", encoding="utf-8")
             git(["init", "-q", "-b", "main"], seed)
             self._identity(seed)
             git(["add", "-A"], seed)
@@ -100,7 +100,7 @@ class ContentRepo:
         return git(["rev-parse", ref], self.s.main)
 
     def show(self, path: str, ref: str = "origin/main") -> str | None:
-        out = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=self.s.main, capture_output=True, text=True)
+        out = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=self.s.main, capture_output=True, text=True, encoding="utf-8")
         return out.stdout if out.returncode == 0 else None
 
     def log(self, limit: int = 100) -> list[Commit]:
@@ -190,7 +190,7 @@ class ContentRepo:
             if not git(["rev-list", "--count", "HEAD..origin/main"], wt).strip("0\n"):
                 return None
             out = subprocess.run(["git", "-c", "user.name=Context Studio", "-c", "user.email=studio@localhost",
-                                  "merge", "--no-edit", "-q", "origin/main"], cwd=wt, capture_output=True, text=True)
+                                  "merge", "--no-edit", "-q", "origin/main"], cwd=wt, capture_output=True, text=True, encoding="utf-8")
             if out.returncode != 0:
                 git(["merge", "--abort"], wt, check=False)
                 return "conflicts with a change that went live after this proposal was drafted"

@@ -19,7 +19,7 @@ export function PbiShell({ children }: { children: React.ReactNode }) {
   const { pbiModels, pbiModel, setPbiModel, error } = useStudio();
   const path = usePathname();
   const current = pbiModels.find((m) => m.id === pbiModel);
-  if (path === "/pbi") return <>{children}</>;  // the desk has its own frame
+  if (path === "/pbi" || path === "/pbi/team" || path === "/pbi/board") return <>{children}</>;  // these have their own frame
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <header className="flex h-14 shrink-0 items-center gap-4 bg-[#142338] px-5 text-[#e6edf5]">

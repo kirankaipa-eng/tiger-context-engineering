@@ -37,7 +37,7 @@ def _load_dotenv() -> None:
     for path in (Path.cwd() / ".env", ENGINE_ROOT / ".env"):
         if not path.exists():
             continue
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
