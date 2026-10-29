@@ -40,7 +40,8 @@ partitioned by the question's other groupings, before ORDER BY / LIMIT, among th
 filters leave (RANKX over ALL(T[C]) would also count values the filters remove). A `by_scope` metric
 (SWITCH on ISINSCOPE) is resolved per question to the first branch whose column it groups by; a `has`
 branch ("v" IN VALUES(T[C])) holds when the question does not filter T[C] or keeps v (grouping by it, or
-narrowing T by another column, would make it differ per row, so those are refused).
+narrowing T by another column, would make it differ per row, so those are refused); an `is` branch
+(SELECTEDVALUE(T[C]) = "v") holds when the question filters T[C] to v alone, the same way.
 needs(key) says what a question must include for a metric to be answered at all.
 
 SQL is written once (DuckDB syntax) and transpiled by sqlglot to the warehouse's dialect, so
@@ -338,16 +339,20 @@ class BILayer:
         filtered = grouped | set(given)
         branches = [b for b in self.metrics[key]["by_scope"] if "column" in b]
         def holds(b):
-            if "has" in b:
+            if "has" in b or "is" in b:
                 t, c, _ = parse_ref(b["column"])
                 if any(x[0] == t for x in grouped) or any(x[0] == t and x != (t, c) for x in given):
-                    raise LayerError(f"{self._label(key)} depends on whether {b['column']} still includes "
-                                     f"{' or '.join(map(str, b['has']))}; filter on {b['column']} itself, without "
+                    what = (f"whether {b['column']} still includes {' or '.join(map(str, b['has']))}" if "has" in b
+                            else f"the one value {b['column']} is filtered to")
+                    raise LayerError(f"{self._label(key)} depends on {what}; filter on {b['column']} itself, without "
                                      f"grouping by or filtering other columns of {t}")
                 if (t, c) not in given:
-                    return True  # every value is there
+                    return "has" in b  # every value is there; none is the one selected
                 v = given[(t, c)]
-                return any(str(x) == str(h) for x in (v if isinstance(v, (list, tuple, set)) else [v]) for h in b["has"])
+                vs = [str(x) for x in (v if isinstance(v, (list, tuple, set)) else [v])]
+                if "is" in b:
+                    return len(vs) == 1 and vs[0] == str(b["is"][0])
+                return any(x == str(h) for x in vs for h in b["has"])
             cols = filtered if b.get("filtered") else grouped
             hit = {t for t, _ in cols} if "[" not in b["column"] else cols
             return (_unq(b["column"].strip()) if "[" not in b["column"] else parse_ref(b["column"])[:2]) in hit
@@ -548,6 +553,11 @@ class BILayer:
         def value(k: str, who: str) -> str:
             p = defs.get(k) or {}
             v = given[k] if k in given else p.get("default")
+            if any(isinstance(c, str) for c in p.get("choices") or []):  # a slicer of text
+                if v is None or str(v) not in map(str, p["choices"]):
+                    raise LayerError(f"{who} reads {p.get('label') or k}, a slicer of "
+                                     f"{', '.join(map(repr, p['choices']))}: pass params={{'{k}': <one of them>}}")
+                return "'" + str(v).replace("'", "''") + "'"
             span = (f" between {p['min']} and {p['max']}" + (f" in steps of {p['step']}" if p.get("step") else "")
                     if p.get("min") is not None and p.get("max") is not None else
                     f": one of {', '.join(map(str, p['choices']))}" if p.get("choices") else "")

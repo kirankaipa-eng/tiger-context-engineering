@@ -37,6 +37,7 @@ What a measure reads of the visual is captured as what the question must say:
     SELECTEDVALUE('% Return Rate'[% Return Rate])               {$pct_return_rate}: a what-if parameter
     SWITCH(TRUE(), SELECTEDVALUE(Pick[Id]) = 1, [Paid], ...)    {$pick}: a choice (a table with no relationships)
     IF("Medical" IN VALUES(Plan[Line]), [Paid], 0)              by_scope, has: the question's Plan[Line] values
+    SWITCH(SELECTEDVALUE(Plan[Line]), "Rx", [Paid], [Allowed])  by_scope, is: Plan[Line] filtered to that one value
     RANKX(ALL(Store[Store]), [Net Sales], , DESC)               rank: over Store[Store], of net_sales
     SWITCH(TRUE(), ISINSCOPE(Product[Product]), ..., ...)       by_scope: the branch the grouping picks
     IF(ISFILTERED(Store[Store]), [Net Sales], BLANK())          by_scope, filtered: grouped or filtered by it
@@ -112,6 +113,14 @@ _TOKEN = re.compile(r"""
   | (?P<id>[A-Za-z_][A-Za-z0-9_.]*)
   | (?P<op>&&|\|\||<=|>=|<>|==|[-+*/^&=<>(),{}.])
 """, re.S | re.X)
+
+
+_LINE = re.compile(r'("(?:[^"]|"")*")|(?://|--)([^\n]*)')
+
+
+def _closed(dax: str) -> str:
+    """// and -- comments as /* */, so the DAX still reads the same on one line."""
+    return _LINE.sub(lambda m: m.group(1) or "/*" + m.group(2).replace("*/", "* /") + " */", dax)
 
 
 def tokenize(text: str) -> list[tuple[str, str]]:
@@ -392,7 +401,7 @@ def _measure(ctx: _Ctx, name: str) -> dict:
         raise Unsupported("cycle", f"measures refer to each other in a cycle through {name}")
     ctx.pending.add(name)
     expr = next(m.expression for _, m in ctx.model.measures if m.name == name)
-    spec = {"label": name, "dax": " ".join(expr.split())}
+    spec = {"label": name, "dax": " ".join(_closed(expr).split())}
     saved, ctx.filter, ctx.iterating = (ctx.filter, ctx.iterating), None, False  # its own context, not its user's
     node = None
     try:
@@ -725,6 +734,12 @@ def _test(ctx: _Ctx, node, owner: str) -> str:
     if kind == "call" and node[1] in ("AND", "OR") and len(node[2]) == 2:
         return f"({_test(ctx, node[2][0], owner)} {node[1]} {_test(ctx, node[2][1], owner)})"
     if kind == "bin" and node[1] in _COMPARE:
+        if [x[0] for x in node[2:4]].count("str") == 1 and \
+                any(x[0] == "call" and x[1] == "SELECTEDVALUE" for x in node[2:4]):  # a text choice
+            out = "(" + f" {node[1]} ".join(_lit(x[1]) if x[0] == "str" else _value(ctx, x, owner)
+                                            for x in node[2:4]) + ")"
+            _chose(ctx, node[2], node[3])
+            return out
         out = f"({_number(ctx, node[2], owner)} {node[1]} {_number(ctx, node[3], owner)})"
         if node[1] in ("=", "==", "<>"):
             _chose(ctx, node[2], node[3])
@@ -745,11 +760,13 @@ def _test(ctx: _Ctx, node, owner: str) -> str:
     raise Unsupported("conditional", f"branches on something other than a comparison ({kind})")
 
 
-def _scope_test(ctx: _Ctx, node) -> tuple[str, bool | tuple, bool] | None:
+def _scope_test(ctx: _Ctx, node) -> tuple[str, bool | dict, bool] | None:
     """ISINSCOPE(T[C]) / ISFILTERED(T[C] or T), maybe under NOT: (T[C] or T, filtered, negated). Which is
     true is known from the question: ISINSCOPE when it groups by the column, ISFILTERED when it groups
-    by it or filters on it (a table: any of its columns). "v" IN VALUES(T[C]) is (T[C], ("v",), negated):
-    true when the question leaves v among the column's values (it does not filter the column, or keeps v)."""
+    by it or filters on it (a table: any of its columns). Two read the column's values instead, T related:
+    "v" IN VALUES(T[C]) is (T[C], {"has": ["v"]}, negated), true when the question leaves v among them (does
+    not filter the column, or keeps v); SELECTEDVALUE(T[C]) = "v" is (T[C], {"is": ["v"]}, negated), true when
+    the question filters the column to v alone."""
     negated = False
     while node is not None:
         if node[0] == "not" or (node[0] == "call" and node[1] == "NOT" and node[2]):
@@ -766,7 +783,13 @@ def _scope_test(ctx: _Ctx, node) -> tuple[str, bool | tuple, bool] | None:
             node[3][2][0] is not None and node[3][2][0][0] == "col":
         a = node[3][2][0]
         _column(ctx, a)
-        return col(a[1], a[2])[1:-1], (node[2][1],), negated
+        return col(a[1], a[2])[1:-1], {"has": [node[2][1]]}, negated
+    if node is not None and node[0] == "bin" and node[1] in ("=", "==", "<>"):
+        for sv, v in ((node[2], node[3]), (node[3], node[2])):
+            if _selected(ctx, sv) and v[0] in ("str", "num"):
+                a = sv[2][0]
+                _column(ctx, a)
+                return col(a[1], a[2])[1:-1], {"is": [v[1]]}, negated ^ (node[1] == "<>")
     if node is None or node[0] != "call" or node[1] not in ("ISINSCOPE", "ISFILTERED") or len(node[2]) != 1:
         return None
     a = node[2][0]
@@ -807,7 +830,7 @@ def _scope_branch(tests: list, metric: str) -> dict:
     if not pos:
         raise Unsupported("context", "NOT ISFILTERED / NOT ISINSCOPE with no test that must hold, in an OR or a "
                                      "SWITCH; not captured")
-    one = lambda t: {"column": t[0], **({"has": list(t[1])} if isinstance(t[1], tuple)  # noqa: E731
+    one = lambda t: {"column": t[0], **(t[1] if isinstance(t[1], dict)  # noqa: E731
                                          else {"filtered": True} if t[1] else {})}
     return {**one(pos[0]), "metric": metric, **({"also": [one(t) for t in pos[1:]]} if pos[1:] else {}),
             **({"unless": [one(t) for t in neg]} if neg else {})}
@@ -866,6 +889,11 @@ def _switch(ctx: _Ctx, args: list, owner: str) -> str:
     if len(args) < 3 or args[0] is None:
         raise Unsupported("syntax", "SWITCH needs a value and at least one value/result pair")
     pairs = args[1:]
+    if args[0][0] == "call" and args[0][1] == "SELECTEDVALUE" and len(pairs) > 1:
+        # SWITCH(SELECTEDVALUE(c), v1, r1, ..., e) is SWITCH(TRUE(), SELECTEDVALUE(c) = v1, r1, ..., e)
+        tests = [("bin", "=", args[0], v) for v in pairs[0:len(pairs) - 1:2]]
+        return _switch(ctx, [("bool", True), *[x for t, r in zip(tests, pairs[1::2]) for x in (t, r)],
+                             *([pairs[-1]] if len(pairs) % 2 else [])], owner)
     tests, other = list(zip(pairs[0::2], pairs[1::2])), pairs[-1] if len(pairs) % 2 else None
     scoped = [_has_scope(ctx, t) if t is not None else (False, False) for t, _ in tests] \
         if args[0] == ("bool", True) else []
@@ -886,8 +914,6 @@ def _switch(ctx: _Ctx, args: list, owner: str) -> str:
             raise Unsupported("syntax", "SWITCH with an empty value or result")
         cond = _test(ctx, t, owner) if args[0] == ("bool", True) else \
             f"({_number(ctx, args[0], owner)} = {_number(ctx, t, owner)})"
-        if args[0] != ("bool", True):
-            _chose(ctx, args[0], t)
         whens.append(f"WHEN {cond} THEN {_value(ctx, r, owner)}")
     return f"CASE {' '.join(whens)} ELSE {_value(ctx, other, owner) if other is not None else 'NULL'} END"
 
@@ -954,14 +980,14 @@ def _choice(ctx: _Ctx, t, column: str, args: list) -> str:
     if any(t.name in (r.from_table, r.to_table) for r in ctx.model.relationships):
         raise Unsupported("context", f"reads the value the visual selects in {t.name}[{column}] (SELECTEDVALUE), "
                                      "which is not a what-if parameter")
-    if (t.column(column).data_type or "").lower() not in ("int64", "double", "decimal"):
-        raise Unsupported("context", f"reads the text a slicer picks in {t.name}[{column}] (SELECTEDVALUE); a choice "
-                                     "of text is not captured yet")
-    alt = _const(args[1]) if len(args) > 1 and args[1] is not None and args[1][0] != "blank" else None
+    alt = _literal(args[1]) if len(args) > 1 and args[1] is not None and args[1][0] != "blank" else None
     if len(args) > 1 and args[1] is not None and args[1][0] != "blank" and alt is None:
-        raise Unsupported("parameter", f"{t.name}: a choice whose default is not a plain number")
+        raise Unsupported("parameter", f"{t.name}: a choice whose default is not a plain number or text")
     key = key_of(t.name)
-    spec = {"label": t.name, "table": t.name, "column": column, "choices": [], "default": alt}
+    if ctx.params.get(key, {}).get("column", column) != column:  # another column of the same slicer
+        key = key_of(f"{t.name} {column}")
+    spec = {"label": t.name if key == key_of(t.name) else f"{t.name} {column}", "table": t.name, "column": column,
+            "choices": [], "default": alt}
     have = ctx.params.setdefault(key, spec)
     if {**have, "choices": []} != spec:
         raise Unsupported("parameter", f"reads {t.name} with a different default ({alt}) than another measure "
@@ -971,12 +997,27 @@ def _choice(ctx: _Ctx, t, column: str, args: list) -> str:
 
 def _chose(ctx: _Ctx, a, b) -> None:
     """SELECTEDVALUE(T[C]) = 3 or <> 3 (either way round), T a choice: 3 is one of its choices."""
-    for x, v in ((a, _const(b)), (b, _const(a))):
+    for x, v in ((a, _literal(b)), (b, _literal(a))):
         if v is not None and x is not None and x[0] == "call" and x[1] == "SELECTEDVALUE" and x[2] and \
                 x[2][0] is not None and x[2][0][0] == "col":
-            p = ctx.params.get(key_of(x[2][0][1]))
+            c = x[2][0]
+            p = next((p for p in ctx.params.values() if p["table"] == c[1] and p["column"] == c[2]), None)
             if p is not None and "choices" in p and v not in p["choices"]:
-                p["choices"] = sorted([*p["choices"], v])
+                p["choices"] = sorted([*p["choices"], v], key=lambda c: (isinstance(c, str), c))
+
+
+def _literal(node):
+    """A number or a text written in the DAX, else None."""
+    return node[1] if node is not None and node[0] == "str" else _const(node)
+
+
+def _selected(ctx: _Ctx, node) -> bool:
+    """SELECTEDVALUE(T[C]) of a table some relationship touches: the one value the question filters it to."""
+    if node is None or node[0] != "call" or node[1] != "SELECTEDVALUE" or len(node[2]) != 1 or node[2][0] is None \
+            or node[2][0][0] != "col":
+        return False
+    t = node[2][0][1]
+    return any(t in (r.from_table, r.to_table) for r in ctx.model.relationships)
 
 
 def _const(node):
@@ -1142,7 +1183,7 @@ def _with_filters(ctx: _Ctx, formula: str, filters: list[str], owner: str, time:
                 for x in [b, *b.get("also", []), *b.get("unless", [])] if "column" in b else []:
                     c = x["column"]
                     t = _split(c) or (c, None)
-                    t = (t[0], None) if "has" in x else t
+                    t = (t[0], None) if "has" in x or "is" in x else t
                     if any(y[0] == t[0] and (t[1] is None or y[1] in (None, t[1])) for y in touched):
                         raise Unsupported("context", f"applies CALCULATE filters to [{label(spec)}] on {c}, which "
                                                      "its ISFILTERED / ISINSCOPE tests")
@@ -1656,9 +1697,13 @@ def coverage(metrics: dict, examples: int = 2, width: int = 160, shape: bool = F
         lines.append(f"{g['blocks']:>6} {len(g['roots']):>5}  {g['kind']:<17} {g['reason'][:width]}")
         for n, r in enumerate(g["roots"][:examples]):
             dax = metrics[r].get("dax", "")
-            if shape:
+            if shape:  # around what stopped it: a long measure's start is often only its variables
                 dax = masked(dax)
-                lines.append(f"{'':>14}e.g. {dax[:width * 2]}{'...' if len(dax) > width * 2 else ''}")
+                fn = re.search(r"\(([A-Z]{3,})\)|uses ([A-Z]{3,})", g["reason"])
+                at = dax.find((fn.group(1) or fn.group(2)) + "(") if fn else -1
+                start = max(0, at - width // 2) if at > width else 0
+                cut = dax[start:start + width * 2]
+                lines.append(f"{'':>14}e.g. {'...' if start else ''}{cut}{'...' if len(dax) > start + width * 2 else ''}")
                 continue
             lines.append(f"{'':>14}e.g. [{metrics[r].get('label', r)}] = {dax[:width - 20]}{'...' if len(dax) > width - 20 else ''}")
     return "\n".join(lines)

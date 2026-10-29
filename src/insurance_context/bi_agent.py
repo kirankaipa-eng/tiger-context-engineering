@@ -116,7 +116,8 @@ def param_range(p: str, info: dict) -> str:
     label = info.get("label")
     rng = (f"{_num(info.get('min'))} to {_num(info.get('max'))}" + (f" step {_num(info['step'])}" if info.get("step")
                                                                    else "")) if "min" in info else \
-        f"one of {', '.join(_num(c) for c in info['choices'])} (which the report's slicer picks)" if info.get("choices") \
+        f"one of {', '.join(repr(c) if isinstance(c, str) else _num(c) for c in info['choices'])} (which the report's " \
+        "slicer picks)" if info.get("choices") \
         else "any value"
     default = f"default {_num(info['default'])}" if info.get("default") is not None else "no default: must be given"
     return f"{label + ' (' + p + ')' if label and label != p else p}: {rng}, {default}"
@@ -330,6 +331,13 @@ class BIToolkit:
                 listed = "; ".join(param_range(p, i) for p, i in known.items()) or "none"
                 raise LayerError(f"no what-if parameter {name!r}. Parameters: {listed}")
             info = known[key]
+            text = [c for c in info.get("choices") or [] if isinstance(c, str)]
+            if text:  # a slicer of text: the value as the report spells it
+                hit = next((c for c in text if c.lower() == str(value).strip().lower()), None)
+                if hit is None:
+                    raise LayerError(f"{param_range(key, info)}; {value!r} is not one of them")
+                out[key] = hit
+                continue
             try:
                 v = float(value) if not isinstance(value, (int, float)) or isinstance(value, bool) else value
             except (TypeError, ValueError):

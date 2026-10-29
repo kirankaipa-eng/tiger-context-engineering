@@ -21,12 +21,17 @@ MEASURES = {
               "[Units])",
     "Picked Plain": "SWITCH(SELECTEDVALUE(Pick[MetricId]), 3, [Units] * 2)",
     "Picked By Name": 'IF(SELECTEDVALUE(Pick[Metric]) = "Units", [Units])',
-    "Store Pick": "SELECTEDVALUE(Store[Store])",
+    "Store Pick": "// ===== SECTION 1: SLICER VARIABLES =====\n-- the store\nVAR _s = SELECTEDVALUE(Store[Store]) RETURN _s",
     # a 1/0 slicer as a test: SELECTEDVALUE(T1[c1]) || (SELECTEDVALUE(T1[c1]) <> 1 && ISFILTERED(T2))
     "Paged": "IF(SELECTEDVALUE(Paged[On]) || (SELECTEDVALUE(Paged[On]) <> 1 && ISFILTERED(Store)), [Units], 0)",
     # VAR _v1 = [m1] RETURN IF("s" IN VALUES(T1[c1]), CALCULATE([m4], T2[c2] >= _v1), 0)
     "Bike Sales": 'VAR _lo = [Least Unit] RETURN IF("Bikes" IN VALUES(Product[Category]), '
                   'CALCULATE([Net Sales], Sales[Unit] > _lo), 0)',
+    # var _v1 = ISFILTERED(T1) var _v2 = SELECTEDVALUE(T2[c1]) var _v3 = SWITCH(_v2, "s", SUM(T3[c2]), "s", ...,
+    # SUM(T3[c2]) + SUM(T4[c3])) RETURN SWITCH(TRUE(), _v1, _v3, SUM(T5[c4])), T2 related
+    "Segment Sales": 'VAR _f = ISFILTERED(Store) VAR _seg = SELECTEDVALUE(Product[Category]) '
+                     'VAR _v = SWITCH(_seg, "Bikes", SUM(Sales[Amount]), "Helmets", SUM(Sales[Unit]), '
+                     'SUM(Sales[Amount]) + SUM(Sales[Unit])) RETURN SWITCH(TRUE(), _f, _v, SUM(Sales[Unit]) * 10)',
     "Not Bikes": 'IF(NOT("Bikes" IN VALUES(Product[Category])), [Net Sales])',
     "Bike Sales Retail": 'CALCULATE([Bike Sales], Product[Category] = "Bikes")',
     # flags for visuals: IF(ISFILTERED(T1[c1]) && COUNTROWS(ALLSELECTED(T2)) > 1, 1, 0), INT(NOT(ISEMPTY(T1)) || ...)
@@ -88,8 +93,12 @@ def test_a_slicer_that_picks_the_measure_is_a_choice_the_question_makes(layer):
     assert kit.resolve_params(["picked"], {"Pick": 2.0})[0] == {"pick": 2}
     with pytest.raises(LayerError, match="one of 1, 2, 3"):
         kit.resolve_params(["picked"], {"pick": 7})
-    # a slicer of text, and one on a related table (the visual's current value), are still refused
-    assert "text a slicer picks" in out["picked_by_name"]["why"]
+    # a slicer of text is a choice of text; the visual's current value on a related table is still refused
+    assert params["pick_metric"]["choices"] == ["Units"] and params["pick_metric"]["column"] == "Metric"
+    assert value(layer, "picked_by_name", params={"pick_metric": "Units"}) == 15
+    assert kit.resolve_params(["picked_by_name"], {"pick_metric": "units"})[0] == {"pick_metric": "Units"}
+    with pytest.raises(LayerError, match="one of them"):
+        value(layer, "picked_by_name", params={"pick_metric": "Other"})
     assert "not a what-if parameter" in out["store_pick"]["why"]
     # a 1/0 slicer as the test itself, mixed with a scope test
     assert params["paged"]["choices"] == [1] and out["paged"]["status"] == "captured"
@@ -113,8 +122,28 @@ def test_a_measure_that_needs_a_value_in_the_slicer_follows_the_questions_filter
     assert out["bike_sales_retail"]["status"] == "not_captured"
 
 
+def test_the_one_value_a_related_column_is_filtered_to_picks_the_branch(layer):
+    out = daxcapture.capture(model())
+    assert out["segment_sales"]["status"] == "captured"
+    north = {"Store[Store]": "North"}
+    assert value(layer, "segment_sales", where={**north, "Product[Category]": "Bikes"}) == 150
+    assert value(layer, "segment_sales", where={**north, "Product[Category]": "Helmets"}) == 5
+    assert value(layer, "segment_sales", where=north) == 229  # no one value selected: the SWITCH's else
+    assert value(layer, "segment_sales", where={**north, "Product[Category]": ["Bikes", "Helmets"]}) == 229
+    assert value(layer, "segment_sales") == 150  # Store not filtered: the outer else, units * 10
+    with pytest.raises(LayerError, match="one value Product\\[Category\\] is filtered to"):
+        value(layer, "segment_sales", by=["Product[Category]"], where=north)
+
+
 def test_flags_for_visuals_are_display_only(layer):
     out = daxcapture.capture(model())
     for k in ("show_slicer", "any_rows", "has_rows", "is_narrowed"):
         assert out[k]["status"] == "presentation" and "flag" in out[k]["why"], k
     assert out["flag_of_a_number"]["status"] == "not_captured"  # it reads a measure: not only the visual
+
+
+def test_a_shape_shows_past_a_comment_banner():
+    out = daxcapture.capture(model())
+    assert out["store_pick"]["dax"].startswith("/* ===== SECTION 1: SLICER VARIABLES ===== */ /* the store */ VAR")
+    report = daxcapture.coverage(out, examples=5, shape=True)
+    assert "VAR _v1 = SELECTEDVALUE(T1[c1]) RETURN _v1" in report and "SECTION" not in report
