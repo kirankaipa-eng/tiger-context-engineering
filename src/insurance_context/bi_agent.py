@@ -112,10 +112,12 @@ def metric_needs(layer: BILayer, key: str) -> dict:
 
 
 def param_range(p: str, info: dict) -> str:
-    """"% Return Rate (return_rate): 0 to 0.2 step 0.01, default 0.05"."""
+    """"% Return Rate (return_rate): 0 to 0.2 step 0.01, default 0.05"; a choice: "one of 1, 2, 3"."""
     label = info.get("label")
     rng = (f"{_num(info.get('min'))} to {_num(info.get('max'))}" + (f" step {_num(info['step'])}" if info.get("step")
-                                                                   else "")) if "min" in info else "any value"
+                                                                   else "")) if "min" in info else \
+        f"one of {', '.join(_num(c) for c in info['choices'])} (which the report's slicer picks)" if info.get("choices") \
+        else "any value"
     default = f"default {_num(info['default'])}" if info.get("default") is not None else "no default: must be given"
     return f"{label + ' (' + p + ')' if label and label != p else p}: {rng}, {default}"
 
@@ -335,6 +337,10 @@ class BIToolkit:
             lo, hi = info.get("min"), info.get("max")
             if lo is not None and hi is not None and not (min(lo, hi) - 1e-9 <= v <= max(lo, hi) + 1e-9):
                 raise LayerError(f"{param_range(key, info)}; {_num(v)} is outside the range the report offers")
+            if info.get("choices"):
+                if v not in info["choices"]:
+                    raise LayerError(f"{param_range(key, info)}; {_num(v)} is not one of them")
+                v = next(c for c in info["choices"] if c == v)  # 2.0 asked is the slicer's 2
             out[key] = v
         notes = []
         used = {p: i for k in metrics if k in self.layer.metrics for p, i in metric_needs(self.layer, k)["params"].items()}

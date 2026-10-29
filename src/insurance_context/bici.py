@@ -288,9 +288,11 @@ def warehouses(folder: str | Path, layer: BILayer) -> tuple[list[Warehouse], lis
 
 def param_value(info: dict) -> tuple[float | None, str]:
     """The value verify runs a what-if parameter at: its default, else the midpoint of its range
-    (on a step of the slider), and how it was chosen."""
+    (on a step of the slider), else a choice's first value, and how it was chosen."""
     if info.get("default") is not None:
         return info["default"], "default"
+    if info.get("choices"):
+        return info["choices"][0], "first choice, no default"
     lo, hi, step = info.get("min"), info.get("max"), info.get("step")
     if lo is None or hi is None:
         return None, "no default and no range"

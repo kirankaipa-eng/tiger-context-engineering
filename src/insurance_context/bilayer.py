@@ -38,7 +38,9 @@ the raw value, NULL when the metric has no rows (ISBLANK); {$key} a what-if para
 compile(params=) or its default. A `rank` metric is rank() / dense_rank() OVER the answer's rows,
 partitioned by the question's other groupings, before ORDER BY / LIMIT, among the rows the question's
 filters leave (RANKX over ALL(T[C]) would also count values the filters remove). A `by_scope` metric
-(SWITCH on ISINSCOPE) is resolved per question to the first branch whose column it groups by.
+(SWITCH on ISINSCOPE) is resolved per question to the first branch whose column it groups by; a `has`
+branch ("v" IN VALUES(T[C])) holds when the question does not filter T[C] or keeps v (grouping by it, or
+narrowing T by another column, would make it differ per row, so those are refused).
 needs(key) says what a question must include for a metric to be answered at all.
 
 SQL is written once (DuckDB syntax) and transpiled by sqlglot to the warehouse's dialect, so
@@ -258,7 +260,7 @@ class _Q:
     src: dict  # leaf key -> its column in the final FROM (m0.net_sales)
     by: list
     param: Callable[[str, str], str]
-    where: tuple = ()  # the columns the question filters on (ISFILTERED)
+    where: tuple = ()  # the question's filters, (column, value) pairs (ISFILTERED, IN VALUES)
 
 
 class BILayer:
@@ -332,9 +334,20 @@ class BILayer:
         """A scope switch's branch for a question: the first whose column is grouped by (ISINSCOPE), or
         grouped by or filtered on (ISFILTERED; a table: any of its columns), else `else`."""
         grouped = {parse_ref(d)[:2] for d in by}
-        filtered = grouped | {parse_ref(d)[:2] for d in where}
+        given = {parse_ref(d)[:2]: v for d, v in where}
+        filtered = grouped | set(given)
         branches = [b for b in self.metrics[key]["by_scope"] if "column" in b]
         def holds(b):
+            if "has" in b:
+                t, c, _ = parse_ref(b["column"])
+                if any(x[0] == t for x in grouped) or any(x[0] == t and x != (t, c) for x in given):
+                    raise LayerError(f"{self._label(key)} depends on whether {b['column']} still includes "
+                                     f"{' or '.join(map(str, b['has']))}; filter on {b['column']} itself, without "
+                                     f"grouping by or filtering other columns of {t}")
+                if (t, c) not in given:
+                    return True  # every value is there
+                v = given[(t, c)]
+                return any(str(x) == str(h) for x in (v if isinstance(v, (list, tuple, set)) else [v]) for h in b["has"])
             cols = filtered if b.get("filtered") else grouped
             hit = {t for t, _ in cols} if "[" not in b["column"] else cols
             return (_unq(b["column"].strip()) if "[" not in b["column"] else parse_ref(b["column"])[:2]) in hit
@@ -536,7 +549,8 @@ class BILayer:
             p = defs.get(k) or {}
             v = given[k] if k in given else p.get("default")
             span = (f" between {p['min']} and {p['max']}" + (f" in steps of {p['step']}" if p.get("step") else "")
-                    if p.get("min") is not None and p.get("max") is not None else "")
+                    if p.get("min") is not None and p.get("max") is not None else
+                    f": one of {', '.join(map(str, p['choices']))}" if p.get("choices") else "")
             ask = f"pass params={{'{k}': <a number{span}>}}"
             if v is None:
                 what = f"{k} ({p['label']})" if p.get("label") else k
@@ -622,7 +636,7 @@ class BILayer:
         param = self._params(params)
         leaves = []
         for k in metrics:
-            leaves += [x for x in self.leaves(k, by=by, units=True, where=tuple(where)) if x not in leaves]
+            leaves += [x for x in self.leaves(k, by=by, units=True, where=tuple(where.items())) if x not in leaves]
         iters = [k for k in leaves if "iterate" in self.metrics[k]]
         leaves = [k for k in leaves if k not in iters]
         groups: dict[tuple, list[str]] = {}
@@ -771,7 +785,7 @@ class BILayer:
                 joins.append((f"x{i}", [f"x{i}.d{n} IS NOT DISTINCT FROM k.d{n}" for n in range(len(by))]))
             else:
                 pieces.append(f"x{i}")
-        q = _Q(src, by, param, tuple(where))
+        q = _Q(src, by, param, tuple(where.items()))
         if not groups and not iters:  # only what-if parameters: nothing to read
             if by:
                 raise LayerError(f"{', '.join(self._label(k) for k in metrics)} reads no rows (only what-if "
@@ -961,7 +975,7 @@ class BILayer:
         the latest one, a value compared per cell, parts over different rows); the rows are then the
         question's rows of the table, without the metric's own conditions."""
         where = dict(where or {})
-        leaves = self.leaves(key, by=list(where), where=tuple(where))
+        leaves = self.leaves(key, by=list(where), where=tuple(where.items()))
         ms = [self.metrics[k] for k in leaves]
         table, m0 = ms[0]["table"], ms[0]
         filters = list(m0.get("filter") or [])
