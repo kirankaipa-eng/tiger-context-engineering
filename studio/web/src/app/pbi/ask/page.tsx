@@ -64,6 +64,7 @@ const INTENTS: [Intent, RegExp][] = [
   ["rank", /\bhighest\b|\blowest\b|\btop\b|\bbottom\b|\bbest\b|\bworst\b|\bmost\b|\bleast\b|\brank|\blargest\b|\bbiggest\b|\bsmallest\b|\bwhere\b|\bwhich\b|\bleaders?\b/i],
   ["trend", /\btrend|\bmoved?\b|\bover time\b|\bgrow|\bdeclin|\bchang|\bhistory\b|\bmonth by month\b|\bsince\b|\btrajectory\b|\bmoving\b/i],
 ];
+const SIGNIFICANT = /significan|statistic|\bby chance\b|\bprove\b|confiden|p-?value|hypothes/i;
 const PLACE = /store|city|region|country|state|location|branch|site|territor|market|area|zone/i;
 const PEOPLE = /gender|\bsex\b|^age|age ?(band|group|range)|income|marital|education|occupation|generation/i;
 /** What a business is usually cut by first, when the question names nothing. */
@@ -100,11 +101,20 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
   // ("demography", "geography") stands for its columns
   const nameIn = (t: string) => [
     ...(/demograph|customer profile|\bwho (buys|bought|are)\b/.test(t) ? dims.filter((c) => PEOPLE.test(field(c))) : []),
+    // people named by what they are: women, men -> gender; young, older -> age
+    ...(/\b(wom[ae]n|m[ae]n|females?|males?|ladies|gentlemen)\b/.test(t) ? dims.filter((c) => /gender|\bsex\b/i.test(field(c))) : []),
+    ...(/\b(young(er)?|old(er)?|seniors?|youth|elderly)\b/.test(t) ? dims.filter((c) => /^age|age ?(band|group|range)/i.test(field(c))) : []),
     ...(/geograph|\bregions?\b|\blocations?\b/.test(t) ? dims.filter((c) => PLACE.test(field(c))) : []),
     ...dims.filter((c) => t.includes(said(c).toLowerCase())).sort((a, b) => t.indexOf(said(a).toLowerCase()) - t.indexOf(said(b).toLowerCase())),
   ];
+  // a value named stands for its column ("PowerApps" -> Product): the business's usual columns are looked through
+  const looked = dims.filter((c) => BUSINESS.test(field(c)) && !PEOPLE.test(field(c))).filter((c, i, a) => a.findIndex((x) => field(x) === field(c)) === i).slice(0, 6);
+  const valued = (await Promise.all(looked.map((c) => pbi.values(model, c).then((r) => ({ c, at: Math.min(...r.values
+    .map((v) => String(v ?? "").toLowerCase()).filter((v) => v.length > 2).map((v) => q.search(new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`))).filter((i) => i >= 0)) }))
+    .catch(() => ({ c, at: Infinity })))))
+    .filter((x) => x.at < Infinity).sort((a, b) => a.at - b.at).map((x) => x.c);
   // a follow-up that names none ("review it again") means the columns of the question before
-  let named = nameIn(q);
+  let named = [...nameIn(q), ...valued];
   if (!named.length && context) named = nameIn(context.toLowerCase());
   // the columns to draw by: those named (the question's words win), then the answer's own, then places for a
   // "where", then the business's usual cuts; people (gender, age) only when asked for. One per column name.
@@ -163,6 +173,8 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
     season: () => [P ? view("seasons", `${M} by month of the year`, [[P]], [P]) : null, P ? view("trend", `${M}, month by month`, [[P]], [P]) : null],
   };
   let intents = INTENTS.filter(([, re]) => re.test(q)).map(([i]) => i);
+  // "is it significant?": the agent's test is the answer (drawn first, see ask); beside it, the columns against each other
+  if (SIGNIFICANT.test(q) && !intents.includes("matrix")) intents.unshift("matrix");
   // days come capped, oldest first: a calendar asks for the latest year's only
   const latestYear = intents.includes("daily") && date
     ? await pbi.compute(model, { metrics: [first], by: [`${date}:year`], filters: {} }).then((r) => r.rows.map((x) => x[0]).sort().at(-1)).catch(() => undefined) : undefined;
@@ -242,9 +254,10 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
     const span = compact ? "lg:col-span-2" : hero ? "lg:col-span-6" : "lg:col-span-3";
     const t = v.table, at = (c: string) => t!.columns.indexOf(c);
     const textCol = t?.columns.find((c) => t.rows.some((r) => typeof r[at(c)] === "string"));
-    // the figure to rank by: a numeric column that is not a count or an id
     const nums = t?.columns.filter((c) => t.rows.every((r) => r[at(c)] === null || typeof r[at(c)] === "number")) ?? [];
-    const numCol = nums.find((c) => !/count|^n$|_n$|\bid$|rank/i.test(c)) ?? nums[0];
+    // the figure to rank by: a rate or share when there is one (that is usually the finding), else a numeric
+    // column that is not a count or an id
+    const numCol = nums.find((c) => /rate|share|pct|percent|ratio|prob/i.test(c)) ?? nums.find((c) => !/count|^n$|_n$|\bid$|rank/i.test(c)) ?? nums[0];
     return (
       <section key={v.id} className={`flex min-w-0 flex-col rounded-2xl bg-[var(--d-sheet)] p-5 shadow-[0_1px_2px_rgba(20,35,56,.06)] ${span}`}>
         <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -387,7 +400,9 @@ export default function AskPage() {
       // or on a follow-up the conversation's own, drawn straight from the measures and said so
       const named = metrics.filter((m) => message.toLowerCase().includes(m.label.toLowerCase())).map((m) => m.key);
       const earlier = [...turns].reverse().map((t) => t.measure ?? t.views.find((v) => v.metrics.length && !v.table)?.metrics.slice(0, 1)).find((m) => m?.length) ?? [];
-      const own = named.length ? named : earlier;
+      // an analysis about no measure in particular ("do women prefer PowerApps?") is drawn from the model's main one
+      const main = metrics.find((m) => !m.needs?.by?.length && !Object.keys(m.needs?.params ?? {}).length)?.key;
+      const own = named.length ? named : earlier.length ? earlier : brought.length && main ? [main] : [];
       const basis = lead ? { ...lead, metrics: [...new Set([...lead.metrics, ...named])] }
         : own.length ? { kind: "compute", columns: [], rows: [], metrics: own, by: [], filters: {}, labels, origin: "agent" } as ExhibitData : undefined;
       if (basis) {
@@ -397,11 +412,15 @@ export default function AskPage() {
         const carry = prior === "waterfall" && /\b(it|this|that|them)\b/i.test(message) ? "drivers" : undefined;
         views.push(...await layout(pbiModel, message, basis, focus, cols.dates, cols.types, metrics, labels, carry, turns.at(-1)?.question));
       }
-      views.push(...brought);
+      // a statistical question's answer is the agent's analysis: it leads
+      if (SIGNIFICANT.test(message)) views.unshift(...brought); else views.push(...brought);
       // on a follow-up, a picture the conversation already shows is not drawn again
       const above = new Set(turns.flatMap((t) => t.views.map(sig)));
       const fresh = views.filter((v) => v.table || !above.has(sig(v)));
-      const note = !lead && fresh.some((v) => !v.table) ? `The agent did not compute this, so these are drawn straight from ${own.map((k) => labels[k] ?? k).join(" and ")} in the model.` : undefined;
+      const drawn = own.map((k) => labels[k] ?? k).join(" and ");
+      const note = lead || !fresh.some((v) => !v.table) ? undefined : brought.length
+        ? `Beside the agent's analysis, these pictures are drawn straight from ${drawn} in the model.`
+        : `The agent did not compute this, so these are drawn straight from ${drawn} in the model.`;
       update(id, () => ({ views: fresh, focus, note, measure: basis?.metrics.slice(0, 1), repeat: !fresh.length && views.length > 0 }));
     } catch (err: any) {
       if (err?.name !== "AbortError") update(id, () => ({ error: String(err?.message ?? err) }));
