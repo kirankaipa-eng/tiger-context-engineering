@@ -263,9 +263,10 @@ export default function AskPage() {
       className={`flex items-center gap-2 rounded-2xl bg-[var(--d-sheet)] p-1.5 pl-5 shadow-[0_12px_40px_-24px_rgba(20,35,56,.5)] ring-1 ring-[var(--d-rule)] focus-within:ring-2 focus-within:ring-[var(--d-teal)] ${big ? "py-2" : ""}`}>
       <label className="min-w-0 flex-1">
         <span className="sr-only">Ask a question</span>
-        <input ref={box} value={input} onChange={(e) => setInput(e.target.value)} autoFocus={big}
+        {/* the box's ring shows the focus; the desk's outline on the field itself would draw a box inside it */}
+        <input ref={box} value={input} onChange={(e) => setInput(e.target.value)} autoFocus={big} style={{ outline: "none" }}
           placeholder={question ? "Ask a follow-up, or something new" : "Ask a question about your numbers"}
-          className={`w-full bg-transparent text-[var(--d-ink)] outline-none placeholder:text-[var(--d-muted)] focus-visible:outline-none ${big ? "text-[18px]" : "text-[15px]"}`} />
+          className={`w-full bg-transparent text-[var(--d-ink)] outline-none placeholder:text-[var(--d-muted)] ${big ? "text-[18px]" : "text-[15px]"}`} />
       </label>
       {busy ? (
         <button type="button" onClick={() => abort.current?.abort()} aria-label="Stop" className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--d-navy)] text-white"><Square size={14} /></button>
