@@ -261,7 +261,10 @@ class BIToolkit:
 
     def list_columns(self, metrics: list[str] | None = None) -> str:
         try:
-            cols = self.layer.columns_for(metrics or list(self.layer.captured()))
+            # without metrics, every column some metric reaches: what all of them share can be nothing (a what-if
+            # metric reaches no table), and an empty list reads as "the model has no such column"
+            cols = self.layer.columns_for(metrics) if metrics else list(dict.fromkeys(
+                c for k in self.layer.captured() for c in self.layer.columns_for([k])))
         except LayerError as exc:
             return f"Error: {exc}"
         dates = [c for c in cols if self._type(c) == "dateTime"]
