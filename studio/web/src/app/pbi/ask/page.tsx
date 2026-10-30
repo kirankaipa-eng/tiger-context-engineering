@@ -12,10 +12,10 @@ import { ArrowUp, Bookmark, Check, Repeat, Share2, Square, X } from "lucide-reac
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { periodName } from "@/components/auto-chart";
+import { pctText, periodName } from "@/components/auto-chart";
 import { Visual, type Data, type VisualKind } from "@/components/ask-visuals";
 import type { ExhibitData } from "@/components/pbi-exhibit";
-import { ResultTable, SqlBlock } from "@/components/pbi";
+import { ResultTable, SqlBlock, num } from "@/components/pbi";
 import { streamNdjson } from "@/lib/api";
 import { owner, readAsked, tileOf, writeAsked } from "@/lib/desk";
 import { colLabel, columnTypes, isDimension, pbi, type PbiMetric, type Result } from "@/lib/pbi";
@@ -29,7 +29,18 @@ import { useLook } from "@/lib/theme";
     pick on the trail leaves alone (`own`: it keeps showing every value, the picked one marked).
     `table`: rows the agent brought itself (a listing, an analysis), drawn as they are. */
 type View = { id: string; kind: VisualKind | "rows"; title: string; metrics: string[]; queries: string[][]; dims: string[]; own: string[];
-  filters: Record<string, unknown>; table?: Data };
+  filters: Record<string, unknown>; table?: Data; ran?: Ran };
+/** How an analysis was run, as the sandbox reports it: shown under its result, code and all. */
+type Ran = { code?: string; rows?: number; seconds?: number; isolated?: boolean; commit?: string | null; row_security?: boolean;
+  method?: { test?: string; n?: number; basis?: string; assumptions?: string[]; caveats?: string[] }; checks?: { check: string; passed: boolean }[];
+  numbers?: Record<string, unknown> };
+/** A figure from an analysis as a reader wants it: a p-value bounded, a rate as a percentage, a small number not rounded to 0. */
+const figure = (name: string, v: unknown) => {
+  if (typeof v !== "number" || !Number.isFinite(v)) return String(v ?? "–");
+  if (/p.?value|^p$/i.test(name)) return v < 0.001 ? "< 0.001" : v.toFixed(3);
+  if (/rate|share|pct|percent|ratio|proportion/i.test(name) && !/\(pp\)|points/i.test(name) && Math.abs(v) <= 1) return pctText(v);
+  return Math.abs(v) < 10 && !Number.isInteger(v) ? String(Number(v.toPrecision(2))) : num(v);
+};
 type Run = { results?: Result[]; error?: string; loading?: boolean };
 type Focus = [string, unknown][];
 
@@ -258,6 +269,10 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
     // the figure to rank by: a rate or share when there is one (that is usually the finding), else a numeric
     // column that is not a count or an id
     const numCol = nums.find((c) => /rate|share|pct|percent|ratio|prob/i.test(c)) ?? nums.find((c) => !/count|^n$|_n$|\bid$|rank/i.test(c)) ?? nums[0];
+    // a name-and-value table, or values of unlike sizes (units beside a p-value): a list of figures, not a chart
+    const sizes = numCol ? t!.rows.map((r) => Math.abs(Number(r[at(numCol)]))).filter((x) => x > 0) : [];
+    const figures = !!t && !!textCol && nums.length === 1 && t.rows.length <= 30
+      && (/^(metric|measure|stat(istic)?|name|key|item|field|quantity|figure)s?$/i.test(textCol) || (sizes.length > 1 && Math.max(...sizes) / Math.min(...sizes) > 1000));
     return (
       <section key={v.id} className={`flex min-w-0 flex-col rounded-2xl bg-[var(--d-sheet)] p-5 shadow-[0_1px_2px_rgba(20,35,56,.06)] ${span}`}>
         <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -269,7 +284,17 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
           {run?.error ? <p className="text-[13px] text-[var(--d-rise-ink)]">{run.error}</p>
             : !ready ? <div className={`${hero ? "h-72" : "h-48"} rounded-xl bg-[var(--d-paper)]`} />
             : !rs![0].rows.length ? <p className="py-6 text-[13px] text-[var(--d-muted)]">Nothing here for this focus.</p>
-            : v.kind === "rows" ? (
+            : v.kind === "rows" && figures ? (
+              // a list of figures (units, a rate, a p-value): each by its name, not bars on one scale
+              <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-4">
+                {t!.rows.map((r, j) => (
+                  <div key={j} className="min-w-0">
+                    <dt className="truncate text-[12.5px] text-[var(--d-muted)]">{String(r[at(textCol!)])}</dt>
+                    <dd className="num mt-0.5 text-[22px] font-semibold leading-tight text-[var(--d-ink)]">{figure(String(r[at(textCol!)]), r[at(numCol!)])}</dd>
+                  </div>
+                ))}
+              </dl>
+            ) : v.kind === "rows" ? (
               <div className="space-y-3">
                 {textCol && numCol && rs![0].rows.length <= 40 && <Visual kind="leaderboard" data={rs!} metrics={[numCol]} dims={[textCol]} labels={labels} />}
                 <div className="max-h-72 overflow-auto"><ResultTable columns={rs![0].columns} rows={rs![0].rows} labels={labels} /></div>
@@ -278,6 +303,36 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
               <Visual kind={v.kind} data={rs!} metrics={v.metrics} dims={v.dims} labels={labels} picked={picked} height={hero ? 330 : 260} onPick={pick} />
             )}
         </div>
+        {/* the test's own numbers (p-value, interval, effect): for a statistical question, the answer itself */}
+        {v.ran?.numbers && Object.values(v.ran.numbers).some((x) => typeof x === "number") && (
+          <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 border-t border-[var(--d-rule)] pt-4 sm:grid-cols-3 lg:grid-cols-5">
+            {Object.entries(v.ran.numbers).filter(([, x]) => typeof x === "number").slice(0, 10).map(([k, x]) => (
+              <div key={k} className="min-w-0">
+                <dt className="truncate text-[12px] text-[var(--d-muted)]" title={k}>{k.replace(/_/g, " ")}</dt>
+                <dd className="num mt-0.5 text-[18px] font-semibold text-[var(--d-ink)]">{figure(k, x)}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        {v.ran && (
+          <details className="mt-3 text-[12px] text-[var(--d-muted)]">
+            <summary className="cursor-pointer select-none hover:text-[var(--d-ink)]">How the analysis was run</summary>
+            <div className="mt-2 space-y-2 text-[12.5px] text-[var(--d-ink-2)]">
+              <p>
+                {v.ran.method?.test ? <><b className="text-[var(--d-ink)]">{v.ran.method.test}</b>{v.ran.method.n ? ` on ${num(v.ran.method.n)} rows` : ""}. </> : null}
+                {v.ran.rows !== undefined ? `Python in the analysis sandbox, on a snapshot of ${num(v.ran.rows)} rows` : "Python in the analysis sandbox"}
+                {v.ran.row_security ? ", under your row-level security" : ""}{v.ran.isolated ? ", isolated from the network" : ""}
+                {v.ran.seconds !== undefined ? `, in ${v.ran.seconds.toFixed(1)} s` : ""}.{v.ran.commit ? ` Kept as ${v.ran.commit.slice(0, 8)}.` : ""}
+              </p>
+              {!!v.ran.method?.assumptions?.length && <p>Assumes: {v.ran.method.assumptions.join("; ")}.</p>}
+              {!!v.ran.method?.caveats?.length && <p>Caveats: {v.ran.method.caveats.join("; ")}.</p>}
+              {!!v.ran.checks?.length && (
+                <ul className="space-y-0.5">{v.ran.checks.map((c, j) => <li key={j} className={c.passed ? "" : "text-[var(--d-rise-ink)]"}>{c.passed ? "✓" : "✗"} {c.check}</li>)}</ul>
+              )}
+              {v.ran.code && <pre className="max-h-80 overflow-auto rounded-lg bg-[var(--d-paper)] p-3 font-mono text-[11.5px] leading-relaxed text-[var(--d-ink)]">{v.ran.code}</pre>}
+            </div>
+          </details>
+        )}
         {ready && rs![0].sql && (
           <details className="mt-3 text-[12px] text-[var(--d-muted)]">
             <summary className="cursor-pointer select-none hover:text-[var(--d-ink)]">How this was computed</summary>
@@ -395,7 +450,7 @@ export default function AskPage() {
       // rows it brought itself (a listing, an analysis), as they are, after the pictures
       results.filter((r) => r.kind !== "compute" && r.kind !== "explain" && r.columns.length && r.rows.length).forEach((r, i) => brought.push({
         id: `rows${i}`, kind: "rows", title: r.kind === "explore" ? "The rows behind the answer" : "What the analysis found", metrics: [], queries: [], dims: [], own: [], filters: {},
-        table: { columns: r.columns, rows: r.rows.slice(0, 200) } }));
+        table: { columns: r.columns, rows: r.rows.slice(0, 200) }, ran: (r as any).analysis }));
       // no computation of a measure (it ran an analysis, or computed nothing): the measures the question names,
       // or on a follow-up the conversation's own, drawn straight from the measures and said so
       const named = metrics.filter((m) => message.toLowerCase().includes(m.label.toLowerCase())).map((m) => m.key);
