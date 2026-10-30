@@ -55,12 +55,14 @@ async function plan(model: string, lead: ExhibitData, dates: string[], types: Re
   const own = new Set(d?.tables ?? []);
   const date = columns.find((c) => dates.includes(c));
   const table = (c: string) => c.replace(/\[.*$/, "").replace(/^'|'$/g, "");
+  const field = (c: string) => c.replace(/^.*\[|\].*$/g, "");
   // a column of the calendar (Month, Year) would be the trend again, not a breakdown
   const calendar = new Set(columns.filter((c) => dates.includes(c)).map(table));
   const dims = columns.filter((c) => !dates.includes(c) && isDimension(c, types[c]) && !(c in filters) && !calendar.has(table(c)));
   const outside = (c: string) => !own.has(table(c));
   const breakdowns = [...lead.by.filter((b) => !PERIOD.test(b)), ...dims.filter(outside), ...dims.filter((c) => !outside(c))]
-    .filter((c, i, a) => a.indexOf(c) === i).slice(0, 2);
+    // two tables' Product columns are the same question twice: one breakdown per column name
+    .filter((c, i, a) => a.findIndex((x) => field(x) === field(c)) === i).slice(0, 2);
   const trend = monthly.length ? needs(monthly[0])!.by[0] : lead.by.find((b) => PERIOD.test(b)) ?? (date ? `${date}:month` : undefined);
   const latest = trend ? monthly.filter((k) => needs(k)!.by[0] === trend) : [];
   const specs: Spec[] = [{ id: "number", role: "number", metrics, by: [], filters, latest }];
@@ -143,8 +145,18 @@ export default function AskPage() {
         } else if (e.type === "error") setError(e.data.message);
         else if (e.type === "result") setAnswer((a) => a || e.data.answer || "");
       }, ctrl.signal);
-      const lead = [...results].reverse().find((r) => r.kind === "compute" && r.metrics.length);
-      if (lead) { setStep("Laying out the dashboard"); setSpecs(await plan(pbiModel, lead, cols.dates, cols.types, metrics)); }
+      // a "why" answer (an investigation) lays out the same way: its measure over its period, broken down
+      // first by the columns it walked down
+      const last = [...results].reverse().find((r) => (r.kind === "compute" || r.kind === "explain") && r.metrics.length);
+      const lead = last?.explain ? { ...last, by: [last.explain.period, ...last.explain.steps.map((s) => s.by)] } : last;
+      if (lead) {
+        // what the answer narrowed to (Product = Excel) becomes the focus, not a fixed filter: the trail says
+        // so, its own chart shows it against the rest, and one click on "Everything" widens it
+        const narrowed = Object.keys(lead.filters).filter((k) => !PERIOD.test(k));
+        setStep("Laying out the dashboard");
+        setSpecs(await plan(pbiModel, { ...lead, by: [...narrowed, ...lead.by], filters: {} }, cols.dates, cols.types, metrics));
+        setFocus(Object.entries(lead.filters));
+      }
     } catch (err: any) {
       if (err?.name !== "AbortError") setError(String(err?.message ?? err));
     } finally { setStep(""); setBusy(false); abort.current = null; }
