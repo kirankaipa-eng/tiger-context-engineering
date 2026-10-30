@@ -169,7 +169,7 @@ export function PbiExhibit({ e, n, model, actions, landed, dates, types }: { e: 
         </div>
         <span className={`rounded-full px-2.5 py-0.5 text-[12px] font-semibold ${e.kind === "compute" ? "bg-[var(--d-teal-soft)] text-[var(--d-teal)]" : "bg-[var(--d-paper)] text-[var(--d-ink-2)]"}`}
           title={e.kind === "compute" ? "Computed from the Power BI model's own measure definitions" : "Rows of the model's tables, not a Power BI measure"}>
-          {e.kind === "compute" ? "From your Power BI report" : e.receipt ? "Checked against the transactions" : "Transactions"}
+          {e.kind === "compute" ? "From your Power BI measure" : e.receipt ? "Checked against the transactions" : "Transactions"}
         </span>
         {actions.pin && e.kind === "compute" && (
           <button onClick={() => actions.pin!(e)} aria-pressed={actions.pinned?.(e)} title="Pin to my dashboard"

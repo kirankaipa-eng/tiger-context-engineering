@@ -1,8 +1,9 @@
 "use client";
 
 /* The Power BI desk: a conversation on the left, the analysis it builds on the right, one exhibit per
-   answer (the results a question took to get there fold into it, under "How I got here"). Questions go to the same agent as `ictx pbi ask` (numbers only from the model's captured
-   measures, or rows of its tables); clicking a mark on an exhibit drills in directly, in SQL, with no
+   answer (the results a question took to get there fold into it, under "How I got here"). Questions go
+   to the same agent as `ictx pbi ask` (numbers only from the model's captured measures, or rows of its
+   tables); clicking a mark on an exhibit drills in directly, in SQL, with no
    model in between: break it down by another column, see its trend, or open the rows behind it. */
 
 import { ArrowUp, ChevronDown, Square } from "lucide-react";
@@ -248,7 +249,7 @@ export default function PbiDesk() {
               <div>
                 <h1 className="cond text-[30px] font-semibold leading-tight text-white">Ask about {model?.name ?? "the model"}.</h1>
                 <p className="mt-3 text-[14px] leading-relaxed text-[var(--d-rail-muted)]">
-                  Every number is computed from the Power BI model&rsquo;s own measure definitions ({model ? `${model.captured} of ${model.measures} captured` : "…"}), or from rows of its tables when no measure answers. Click anything on an exhibit to drill in.
+                  Every number is computed from the Power BI model&rsquo;s own measure definitions, translated to SQL ({model ? `${model.captured} of ${model.measures} so far` : "…"}), or from rows of its tables when no measure answers. Click anything on an exhibit to drill in.
                 </p>
                 <div className="mt-6 space-y-2">
                   {starters.map((s) => (
@@ -366,7 +367,7 @@ export default function PbiDesk() {
                   <path d="M10 50h44" stroke="#9aabbf" strokeWidth="2" /><path d="M14 44 26 32l8 6 16-18" stroke="#0f7b78" strokeWidth="3" fill="none" /><circle cx="50" cy="20" r="4" fill="#c97c06" />
                 </svg>
                 <p className="cond mt-4 text-[22px] font-semibold text-[var(--d-ink)]">Your analysis builds here, one exhibit per answer.</p>
-                <p className="mt-2 text-[14px] text-[var(--d-muted)]">Each exhibit says which Power BI measure it used and shows the SQL behind it, so it matches the report.</p>
+                <p className="mt-2 text-[14px] text-[var(--d-muted)]">Each exhibit says which Power BI measure it used and shows the SQL behind it, so you can check it against the report.</p>
               </div>
             </div>
             ) : (
