@@ -21,10 +21,11 @@ import { useLook } from "@/lib/theme";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-type Role = "number" | "trend" | "breakdown" | "detail";
+type Role = "number" | "trend" | "breakdown" | "detail" | "rows";
 /** `latest`: measures that only exist month by month (a change on the month before): the number tile
-    shows them at the month in focus, or the last one, from the trend's rows. */
-type Spec = { id: string; role: Role; metrics: string[]; by: string[]; filters: Record<string, unknown>; latest?: string[] };
+    shows them at the month in focus, or the last one, from the trend's rows.
+    `table`: rows the agent brought itself (a listing, an analysis), drawn as they are, not computed again. */
+type Spec = { id: string; role: Role; metrics: string[]; by: string[]; filters: Record<string, unknown>; latest?: string[]; title?: string; table?: { columns: string[]; rows: unknown[][] } };
 type Run = { result?: Result; error?: string; loading?: boolean };
 
 const PERIOD = /:(year|quarter|month|week|day)$/;
@@ -44,6 +45,10 @@ const split = (s: Spec, focus: [string, unknown][]) => {
   const v = versusOf(focus)?.[0];
   return !v || s.role === "detail" || s.by.includes(v) ? s.by : s.role === "trend" ? [...s.by, v] : [v, ...s.by];
 };
+/** A view as what it shows, whatever its id: its measures and columns. */
+const sig = (s: { metrics: string[]; by: string[] }) => JSON.stringify([[...s.metrics].sort(), [...s.by].sort()]);
+/** The same view loosely: its first measure by the same columns (Net Sales by month, whatever rides along). */
+const loose = (s: { metrics: string[]; by: string[] }) => JSON.stringify([s.metrics[0], [...s.by].sort()]);
 const newSession = () => `ask-${Math.random().toString(36).slice(2, 10)}`;
 
 /** The tiles for the measures an answer settled on: their number, their trend by month, two breakdowns
@@ -83,7 +88,8 @@ async function plan(model: string, lead: ExhibitData, dates: string[], types: Re
 
 /** One question of the conversation, with what came of it. Earlier ones stay on the page above the next,
     each with its own tiles and focus. */
-type Turn = { id: string; question: string; answer: string; specs: Spec[]; focus: [string, unknown][]; error?: string };
+/** `repeat`: the answer's views are all on the page already, above. */
+type Turn = { id: string; question: string; answer: string; specs: Spec[]; focus: [string, unknown][]; error?: string; repeat?: boolean };
 type Focus = [string, unknown][];
 const newTurn = (question: string): Turn => ({ id: Math.random().toString(36).slice(2, 10), question, answer: "", specs: [], focus: [] });
 
@@ -102,8 +108,9 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
   useEffect(() => {
     if (!specs.length) return;
     for (const s of specs) {
-      const filters = { ...s.filters, ...Object.fromEntries(focus.filter(([k]) => s.role === "detail" || !s.by.includes(k))) };
-      if (!s.metrics.length) continue;  // the number of a measure that needs a month: read off the trend
+      // a tile's own filters (what the agent asked for) win over the trail
+      const filters = { ...Object.fromEntries(focus.filter(([k]) => s.role === "detail" || !s.by.includes(k))), ...s.filters };
+      if (!s.metrics.length || s.table) continue;  // read off the trend, or rows already in hand
       const by = split(s, focus), k = key(s.metrics, by, filters);
       const hit = cache.get(k);
       if (hit) { setRuns((r) => ({ ...r, [s.id]: { result: hit } })); continue; }  // eslint-disable-line react-hooks/set-state-in-effect
@@ -141,17 +148,20 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
   };
   const tile = (s: Spec) => {
     // until a re-split tile's rows arrive, its old ones (without the compared column) are not drawn
-    const run = s.role === "number" && !s.metrics.length ? runs.trend : runs[s.id], held = run?.result;
-    const r = held && split(s, focus).every((d) => held.columns.includes(d)) ? held : undefined;
-    const mine = s.role === "detail" ? undefined : focus.find(([k]) => s.by.includes(k));
-    const title = (s.role === "number" ? [...s.metrics, ...(s.latest ?? [])].map(name).join(" · ") : s.role === "detail" ? `${name(s.metrics[0])}${s.metrics.length > 1 ? " and more" : ""}, by ${s.by.map(said).join(" and ")}`
-      : `${name(s.metrics[0])} by ${said(s.by[0])}`) + (versus && split(s, focus).length > s.by.length ? `, ${versus[1].map((x) => shown(versus[0], x)).join(" vs ")}` : "");
-    const span = { number: "lg:col-span-2", trend: "lg:col-span-4", breakdown: "lg:col-span-3", detail: "lg:col-span-6" }[s.role];
+    const run: Run | undefined = s.table ? { result: { ...s.table, sql: "", ms: 0, warehouse: "", truncated: false, notes: [] } }
+      : s.role === "number" && !s.metrics.length ? runs.trend : runs[s.id], held = run?.result;
+    const r = held && (s.table ? [] : split(s, focus)).every((d) => held.columns.includes(d)) ? held : undefined;
+    const mine = s.role === "detail" ? undefined : focus.find(([k]) => s.by.includes(k)) ?? Object.entries(s.filters).find(([k]) => s.by.includes(k));
+    const title = s.title ?? (s.role === "number" ? [...s.metrics, ...(s.latest ?? [])].map(name).join(" · ") : s.role === "detail" ? `${name(s.metrics[0])}${s.metrics.length > 1 ? " and more" : ""}, by ${s.by.map(said).join(" and ")}`
+      : `${name(s.metrics[0])} by ${s.by.map(said).join(" and ")}`)
+      // what the agent held this view to (Sep 2026; Word, Excel), so two of its views of one measure tell apart
+      + Object.entries(s.filters).filter(([k]) => !s.by.includes(k)).map(([k, v]) => ` · ${shown(k, v)}`).join("") + (versus && split(s, focus).length > s.by.length ? `, ${versus[1].map((x) => shown(versus[0], x)).join(" vs ")}` : "");
+    const span = { number: "lg:col-span-2", trend: "lg:col-span-4", breakdown: "lg:col-span-3", detail: "lg:col-span-6", rows: "lg:col-span-6" }[s.role];
     return (
       <section key={s.id} className={`flex min-w-0 flex-col rounded-2xl bg-[var(--d-sheet)] p-5 shadow-[0_1px_2px_rgba(20,35,56,.06)] ${span}`}>
         <header className="flex items-baseline gap-3">
           <h2 className="cond text-[15px] font-semibold text-[var(--d-ink)]">{title}</h2>
-          {s.role !== "number" && s.role !== "detail" && !mine && <span className="text-[12px] text-[var(--d-muted)]">Click {s.role === "trend" ? "a month" : "a bar"} to focus on it</span>}
+          {s.role !== "number" && s.role !== "detail" && s.role !== "rows" && !mine && <span className="text-[12px] text-[var(--d-muted)]">Click {s.role === "trend" ? "a month" : "a bar"} to focus on it</span>}
           {mine && <span className="rounded-full bg-[var(--d-teal-soft)] px-2 py-0.5 text-[12px] font-semibold text-[var(--d-teal)]">{shown(mine[0], mine[1])} picked</span>}
           {(!run || run.loading) && <span className="pulse-soft ml-auto text-[12px] text-[var(--d-muted)]">Computing…</span>}
         </header>
@@ -208,6 +218,13 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
                   );
                 })}
               </div>
+            ) : s.role === "rows" ? (
+              <div className="space-y-3">
+                {s.by.length > 0 && s.metrics.length > 0 && r.rows.length <= 40 && (
+                  <AutoChart columns={r.columns} rows={r.rows} dims={s.by} metrics={s.metrics} labels={labels} palette={DESK_PALETTE} height={260} hideKinds />
+                )}
+                <div className="max-h-72 overflow-auto"><ResultTable columns={r.columns} rows={r.rows} numeric={r.columns.filter((c) => r.rows.every((x) => x[r.columns.indexOf(c)] === null || typeof x[r.columns.indexOf(c)] === "number"))} labels={labels} /></div>
+              </div>
             ) : s.role === "detail" ? (
               <div className="max-h-80 overflow-auto"><ResultTable columns={r.columns} rows={r.rows} numeric={s.metrics} labels={{ ...labels, ...Object.fromEntries(s.by.map((b) => [b, said(b)])) }} /></div>
             ) : (
@@ -234,7 +251,8 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
         {live && answer && step && <p className="pulse-soft text-[13px] text-[var(--d-muted)]">{step}…</p>}
       </div>
       {(error || keepError) && <p className="mt-3 rounded-lg bg-[var(--d-rise-soft)] px-3 py-2 text-[13px] text-[var(--d-rise-ink)]">{error || keepError}</p>}
-      {!live && !specs.length && !error && <p className="mt-3 text-[13px] text-[var(--d-muted)]">This answer did not come from a measure, so there is no dashboard for it. Try asking about a number.</p>}
+      {!live && !specs.length && !error && turn.repeat && <p className="mt-3 text-[13px] text-[var(--d-muted)]">The views for this are already on the page, above.</p>}
+      {!live && !specs.length && !error && !turn.repeat && <p className="mt-3 text-[13px] text-[var(--d-muted)]">This answer did not come from a measure, so there is no dashboard for it. Try asking about a number.</p>}
 
       {specs.length > 0 && (
         <>
@@ -259,7 +277,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
               ))}
             </span>
           </div>
-          <div className="mt-2 grid grid-cols-1 gap-4 lg:grid-cols-6">{specs.map(tile)}</div>
+          <div className="mt-2 grid grid-cols-1 gap-4 lg:grid-flow-row-dense lg:grid-cols-6">{specs.map(tile)}</div>
         </>
       )}
     </article>
@@ -324,14 +342,45 @@ export default function AskPage() {
       // first by the columns it walked down
       const last = [...results].reverse().find((r) => (r.kind === "compute" || r.kind === "explain") && r.metrics.length);
       const lead = last?.explain ? { ...last, by: [last.explain.period, ...last.explain.steps.map((s) => s.by)] } : last;
+      // what the agent itself computed or brought for this question leads, as it asked for it
+      const focus = lead ? Object.entries(lead.filters) : [];
+      const answered: Spec[] = [];
+      // rows it brought (a listing, an analysis): charted by their first text column when they have one
+      results.filter((r) => r.kind !== "compute" && r.kind !== "explain" && r.columns.length && r.rows.length).forEach((r, i) => {
+        const rows = r.rows.slice(0, 200), at = (c: string) => r.columns.indexOf(c);
+        const numeric = r.columns.filter((c) => rows.every((x) => x[at(c)] === null || typeof x[at(c)] === "number"));
+        const text = r.columns.find((c) => !numeric.includes(c));
+        answered.push({ id: `r${i}`, role: "rows", metrics: text ? numeric.slice(0, 2) : [], by: text ? [text] : [], filters: {},
+          title: r.kind === "explore" ? "The rows behind the answer" : "What the analysis found", table: { columns: r.columns, rows } });
+      });
+      // its computations: a filter the trail already holds is left to the trail, so "Everything" still widens it
+      results.filter((r) => r.kind === "compute" && r.metrics.length).forEach((r, i) => {
+        const filters = Object.fromEntries(Object.entries(r.filters).filter(([k, v]) => r.by.includes(k) || JSON.stringify(lead?.filters[k]) !== JSON.stringify(v)));
+        const role: Role = !r.by.length ? "number" : r.by.some((b) => PERIOD.test(b)) && r.by.length <= 2 ? "trend" : r.by.length === 1 ? "breakdown" : "detail";
+        const spec = { id: `a${i}`, role, metrics: r.metrics, by: r.by, filters };
+        if (!answered.some((x) => sig(x) === sig(spec))) answered.push(spec);
+      });
+      // then the usual views of its measure, only where they add something: not one it gave, and not one an
+      // earlier question of the conversation already shows (in any focus)
+      let usual: Spec[] = [];
       if (lead) {
         // what the answer narrowed to (Product = Excel) becomes the focus, not a fixed filter: the trail says
         // so, its own chart shows it against the rest, and one click on "Everything" widens it
         const narrowed = Object.keys(lead.filters).filter((k) => !PERIOD.test(k));
         setStep("Laying out the dashboard");
-        const specs = await plan(pbiModel, { ...lead, by: [...narrowed, ...lead.by], filters: {} }, cols.dates, cols.types, metrics);
-        update(id, () => ({ specs, focus: Object.entries(lead.filters) }));
+        const before = new Set(turns.flatMap((t) => t.specs.map(loose)));
+        // a view split by the compared column is the same view whether the agent or the comparison split it
+        const v = versusOf(focus)?.[0], cols2 = (x: Spec) => JSON.stringify([...new Set([...x.by, ...(v ? [v] : [])])].sort());
+        usual = (await plan(pbiModel, { ...lead, by: [...narrowed, ...lead.by], filters: {} }, cols.dates, cols.types, metrics))
+          .filter((x) => !before.has(loose(x)) && !answered.some((a) => !a.table && cols2(a) === cols2(x) && a.metrics.includes(x.metrics[0])));
       }
+      // one the agent gave that is already on the page, same focus and all, is not drawn twice
+      const view = (x: Spec) => sig(x) + JSON.stringify(Object.entries(x.filters).sort());
+      const above = new Set(turns.filter((t) => JSON.stringify(t.focus) === JSON.stringify(focus)).flatMap((t) => t.specs.map(view)));
+      // the agent's own views all stay; the usual ones fill up to six tiles
+      const mine = answered.filter((x) => !above.has(view(x)));
+      const specs = [...mine, ...usual.slice(0, Math.max(0, 6 - mine.length))];
+      update(id, () => ({ specs, focus, repeat: !specs.length && results.length > 0 }));
     } catch (err: any) {
       if (err?.name !== "AbortError") update(id, () => ({ error: String(err?.message ?? err) }));
     } finally { setStep(""); setBusy(false); abort.current = null; }
