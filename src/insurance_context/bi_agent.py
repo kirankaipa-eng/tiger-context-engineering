@@ -28,10 +28,15 @@ from __future__ import annotations
 from .agent_runtime import RunContext  # tool signatures are resolved against module globals
 
 import re
+from contextvars import ContextVar
 from decimal import Decimal
 
 from .agent_tools import _markdown, _match_value
 from .bilayer import BILayer, LayerError, Warehouse, parse_ref
+
+# The conversation a tool call runs for: one toolkit serves every conversation on a model, so each
+# result it keeps is tagged with whose question made it (see `results`), and a stream sends only its own.
+ASKER: ContextVar[str | None] = ContextVar("asker", default=None)
 
 MAX_ROWS = 200
 MAX_VALUES = 10_000
@@ -229,7 +234,7 @@ class BIToolkit:
 
     def _keep(self, last: dict) -> None:
         self._seq += 1
-        self.results = [*self.results[-49:], {**last, "seq": self._seq}]
+        self.results = [*self.results[-49:], {**last, "seq": self._seq, "asker": ASKER.get()}]
 
     def list_metrics(self) -> str:
         shows = _shown_by(self.layer)

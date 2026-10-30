@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from insurance_context import llm
-from insurance_context.bi_agent import BIToolkit, _shown_by, _tree, describe, metric_needs, parameters
+from insurance_context.bi_agent import ASKER, BIToolkit, _shown_by, _tree, describe, metric_needs, parameters
 from insurance_context.bilayer import BILayer, LayerError, Warehouse, parse_ref
 from insurance_context.daxcapture import coverage_data
 
@@ -304,6 +304,7 @@ async def ask(mid: str, body: dict = Body(...)):
     async def lines():
         """The agent's events, plus `pbi_result` after each compute / explore: its rows, to chart."""
         seen = kit.results[-1]["seq"] if kit.results else 0
+        ASKER.set(session)  # the tools run in this context: what they keep is tagged as this conversation's
         async for line in orch.stream(message, session_id=session):
             yield line
             try:
@@ -313,7 +314,8 @@ async def ask(mid: str, body: dict = Body(...)):
             d = ev.get("data") or {}
             if ev.get("type") == "agent_tool_call" and d.get("status") == "completed" and \
                     d.get("tool") in ("compute", "explore", "explain"):
-                new = [r for r in kit.results if r["seq"] > seen]  # parallel calls may finish in any order
+                # parallel calls may finish in any order; another conversation's, running at the same time, are not ours
+                new = [r for r in kit.results if r["seq"] > seen and r.get("asker") == session]
                 seen = max([seen, *[r["seq"] for r in new]])
                 for last in new:
                     yield json.dumps({"type": "pbi_result", "data": {
