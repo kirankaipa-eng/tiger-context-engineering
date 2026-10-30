@@ -47,6 +47,8 @@ const raw = (d: Data, dim: string, label: string) => d.rows.map((r) => r[at(d, d
 export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick, height = 300 }: Props) {
   const d = data[0];
   if (!d) return null;
+  // marks are separated by the card's own color, so the gaps read as gaps in dark mode too
+  const sheet = (typeof document !== "undefined" && getComputedStyle(document.querySelector(".desk") ?? document.body).getPropertyValue("--d-sheet").trim()) || "#fff";
   const m = metrics[0], label = (k: string) => labels[k] ?? k;
   const ratio = (k: string) => isRatio(label(k), d.rows.map((r) => r[at(d, k)]));
   const f = (k: string) => (v: unknown) => (ratio(k) ? pctText(v) : num(v));
@@ -165,7 +167,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
         visualMap: { min: Math.min(...vals), max: Math.max(...vals), orient: "horizontal", left: "center", bottom: 0, itemHeight: 120, itemWidth: 10,
           inRange: { color: RAMP }, text: ["high", "low"], textStyle: { color: AXIS, fontSize: 11 }, formatter: (v: number) => fm(v) },
         series: [{ type: "heatmap", data: cells.map(([x, v]) => [+x.slice(5) - 1, years.indexOf(x.slice(0, 4)), v]),
-          itemStyle: { borderColor: "#fff", borderWidth: 2, borderRadius: 4 },
+          itemStyle: { borderColor: sheet, borderWidth: 2, borderRadius: 4 },
           label: { show: false } }],
       }, Math.max(180, years.length * 38 + 70), (e: any) => onPick?.(p, `${years[e.value[1]]}-${String(e.value[0] + 1).padStart(2, "0")}`));
     }
@@ -278,8 +280,8 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
             tooltip: { confine: true, formatter: (q: any) => `${q.treePathInfo?.slice(1).map((t: any) => t.name).join(" › ") ?? q.name}<br/><b>${fm(q.value)}</b> · ${pctOf(q.value / whole)} of all` },
             series: [{ type: "treemap", data: tree, roam: false, nodeClick: false, breadcrumb: { show: false }, width: "100%", height: "100%", top: 0, left: 0,
               label: { color: "#fff", fontSize: 12, formatter: (q: any) => `${q.name}\n${pctOf(q.value / whole)}` },
-              levels: [{ itemStyle: { borderWidth: 0, gapWidth: 4 } }, { itemStyle: { borderColor: "#fff", borderWidth: 0, gapWidth: 2, borderRadius: 4 } },
-                { colorAlpha: [0.6, 1], itemStyle: { borderColor: "#fff", borderWidth: 1, gapWidth: 1, borderRadius: 3 } }] }],
+              levels: [{ itemStyle: { borderWidth: 0, gapWidth: 4 } }, { itemStyle: { borderColor: sheet, borderWidth: 0, gapWidth: 2, borderRadius: 4 } },
+                { colorAlpha: [0.6, 1], itemStyle: { borderColor: sheet, borderWidth: 1, gapWidth: 1, borderRadius: 3 } }] }],
           }, height, (e: any) => e.data?.dim && onPick?.(e.data.dim, raw(d, e.data.dim, e.name)))}
         </div>
       );
@@ -336,7 +338,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
         visualMap: period
           ? { min: -span, max: span, orient: "horizontal", left: "center", bottom: 0, itemHeight: 120, itemWidth: 10, inRange: { color: [DOWN, "#eef0f3", UP] }, text: ["above its average", "below"], textStyle: { color: AXIS, fontSize: 11 }, dimension: 2 }
           : { min: Math.min(...vals), max: Math.max(...vals), orient: "horizontal", left: "center", bottom: 0, itemHeight: 120, itemWidth: 10, inRange: { color: RAMP }, text: ["high", "low"], textStyle: { color: AXIS, fontSize: 11 }, dimension: 2, formatter: (v: number) => fm(v) },
-        series: [{ type: "heatmap", data, itemStyle: { borderColor: "#fff", borderWidth: 1.5, borderRadius: 3 },
+        series: [{ type: "heatmap", data, itemStyle: { borderColor: sheet, borderWidth: 1.5, borderRadius: 3 },
           label: { show: !period && xs.length <= 8 && ys.length <= 10, color: "#0b2b29", fontSize: 10, formatter: (q: any) => fm(q.value[3]) } }],
       }, Math.max(220, ys.length * 26 + 90), (e: any) => onPick?.(y, raw(d, y, ys[e.value[1]])));
     }
@@ -380,7 +382,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
         xAxis: { ...axisNum(mx), name: label(mx), nameLocation: "middle", nameGap: 26, nameTextStyle: { color: AXIS, fontSize: 11 }, scale: true },
         yAxis: { ...axisNum(my), name: label(my), nameTextStyle: { color: AXIS, fontSize: 11, align: "left" }, scale: true },
         series: [{ type: "scatter", data: pts, symbolSize: (v: number[]) => (ms ? 8 + 22 * Math.sqrt(v[2] / big) : 11),
-          itemStyle: { color: "rgba(20,149,142,.7)", borderColor: "#fff", borderWidth: 1.5 },
+          itemStyle: { color: "rgba(20,149,142,.7)", borderColor: sheet, borderWidth: 1.5 },
           label: { show: true, position: "right", color: "#5b6472", fontSize: 11, formatter: (q: any) => (named.has(q.name) ? q.name : "") } }],
       }, height, (e: any) => onPick?.(dim, raw(d, dim, e.name)));
     }
@@ -408,7 +410,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
       return chart({
         tooltip: { confine: true, formatter: (q: any) => `${q.value[0]}<br/><b>${fm(q.value[1])}</b>` },
         visualMap: { min: Math.min(...vals), max: Math.max(...vals), orient: "horizontal", left: "center", bottom: 0, itemHeight: 120, itemWidth: 10, inRange: { color: RAMP }, text: ["more", "less"], textStyle: { color: AXIS, fontSize: 11 }, formatter: (v: number) => fm(v) },
-        calendar: { range: year, top: 28, left: 36, right: 8, cellSize: ["auto", 15], itemStyle: { borderColor: "#fff", borderWidth: 2, color: "#f3f5f7" },
+        calendar: { range: year, top: 28, left: 36, right: 8, cellSize: ["auto", 15], itemStyle: { borderColor: sheet, borderWidth: 2, color: "#f3f5f7" },
           splitLine: { show: false }, yearLabel: { show: false }, dayLabel: { color: AXIS, fontSize: 10, firstDay: 1, nameMap: "en" }, monthLabel: { color: AXIS, fontSize: 10.5 } },
         series: [{ type: "heatmap", coordinateSystem: "calendar", data: shown }],
       }, 210);

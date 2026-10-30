@@ -274,7 +274,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
     const figures = !!t && !!textCol && nums.length === 1 && t.rows.length <= 30
       && (/^(metric|measure|stat(istic)?|name|key|item|field|quantity|figure)s?$/i.test(textCol) || (sizes.length > 1 && Math.max(...sizes) / Math.min(...sizes) > 1000));
     return (
-      <section key={v.id} className={`flex min-w-0 flex-col rounded-2xl bg-[var(--d-sheet)] p-5 shadow-[0_1px_2px_rgba(20,35,56,.06)] ${span}`}>
+      <section key={v.id} className={`flex min-w-0 flex-col rounded-2xl bg-[var(--d-sheet)] p-5 shadow-[0_1px_2px_rgba(20,35,56,.06)] ring-1 ring-[var(--d-rule)] ${span}`}>
         <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <h2 className={`cond font-semibold text-[var(--d-ink)] ${hero ? "text-[17px]" : "text-[15px]"}`}>{v.title}</h2>
           {mine && <span className="rounded-full bg-[var(--d-teal-soft)] px-2 py-0.5 text-[12px] font-semibold text-[var(--d-teal)]">{shown(mine[0], mine[1])} picked</span>}
@@ -357,7 +357,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
       {turn.note && views.length > 0 && <p className="mt-4 rounded-lg bg-[var(--d-teal-soft)] px-3 py-2 text-[13px] text-[var(--d-teal)]">{turn.note}</p>}
       {views.length > 0 && (
         <>
-          <div className="sticky top-0 z-10 -mx-8 mt-6 flex flex-wrap items-center gap-2 bg-[var(--d-paper)]/95 px-8 py-3 backdrop-blur">
+          <div className="sticky top-0 z-10 -mx-8 mt-6 flex flex-wrap items-center gap-2 bg-[var(--d-ground)]/95 px-8 py-3 backdrop-blur">
             <span className="text-[13px] text-[var(--d-muted)]">Showing</span>
             <button onClick={() => setFocus([])} className={`rounded-full px-3 py-1 text-[13px] ${focus.length ? "text-[var(--d-teal)] hover:underline" : "bg-[var(--d-navy)] font-semibold text-white"}`}>Everything</button>
             {focus.map(([k, v], i) => (
@@ -435,8 +435,9 @@ export default function AskPage() {
         else if (e.type === "pbi_result") {
           const d = e.data as any, r: ExhibitData = { ...d, filters: d.filters ?? {}, origin: "agent" };
           results.push(r);
-          // the agent's own rows stand in for the same computation, so it need not run twice
-          if (r.kind === "compute") cache.current.set(key(r.metrics, r.by, r.filters), { columns: r.columns, rows: r.rows, sql: r.sql ?? "", ms: r.ms, warehouse: r.warehouse ?? "", truncated: false, notes: [] });
+          // the agent's own total stands in for the same computation, so it need not run twice (not its
+          // breakdowns: it may have kept only the top rows it showed)
+          if (r.kind === "compute" && !r.by.length) cache.current.set(key(r.metrics, r.by, r.filters), { columns: r.columns, rows: r.rows, sql: r.sql ?? "", ms: r.ms, warehouse: r.warehouse ?? "", truncated: false, notes: [] });
         } else if (e.type === "error") update(id, () => ({ error: e.data.message }));
         else if (e.type === "result") update(id, (t) => ({ answer: t.answer || e.data.answer || "" }));
       }, ctrl.signal);
@@ -530,7 +531,7 @@ export default function AskPage() {
   );
 
   return (
-    <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-paper)] text-[var(--d-ink)]`}>
+    <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-ground)] text-[var(--d-ink)]`}>
       <main className="min-h-0 flex-1 overflow-y-auto">
         {!turns.length ? (
           <div className="mx-auto flex min-h-full max-w-2xl flex-col justify-center px-6 py-16">

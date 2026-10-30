@@ -83,7 +83,7 @@ export default function MyDashboard() {
   });
 
   return (
-    <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-paper)] text-[var(--d-ink)]`}>
+    <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-ground)] text-[var(--d-ink)]`}>
       <header className="flex h-14 shrink-0 items-center gap-4 border-b border-[var(--d-rule)] bg-[var(--d-sheet)] px-6">
         <span className="cond text-[19px] font-semibold">My briefs</span>
         <span className="text-[14px] text-[var(--d-muted)]">{owner === "me" ? "" : owner}</span>

@@ -280,7 +280,7 @@ export default function PbiDesk() {
     <>
             {turns.map((t, i) => t.role === "user" ? (
               <div key={i} className="flex justify-end">
-                <div className="max-w-[88%] rounded-2xl rounded-br-sm bg-[var(--d-sheet)] px-4 py-2.5 text-[14px] text-[var(--d-ink)]">
+                <div className="max-w-[88%] rounded-2xl rounded-br-sm bg-[var(--d-paper)] px-4 py-2.5 text-[14px] text-[var(--d-ink)]">
                   {t.drill && <span className="mb-0.5 block text-[11px] font-semibold text-[var(--d-teal)]">Drill-down</span>}
                   {t.text}
                 </div>
@@ -324,7 +324,7 @@ export default function PbiDesk() {
   );
 
   return (
-    <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-paper)] text-[var(--d-ink)]`}>
+    <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-ground)] text-[var(--d-ink)]`}>
       <header className="flex h-14 shrink-0 items-center gap-5 bg-[var(--d-navy)] px-6 text-[var(--d-rail-ink)]">
         <div className="flex items-baseline gap-3">
           <span className="cond text-[19px] font-semibold text-white">{model?.name ?? "…"}</span>

@@ -58,7 +58,7 @@ export default function TeamSpace() {
   const s = team?.scouted;
 
   return (
-    <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-paper)] text-[var(--d-ink)]`}>
+    <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-ground)] text-[var(--d-ink)]`}>
       <header className="flex h-14 shrink-0 items-center gap-4 border-b border-[var(--d-rule)] bg-[var(--d-sheet)] px-6">
         <span className="cond text-[19px] font-semibold text-[var(--d-ink)]">{team?.model ?? "…"}</span>
         <span className="text-[14px] text-[var(--d-muted)]">Team</span>
