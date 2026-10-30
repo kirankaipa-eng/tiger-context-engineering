@@ -40,7 +40,7 @@ const STEP: Record<string, string> = {
 };
 /** "Store[Store]" -> "Store", "Calendar[Date]:month" -> "month": as a person says it. */
 const said = (ref: string) => (PERIOD.test(ref) ? ref.match(PERIOD)![1] : colLabel(ref).replace(/ · .*$/, ""));
-const shown = (ref: string, v: unknown) => (PERIOD.test(ref) ? periodName(v) : v === null || v === undefined || v === "" ? "(blank)" : Array.isArray(v) ? v.join(", ") : String(v));
+const shown = (ref: string, v: unknown): string => (Array.isArray(v) ? v.map((x) => shown(ref, x)).join(", ") : PERIOD.test(ref) ? periodName(v) : v === null || v === undefined || v === "" ? "(blank)" : String(v));
 const key = (metrics: string[], by: string[], filters: Record<string, unknown>) => JSON.stringify([metrics, by, Object.entries(filters).sort()]);
 /** A focus on a few values of one column (Product: Word, Excel) is a comparison: the values it names. */
 const versusOf = (focus: Focus) => focus.find(([k, v]) => Array.isArray(v) && v.length > 1 && v.length <= 6 && !PERIOD.test(k)) as [string, unknown[]] | undefined;
@@ -59,18 +59,19 @@ const INTENTS: [Intent, RegExp][] = [
   ["spread", /\bdistribution\b|\bspread\b|\bvolatil|\bvariab|\bconsistent\b|\bsteady\b|\boutlier|\bbox ?plot\b/i],
   ["daily", /\bdaily\b|\bday by day\b|\bwhich days?\b|\bcalendar\b|\bweekdays?\b|\bweekends?\b/i],
   ["season", /\bseason|\bpeak months?\b|\bwhich months?\b|\btime of (the )?year\b|\bmonth of the year\b/i],
-  ["mix", /\bmix\b|\bshares?\b|\bsplit\b|\bcomposition\b|\bproportion|\bmade up\b|\bmade of\b|\btreemap\b|\bdonut\b|\bpie\b|\bportion\b|\bbreak ?down\b/i],
+  ["mix", /\bmix\b|\bshares?\b|\bsplit\b|\bcomposition\b|\bproportion|\bmade up\b|\bmade of\b|\btreemap\b|\bdonut\b|\bpie\b|\bportion\b|\bbreak ?down\b|\bbreak (it|this|that|them) down\b/i],
   ["matrix", /\bheat ?map\b|\bacross\b.+\band\b|\bmatrix\b/i],
   ["rank", /\bhighest\b|\blowest\b|\btop\b|\bbottom\b|\bbest\b|\bworst\b|\bmost\b|\bleast\b|\brank|\blargest\b|\bbiggest\b|\bsmallest\b|\bwhere\b|\bwhich\b|\bleaders?\b/i],
   ["trend", /\btrend|\bmoved?\b|\bover time\b|\bgrow|\bdeclin|\bchang|\bhistory\b|\bmonth by month\b|\bsince\b|\btrajectory\b|\bmoving\b/i],
 ];
 const PLACE = /store|city|region|country|state|location|branch|site|territor|market|area|zone/i;
+const PEOPLE = /gender|\bsex\b|^age|age ?(band|group|range)|income|marital|education|occupation|generation/i;
 
 /** The pictures for an answer: up to three of different kinds, the first the one the question asks for most.
     From the answer it takes the measures and the columns it settled on; the question's words (and the
     trail's comparison) pick the kinds. A measure that only exists month by month is drawn over months. */
 async function layout(model: string, question: string, lead: ExhibitData, focus: Focus, dates: string[], types: Record<string, string>,
-  all: PbiMetric[], labels: Record<string, string>): Promise<View[]> {
+  all: PbiMetric[], labels: Record<string, string>, carry?: Intent): Promise<View[]> {
   const needs = (k: string) => all.find((x) => x.key === k)?.needs;
   const bare = (k: string) => !needs(k)?.by?.length && !Object.values(needs(k)?.params ?? {}).some((x) => x.default == null);
   const monthly = lead.metrics.filter((k) => !bare(k) && needs(k)!.by.length === 1 && PERIOD.test(needs(k)!.by[0]) && !Object.keys(needs(k)!.params ?? {}).length);
@@ -89,12 +90,15 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
   const day = date ? `${date}:day` : undefined;
   const q = question.toLowerCase();
   const V = versusOf(focus)?.[0];
-  // the columns to draw by: the answer's own, then those the question names, then places for a "where",
+  // the columns to draw by: those the question names (its words win), then the answer's own, then places for a "where",
   // then other tables' before the measure's own; one per column name (two tables' Product are one)
   const dims = columns.filter((c) => !dates.includes(c) && isDimension(c, types[c]) && !calendar.has(table(c)));
   // named in the question, in the order named ("from category to product")
-  const named = dims.filter((c) => q.includes(said(c).toLowerCase())).sort((a, b) => q.indexOf(said(a).toLowerCase()) - q.indexOf(said(b).toLowerCase()));
-  const ordered = [...lead.by.filter((b) => !PERIOD.test(b)), ...named, ...(/\bwhere\b/.test(q) ? dims.filter((c) => PLACE.test(field(c))) : []),
+  // a word for a kind of column ("demography", "geography") stands for its columns
+  const kinds = [...(/demograph|customer profile|\bwho (buys|bought|are)\b/.test(q) ? dims.filter((c) => PEOPLE.test(field(c))) : []),
+    ...(/geograph|\bregions?\b|\blocations?\b/.test(q) ? dims.filter((c) => PLACE.test(field(c))) : [])];
+  const named = [...kinds, ...dims.filter((c) => q.includes(said(c).toLowerCase())).sort((a, b) => q.indexOf(said(a).toLowerCase()) - q.indexOf(said(b).toLowerCase()))];
+  const ordered = [...named, ...lead.by.filter((b) => !PERIOD.test(b)), ...(/\bwhere\b/.test(q) ? dims.filter((c) => PLACE.test(field(c))) : []),
     ...dims.filter((c) => !own.has(table(c))), ...dims.filter((c) => own.has(table(c)))]
     // a part of a date (a Month or Year column) is the trend's, not something to rank or split by
     .filter((c, i, a) => c !== V && !/^(month|year|quarter|week|day|date)/i.test(field(c)) && a.findIndex((x) => field(x) === field(c)) === i);
@@ -121,8 +125,8 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
       A ? view("gap", `Where the gap comes from, by ${said(A)}`, [[A, V]], [A, V], m1, [A]) : null]
       : [A ? view("leaderboard", `${M} by ${said(A)}`, [[A]], [A]) : null, A && P ? view("heatmap", `${M} across ${lower(A)} and months`, [[A, P]], [A, P]) : null],
     drivers: () => [A && P && !ratio ? view("waterfall", `What moved ${M}, by ${said(A)}`, [[A, P]], [A, P]) : null,
-      A && P ? view("heatmap", `${M} by ${lower(A)}, against its own average`, [[A, P]], [A, P]) : null,
-      B && P && !ratio ? view("waterfall", `What moved ${M}, by ${said(B)}`, [[B, P]], [B, P]) : null],
+      B && P && !ratio ? view("waterfall", `What moved ${M}, by ${said(B)}`, [[B, P]], [B, P]) : null,
+      A && P ? view("heatmap", `${M} by ${lower(A)}, against its own average`, [[A, P]], [A, P]) : null],
     mix: () => [A ? (/\bdonut\b|\bpie\b/.test(q) || !B ? view("donut", `${M} by ${said(A)}`, [[A]], [A]) : view("treemap", `What ${M} is made of`, [[A, B]], [A, B])) : null,
       P && A ? view("mix", `How the mix shifted, by ${said(A)}`, [[P, A]], [P, A]) : null,
       A && B ? view("sankey", `How ${M} flows from ${lower(A)} to ${lower(B)}`, [[A, B]], [A, B]) : null],
@@ -148,18 +152,21 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
   // days come capped, oldest first: a calendar asks for the latest year's only
   const latestYear = intents.includes("daily") && date
     ? await pbi.compute(model, { metrics: [first], by: [`${date}:year`], filters: {} }).then((r) => r.rows.map((x) => x[0]).sort().at(-1)).catch(() => undefined) : undefined;
-  if (lead.kind === "explain" && !intents.includes("drivers")) intents.unshift("drivers");
+  // an answer held to two periods (Sep 2026 against Sep 2025) is about the change between them
+  const between = focus.some(([k, v]) => PERIOD.test(k) && Array.isArray(v) && v.length === 2);
+  if ((lead.kind === "explain" || between || carry === "drivers") && !intents.includes("drivers")) intents.unshift("drivers");
   if (V && !intents.includes("compare")) intents = intents.length ? [intents[0], "compare", ...intents.slice(1)] : ["compare"];
   if (!intents.length) {  // no telling words: the answer's own shape decides
     const by = lead.by.filter((b) => !PERIOD.test(b)), overTime = lead.by.some((b) => PERIOD.test(b));
     intents = by.length >= 2 ? ["matrix", "rank"] : by.length ? (overTime ? ["spread", "trend"] : ["rank", "mix"]) : overTime ? ["trend", "season"] : ["trend", "rank"];
   }
-  // the first picture of each intent asked for, then their others; never two of one kind (but for the two gaps)
+  // the first picture of each intent asked for, then their others; never two of one kind (but for gaps and
+  // waterfalls, which differ by what they split)
   const lists = intents.map((i) => pictures[i]().filter((v): v is View => !!v));
   const order = [...lists.map((l) => l[0]), ...lists.flatMap((l) => l.slice(1))].filter(Boolean);
   const out: View[] = [];
   for (const v of order) {
-    if (out.length < 3 && !out.some((x) => (v.kind === "gap" ? sig(x) === sig(v) : x.kind === v.kind))) out.push({ ...v, id: `${v.kind}${out.length}` });
+    if (out.length < 3 && !out.some((x) => (v.kind === "gap" || v.kind === "waterfall" ? sig(x) === sig(v) : x.kind === v.kind))) out.push({ ...v, id: `${v.kind}${out.length}` });
   }
   // a total with nothing else to it reads best as a number
   if (!out.length) out.push({ ...view("number", M, [[], ...(P ? [[P]] : [])], P ? [P] : [], metrics, []), id: "number0" });
@@ -167,11 +174,11 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
 }
 
 /** One question of the conversation, with what came of it. `repeat`: its pictures are all above already. */
-type Turn = { id: string; question: string; answer: string; views: View[]; focus: Focus; error?: string; repeat?: boolean };
+type Turn = { id: string; question: string; answer: string; views: View[]; focus: Focus; error?: string; repeat?: boolean; note?: string };
 const newTurn = (question: string): Turn => ({ id: Math.random().toString(36).slice(2, 10), question, answer: "", views: [], focus: [] });
 /** A kept turn as saved (views under `specs`); one saved before views existed opens with its answer only. */
 const fromSaved = (t: { id: string; question: string; answer: string; specs: unknown[]; focus: Focus; error?: string }): Turn =>
-  ({ id: t.id, question: t.question, answer: t.answer, focus: t.focus, error: t.error, views: (t.specs as any[]).filter((v) => v && "queries" in v && "kind" in v) });
+  ({ id: t.id, question: t.question, answer: t.answer, focus: t.focus, error: t.error, note: (t as any).note, views: (t.specs as any[]).filter((v) => v && "queries" in v && "kind" in v) });
 
 /** A turn's answer and its views: each runs here, re-run when its trail changes. */
 function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
@@ -264,6 +271,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
       {(error || keepError) && <p className="mt-3 rounded-lg bg-[var(--d-rise-soft)] px-3 py-2 text-[13px] text-[var(--d-rise-ink)]">{error || keepError}</p>}
       {!live && !views.length && !error && <p className="mt-3 text-[13px] text-[var(--d-muted)]">{turn.repeat ? "The pictures for this are already on the page, above." : "This answer did not come from a measure, so there is nothing to draw. Try asking about a number."}</p>}
 
+      {turn.note && views.length > 0 && <p className="mt-4 rounded-lg bg-[var(--d-teal-soft)] px-3 py-2 text-[13px] text-[var(--d-teal)]">{turn.note}</p>}
       {views.length > 0 && (
         <>
           <div className="sticky top-0 z-10 -mx-8 mt-6 flex flex-wrap items-center gap-2 bg-[var(--d-paper)]/95 px-8 py-3 backdrop-blur">
@@ -360,18 +368,26 @@ export default function AskPage() {
       results.filter((r) => r.kind !== "compute" && r.kind !== "explain" && r.columns.length && r.rows.length).forEach((r, i) => brought.push({
         id: `rows${i}`, kind: "rows", title: r.kind === "explore" ? "The rows behind the answer" : "What the analysis found", metrics: [], queries: [], dims: [], own: [], filters: {},
         table: { columns: r.columns, rows: r.rows.slice(0, 200) } }));
-      // no computation of a measure (it ran an analysis): the measures the question names
+      // no computation of a measure (it ran an analysis, or computed nothing): the measures the question names,
+      // or on a follow-up the conversation's own, drawn straight from the measures and said so
       const named = metrics.filter((m) => message.toLowerCase().includes(m.label.toLowerCase())).map((m) => m.key);
-      const basis = lead ? { ...lead, metrics: [...new Set([...lead.metrics, ...named])] } : (named.length ? { kind: "compute", columns: [], rows: [], metrics: named, by: [], filters: {}, labels, origin: "agent" } as ExhibitData : undefined);
+      const earlier = [...turns].reverse().flatMap((t) => t.views).find((v) => v.metrics.length && !v.table)?.metrics.slice(0, 1) ?? [];
+      const own = named.length ? named : earlier;
+      const basis = lead ? { ...lead, metrics: [...new Set([...lead.metrics, ...named])] }
+        : own.length ? { kind: "compute", columns: [], rows: [], metrics: own, by: [], filters: {}, labels, origin: "agent" } as ExhibitData : undefined;
       if (basis) {
         setStep("Choosing the pictures");
-        views.push(...await layout(pbiModel, message, basis, focus, cols.dates, cols.types, metrics, labels));
+        // a follow-up on "it" after a "why" keeps explaining the change ("break it down by age")
+        const prior = turns.at(-1)?.views.find((v) => !v.table)?.kind;
+        const carry = prior === "waterfall" && /\b(it|this|that|them)\b/i.test(message) ? "drivers" : undefined;
+        views.push(...await layout(pbiModel, message, basis, focus, cols.dates, cols.types, metrics, labels, carry));
       }
       views.push(...brought);
       // on a follow-up, a picture the conversation already shows is not drawn again
       const above = new Set(turns.flatMap((t) => t.views.map(sig)));
       const fresh = views.filter((v) => v.table || !above.has(sig(v)));
-      update(id, () => ({ views: fresh, focus, repeat: !fresh.length && views.length > 0 }));
+      const note = !lead && fresh.some((v) => !v.table) ? `The agent did not compute this, so these are drawn straight from ${own.map((k) => labels[k] ?? k).join(" and ")} in the model.` : undefined;
+      update(id, () => ({ views: fresh, focus, note, repeat: !fresh.length && views.length > 0 }));
     } catch (err: any) {
       if (err?.name !== "AbortError") update(id, () => ({ error: String(err?.message ?? err) }));
     } finally { setStep(""); setBusy(false); abort.current = null; }
@@ -400,7 +416,7 @@ export default function AskPage() {
   useEffect(() => {
     if (busy || !turns.length || !pbiModel) return;
     const list = readAsked(pbiModel), prev = list.find((x) => x.id === session), last = turns[turns.length - 1];
-    const saved = turns.map((t) => ({ id: t.id, question: t.question, answer: t.answer, specs: t.views, focus: t.focus, error: t.error }));
+    const saved = turns.map((t) => ({ id: t.id, question: t.question, answer: t.answer, specs: t.views, focus: t.focus, error: t.error, note: t.note }));
     const entry = { id: session, title: prev?.title ?? turns[0].question, question: last.question, answer: last.answer, specs: last.views, focus: last.focus, turns: saved, at: Date.now() / 1000 };
     const same = prev && (prev.turns?.length ?? 1) === turns.length;
     writeAsked(pbiModel, same ? list.map((x) => (x.id === session ? entry : x)) : [entry, ...list.filter((x) => x.id !== session)]);
