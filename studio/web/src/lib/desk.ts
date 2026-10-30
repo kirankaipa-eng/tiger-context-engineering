@@ -76,7 +76,9 @@ export function fold(cards: ExhibitData[]) {
 }
 
 /** A question asked on the Ask page, kept in this browser so the sidebar can reopen it where it left off. */
-export type Asked = { id: string; title: string; question: string; answer: string; specs: unknown[]; focus: [string, unknown][]; at: number };
+export type Asked = { id: string; title: string; question: string; answer: string; specs: unknown[]; focus: [string, unknown][]; at: number;
+  /** every question of the conversation, in order (the fields above are its last; kept before threads had none) */
+  turns?: { id: string; question: string; answer: string; specs: unknown[]; focus: [string, unknown][]; error?: string }[] };
 const askedKey = (model: string) => `ask-history:${model}`;
 export function readAsked(model: string): Asked[] {
   try { return JSON.parse(localStorage.getItem(askedKey(model)) ?? "[]"); } catch { return []; }

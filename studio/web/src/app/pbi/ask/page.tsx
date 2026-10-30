@@ -34,7 +34,7 @@ const STEP: Record<string, string> = {
 };
 /** "Store[Store]" -> "Store", "Calendar[Date]:month" -> "month": as a person says it. */
 const said = (ref: string) => (PERIOD.test(ref) ? ref.match(PERIOD)![1] : colLabel(ref).replace(/ · .*$/, ""));
-const shown = (ref: string, v: unknown) => (PERIOD.test(ref) ? periodName(v) : v === null || v === undefined || v === "" ? "(blank)" : String(v));
+const shown = (ref: string, v: unknown) => (PERIOD.test(ref) ? periodName(v) : v === null || v === undefined || v === "" ? "(blank)" : Array.isArray(v) ? v.join(", ") : String(v));
 const key = (metrics: string[], by: string[], filters: Record<string, unknown>) => JSON.stringify([metrics, by, Object.entries(filters).sort()]);
 const newSession = () => `ask-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -73,39 +73,21 @@ async function plan(model: string, lead: ExhibitData, dates: string[], types: Re
   return specs;
 }
 
-export default function AskPage() {
-  const { pbiModel, pbiModels, llm } = useStudio();
-  const look = useLook();
-  const model = pbiModels.find((m) => m.id === pbiModel);
-  const [metrics, setMetrics] = useState<PbiMetric[]>([]);
-  const [cols, setCols] = useState<{ dates: string[]; types: Record<string, string> }>({ dates: [], types: {} });
-  const [session, setSession] = useState(newSession);
-  const [input, setInput] = useState("");
-  const [question, setQuestion] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [step, setStep] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [specs, setSpecs] = useState<Spec[]>([]);
-  const [runs, setRuns] = useState<Record<string, Run>>({});
-  const [focus, setFocus] = useState<[string, unknown][]>([]);  // the trail: each click narrows every tile
-  const [kept, setKept] = useState(false);
-  const cache = useRef(new Map<string, Result>());
-  const abort = useRef<AbortController | null>(null);
-  const box = useRef<HTMLInputElement>(null);
+/** One question of the conversation, with what came of it. Earlier ones stay on the page above the next,
+    each with its own tiles and focus. */
+type Turn = { id: string; question: string; answer: string; specs: Spec[]; focus: [string, unknown][]; error?: string };
+type Focus = [string, unknown][];
+const newTurn = (question: string): Turn => ({ id: Math.random().toString(36).slice(2, 10), question, answer: "", specs: [], focus: [] });
 
-  useEffect(() => {
-    if (!pbiModel) return;
-    Promise.all([pbi.metrics(pbiModel), pbi.tables(pbiModel)]).then(([r, t]) => {
-      setMetrics(r.metrics.filter((m) => m.status === "captured"));
-      setCols(columnTypes(t.tables));
-    }).catch(() => {});
-  }, [pbiModel]);
-  const labels = useMemo(() => Object.fromEntries(metrics.map((m) => [m.key, m.label])), [metrics]);
-  const starters = useMemo(() => {
-    const plain = metrics.filter((m) => !m.needs?.by?.length && !Object.keys(m.needs?.params ?? {}).length).slice(0, 2);
-    return plain.length ? [`How is ${plain[0].label} doing, and what drives it?`, ...(plain[1] ? [`Where is ${plain[1].label} highest, and how has it moved?`] : [])] : [];
-  }, [metrics]);
+/** A turn's answer and its dashboard: the tiles run here, re-run when its trail changes. */
+function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
+  turn: Turn; model: string; labels: Record<string, string>; cache: Map<string, Result>; live: boolean; step: string; first: boolean;
+  setFocus: (f: Focus | ((f: Focus) => Focus)) => void;
+}) {
+  const { question, answer, specs, focus, error } = turn;
+  const [runs, setRuns] = useState<Record<string, Run>>({});
+  const [kept, setKept] = useState(false);
+  const [keepError, setKeepError] = useState("");
 
   // every tile, re-run whenever the trail changes: a chart ignores the focus on its own breakdown, so it
   // keeps showing every value and the one picked is named on it; the detail narrows to it
@@ -115,78 +97,14 @@ export default function AskPage() {
       const filters = { ...s.filters, ...Object.fromEntries(focus.filter(([k]) => s.role === "detail" || !s.by.includes(k))) };
       if (!s.metrics.length) continue;  // the number of a measure that needs a month: read off the trend
       const k = key(s.metrics, s.by, filters);
-      const hit = cache.current.get(k);
-      if (hit) { setRuns((r) => ({ ...r, [s.id]: { result: hit } })); continue; }
+      const hit = cache.get(k);
+      if (hit) { setRuns((r) => ({ ...r, [s.id]: { result: hit } })); continue; }  // eslint-disable-line react-hooks/set-state-in-effect
       setRuns((r) => ({ ...r, [s.id]: { result: r[s.id]?.result, loading: true } }));
-      pbi.compute(pbiModel, { metrics: s.metrics, by: s.by, filters })
-        .then((res) => { cache.current.set(k, res); setRuns((r) => ({ ...r, [s.id]: { result: res } })); })
+      pbi.compute(model, { metrics: s.metrics, by: s.by, filters })
+        .then((res) => { cache.set(k, res); setRuns((r) => ({ ...r, [s.id]: { result: res } })); })
         .catch((err) => setRuns((r) => ({ ...r, [s.id]: { error: String(err?.message ?? err) } })));
     }
-  }, [specs, focus, pbiModel]);
-
-  const ask = async (text: string) => {
-    const message = text.trim();
-    if (!message || busy || !pbiModel) return;
-    if (!llm) { setError("No language model is configured (API_KEY, API_BASE_URL, CHAT_MODEL in .env)."); return; }
-    setInput(""); setQuestion(message); setAnswer(""); setError(""); setStep("Reading the question");
-    setSpecs([]); setRuns({}); setFocus([]); setKept(false); setBusy(true);
-    const results: ExhibitData[] = [];
-    const ctrl = new AbortController();
-    abort.current = ctrl;
-    try {
-      await streamNdjson(pbi.askPath(pbiModel), { message, session_id: session }, (e) => {
-        if (e.type === "chunk") setAnswer((a) => a + (e.data.text ?? ""));
-        else if (e.type === "agent_tool_call" && e.data.status === "started") { setAnswer(""); if (STEP[e.data.tool]) setStep(STEP[e.data.tool]); }
-        else if (e.type === "pbi_result") {
-          const d = e.data as any, r: ExhibitData = { ...d, filters: d.filters ?? {}, origin: "agent" };
-          results.push(r);
-          // the agent's own rows stand in for the same question, so its tiles need not run twice
-          if (r.kind === "compute") cache.current.set(key(r.metrics, r.by, r.filters), { columns: r.columns, rows: r.rows, sql: r.sql ?? "", ms: r.ms, warehouse: r.warehouse ?? "", truncated: false, notes: [] });
-        } else if (e.type === "error") setError(e.data.message);
-        else if (e.type === "result") setAnswer((a) => a || e.data.answer || "");
-      }, ctrl.signal);
-      // a "why" answer (an investigation) lays out the same way: its measure over its period, broken down
-      // first by the columns it walked down
-      const last = [...results].reverse().find((r) => (r.kind === "compute" || r.kind === "explain") && r.metrics.length);
-      const lead = last?.explain ? { ...last, by: [last.explain.period, ...last.explain.steps.map((s) => s.by)] } : last;
-      if (lead) {
-        // what the answer narrowed to (Product = Excel) becomes the focus, not a fixed filter: the trail says
-        // so, its own chart shows it against the rest, and one click on "Everything" widens it
-        const narrowed = Object.keys(lead.filters).filter((k) => !PERIOD.test(k));
-        setStep("Laying out the dashboard");
-        setSpecs(await plan(pbiModel, { ...lead, by: [...narrowed, ...lead.by], filters: {} }, cols.dates, cols.types, metrics));
-        setFocus(Object.entries(lead.filters));
-      }
-    } catch (err: any) {
-      if (err?.name !== "AbortError") setError(String(err?.message ?? err));
-    } finally { setStep(""); setBusy(false); abort.current = null; }
-  };
-  const fresh = () => { abort.current?.abort(); setSession(newSession()); setQuestion(""); setAnswer(""); setSpecs([]); setRuns({}); setFocus([]); setError(""); setKept(false); setTimeout(() => box.current?.focus()); };
-  /** A question kept in this browser, reopened where it left off: its answer, tiles and focus, and its
-      conversation, so a follow-up still knows what came before. */
-  const reopen = (id: string) => {
-    const a = readAsked(pbiModel).find((x) => x.id === id);
-    if (!a) return fresh();
-    abort.current?.abort();
-    setSession(a.id); setQuestion(a.question); setAnswer(a.answer); setSpecs(a.specs as Spec[]); setFocus(a.focus); setRuns({}); setError(""); setKept(false);
-  };
-  // the sidebar opens a question (or a new one); arriving with ?c= opens it once the model is known
-  useEffect(() => {
-    if (!pbiModel) return;
-    const c = new URLSearchParams(window.location.search).get("c");
-    if (c) { window.history.replaceState(null, "", "/pbi/ask"); reopen(c); }  // eslint-disable-line react-hooks/set-state-in-effect
-    const on = (e: Event) => { const id = (e as CustomEvent).detail; if (id) reopen(id); else fresh(); };
-    window.addEventListener("ask:open", on);
-    return () => window.removeEventListener("ask:open", on);
-  }, [pbiModel]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { window.dispatchEvent(new CustomEvent("ask:showing", { detail: question ? session : null })); }, [question, session]);
-  // each answered question kept, titled by the conversation's first; a new question moves it to the top
-  useEffect(() => {
-    if (busy || !question || !pbiModel) return;
-    const list = readAsked(pbiModel), prev = list.find((x) => x.id === session);
-    const entry = { id: session, title: prev?.title ?? question, question, answer, specs, focus, at: Date.now() / 1000 };
-    writeAsked(pbiModel, prev?.question === question ? list.map((x) => (x.id === session ? entry : x)) : [entry, ...list.filter((x) => x.id !== session)]);
-  }, [busy, question, answer, specs, focus, session, pbiModel]);
+  }, [specs, focus, model, cache]);
 
   const pick = (s: Spec, values: unknown[]) => setFocus((f) => {
     const next = f.filter(([k]) => !s.by.includes(k));
@@ -194,10 +112,10 @@ export default function AskPage() {
     return next;
   });
   const keep = async () => {
-    const board = await pbi.board(pbiModel, owner()).catch(() => ({ tiles: [] as ReturnType<typeof tileOf>[] }));
+    const board = await pbi.board(model, owner()).catch(() => ({ tiles: [] as ReturnType<typeof tileOf>[] }));
     const mine = specs.map((s) => tileOf({ kind: "compute", columns: [], rows: [], metrics: s.metrics, by: s.by, filters: { ...s.filters, ...Object.fromEntries(focus) }, labels, origin: "agent" }));
     const tiles = [...board.tiles, ...mine.filter((t) => !board.tiles.some((x) => x.id === t.id))];
-    await pbi.saveBoard(pbiModel, owner(), tiles).then(() => setKept(true)).catch((err) => setError(`Could not keep it: ${err?.message ?? err}`));
+    await pbi.saveBoard(model, owner(), tiles).then(() => setKept(true)).catch((err) => setKeepError(`Could not keep it: ${err?.message ?? err}`));
   };
 
   const name = (k: string) => labels[k] ?? k;
@@ -270,6 +188,146 @@ export default function AskPage() {
     );
   };
 
+  return (
+    <article id={`turn-${turn.id}`} className={first ? "" : "mt-12 border-t border-[var(--d-rule)] pt-10"}>
+      <p className="text-[13px] font-semibold uppercase tracking-[.08em] text-[var(--d-muted)]">{first ? "You asked" : "Then you asked"}</p>
+      <h1 className="cond mt-1 text-[28px] font-semibold leading-tight">{question}</h1>
+      <div className="mt-4 max-w-3xl text-[15.5px] leading-relaxed text-[var(--d-ink-2)] [&_p]:mb-2 [&_strong]:text-[var(--d-ink)] [&_ul]:ml-5 [&_ul]:list-disc">
+        {answer ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown> : live ? <p className="pulse-soft text-[var(--d-muted)]">{step}…</p> : null}
+        {live && answer && step && <p className="pulse-soft text-[13px] text-[var(--d-muted)]">{step}…</p>}
+      </div>
+      {(error || keepError) && <p className="mt-3 rounded-lg bg-[var(--d-rise-soft)] px-3 py-2 text-[13px] text-[var(--d-rise-ink)]">{error || keepError}</p>}
+      {!live && !specs.length && !error && <p className="mt-3 text-[13px] text-[var(--d-muted)]">This answer did not come from a measure, so there is no dashboard for it. Try asking about a number.</p>}
+
+      {specs.length > 0 && (
+        <>
+          <div className="sticky top-0 z-10 -mx-8 mt-6 flex flex-wrap items-center gap-2 bg-[var(--d-paper)]/95 px-8 py-3 backdrop-blur">
+            <span className="text-[13px] text-[var(--d-muted)]">Showing</span>
+            <button onClick={() => setFocus([])} className={`rounded-full px-3 py-1 text-[13px] ${focus.length ? "text-[var(--d-teal)] hover:underline" : "bg-[var(--d-navy)] font-semibold text-white"}`}>Everything</button>
+            {focus.map(([k, v], i) => (
+              <span key={k} className="flex items-center gap-1.5">
+                <span className="text-[var(--d-muted)]" aria-hidden>›</span>
+                <span className={`flex items-center gap-1 rounded-full py-1 pl-3 pr-1.5 text-[13px] ${i === focus.length - 1 ? "bg-[var(--d-navy)] font-semibold text-white" : "bg-[var(--d-sheet)] text-[var(--d-ink)] ring-1 ring-[var(--d-rule)]"}`}>
+                  <button onClick={() => setFocus(focus.slice(0, i + 1))}>{said(k)}: {shown(k, v)}</button>
+                  <button aria-label={`Stop focusing on ${shown(k, v)}`} onClick={() => setFocus(focus.filter(([x]) => x !== k))} className="rounded-full p-0.5 opacity-70 hover:opacity-100"><X size={12} /></button>
+                </span>
+              </span>
+            ))}
+            <span className="ml-auto flex items-center gap-1">
+              <button onClick={keep} disabled={kept} className="flex items-center gap-1.5 rounded-full bg-[var(--d-teal)] px-3.5 py-1.5 text-[13px] font-semibold text-white disabled:bg-[var(--d-teal-soft)] disabled:text-[var(--d-teal)]">
+                {kept ? <Check size={14} /> : <Bookmark size={14} />}{kept ? "Kept in My dashboard" : "Keep"}
+              </button>
+              {[["Share", Share2], ["Repeat", Repeat]].map(([label, Icon]: any) => (
+                <button key={label} disabled title={`${label}: not built yet (needs the server side)`} className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] text-[var(--d-muted)] opacity-60"><Icon size={14} />{label}</button>
+              ))}
+            </span>
+          </div>
+          <div className="mt-2 grid grid-cols-1 gap-4 lg:grid-cols-6">{specs.map(tile)}</div>
+        </>
+      )}
+    </article>
+  );
+}
+
+export default function AskPage() {
+  const { pbiModel, pbiModels, llm } = useStudio();
+  const look = useLook();
+  const model = pbiModels.find((m) => m.id === pbiModel);
+  const [metrics, setMetrics] = useState<PbiMetric[]>([]);
+  const [cols, setCols] = useState<{ dates: string[]; types: Record<string, string> }>({ dates: [], types: {} });
+  const [session, setSession] = useState(newSession);
+  const [input, setInput] = useState("");
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [step, setStep] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const cache = useRef(new Map<string, Result>());
+  const abort = useRef<AbortController | null>(null);
+  const box = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!pbiModel) return;
+    Promise.all([pbi.metrics(pbiModel), pbi.tables(pbiModel)]).then(([r, t]) => {
+      setMetrics(r.metrics.filter((m) => m.status === "captured"));
+      setCols(columnTypes(t.tables));
+    }).catch(() => {});
+  }, [pbiModel]);
+  const labels = useMemo(() => Object.fromEntries(metrics.map((m) => [m.key, m.label])), [metrics]);
+  const starters = useMemo(() => {
+    const plain = metrics.filter((m) => !m.needs?.by?.length && !Object.keys(m.needs?.params ?? {}).length).slice(0, 2);
+    return plain.length ? [`How is ${plain[0].label} doing, and what drives it?`, ...(plain[1] ? [`Where is ${plain[1].label} highest, and how has it moved?`] : [])] : [];
+  }, [metrics]);
+
+  const update = (id: string, change: (t: Turn) => Partial<Turn>) => setTurns((ts) => ts.map((t) => (t.id === id ? { ...t, ...change(t) } : t)));
+  const ask = async (text: string) => {
+    const message = text.trim();
+    if (!message || busy || !pbiModel) return;
+    if (!llm) { setError("No language model is configured (API_KEY, API_BASE_URL, CHAT_MODEL in .env)."); return; }
+    const turn = newTurn(message), id = turn.id;
+    setInput(""); setError(""); setStep("Reading the question"); setBusy(true);
+    setTurns((ts) => [...ts, turn]);
+    // the new question goes to the top of the window, as in a chat; what came before stays above it
+    setTimeout(() => document.getElementById(`turn-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    const results: ExhibitData[] = [];
+    const ctrl = new AbortController();
+    abort.current = ctrl;
+    try {
+      await streamNdjson(pbi.askPath(pbiModel), { message, session_id: session }, (e) => {
+        if (e.type === "chunk") update(id, (t) => ({ answer: t.answer + (e.data.text ?? "") }));
+        else if (e.type === "agent_tool_call" && e.data.status === "started") { update(id, () => ({ answer: "" })); if (STEP[e.data.tool]) setStep(STEP[e.data.tool]); }
+        else if (e.type === "pbi_result") {
+          const d = e.data as any, r: ExhibitData = { ...d, filters: d.filters ?? {}, origin: "agent" };
+          results.push(r);
+          // the agent's own rows stand in for the same question, so its tiles need not run twice
+          if (r.kind === "compute") cache.current.set(key(r.metrics, r.by, r.filters), { columns: r.columns, rows: r.rows, sql: r.sql ?? "", ms: r.ms, warehouse: r.warehouse ?? "", truncated: false, notes: [] });
+        } else if (e.type === "error") update(id, () => ({ error: e.data.message }));
+        else if (e.type === "result") update(id, (t) => ({ answer: t.answer || e.data.answer || "" }));
+      }, ctrl.signal);
+      // a "why" answer (an investigation) lays out the same way: its measure over its period, broken down
+      // first by the columns it walked down
+      const last = [...results].reverse().find((r) => (r.kind === "compute" || r.kind === "explain") && r.metrics.length);
+      const lead = last?.explain ? { ...last, by: [last.explain.period, ...last.explain.steps.map((s) => s.by)] } : last;
+      if (lead) {
+        // what the answer narrowed to (Product = Excel) becomes the focus, not a fixed filter: the trail says
+        // so, its own chart shows it against the rest, and one click on "Everything" widens it
+        const narrowed = Object.keys(lead.filters).filter((k) => !PERIOD.test(k));
+        setStep("Laying out the dashboard");
+        const specs = await plan(pbiModel, { ...lead, by: [...narrowed, ...lead.by], filters: {} }, cols.dates, cols.types, metrics);
+        update(id, () => ({ specs, focus: Object.entries(lead.filters) }));
+      }
+    } catch (err: any) {
+      if (err?.name !== "AbortError") update(id, () => ({ error: String(err?.message ?? err) }));
+    } finally { setStep(""); setBusy(false); abort.current = null; }
+  };
+  const fresh = () => { abort.current?.abort(); setSession(newSession()); setTurns([]); setError(""); setTimeout(() => box.current?.focus()); };
+  /** A conversation kept in this browser, reopened where it left off: every question with its answer,
+      tiles and focus, and its session, so a follow-up still knows what came before. */
+  const reopen = (id: string) => {
+    const a = readAsked(pbiModel).find((x) => x.id === id);
+    if (!a) return fresh();
+    abort.current?.abort();
+    setSession(a.id); setError("");
+    setTurns((a.turns ?? [{ id: "t0", question: a.question, answer: a.answer, specs: a.specs, focus: a.focus }]) as Turn[]);
+  };
+  // the sidebar opens a conversation (or a new one); arriving with ?c= opens it once the model is known
+  useEffect(() => {
+    if (!pbiModel) return;
+    const c = new URLSearchParams(window.location.search).get("c");
+    if (c) { window.history.replaceState(null, "", "/pbi/ask"); reopen(c); }
+    const on = (e: Event) => { const id = (e as CustomEvent).detail; if (id) reopen(id); else fresh(); };
+    window.addEventListener("ask:open", on);
+    return () => window.removeEventListener("ask:open", on);
+  }, [pbiModel]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { window.dispatchEvent(new CustomEvent("ask:showing", { detail: turns.length ? session : null })); }, [turns.length, session]);
+  // each conversation kept, titled by its first question; a new question moves it to the top
+  useEffect(() => {
+    if (busy || !turns.length || !pbiModel) return;
+    const list = readAsked(pbiModel), prev = list.find((x) => x.id === session), last = turns[turns.length - 1];
+    const entry = { id: session, title: prev?.title ?? turns[0].question, question: last.question, answer: last.answer, specs: last.specs, focus: last.focus, turns, at: Date.now() / 1000 };
+    const same = prev && (prev.turns?.length ?? 1) === turns.length;
+    writeAsked(pbiModel, same ? list.map((x) => (x.id === session ? entry : x)) : [entry, ...list.filter((x) => x.id !== session)]);
+  }, [busy, turns, session, pbiModel]);
+
   const composer = (big: boolean) => (
     <form onSubmit={(e) => { e.preventDefault(); ask(input); }}
       className={`flex items-center gap-2 rounded-2xl bg-[var(--d-sheet)] p-1.5 pl-5 shadow-[0_12px_40px_-24px_rgba(20,35,56,.5)] ring-1 ring-[var(--d-rule)] focus-within:ring-2 focus-within:ring-[var(--d-teal)] ${big ? "py-2" : ""}`}>
@@ -277,7 +335,7 @@ export default function AskPage() {
         <span className="sr-only">Ask a question</span>
         {/* the box's ring shows the focus; the desk's outline on the field itself would draw a box inside it */}
         <input ref={box} value={input} onChange={(e) => setInput(e.target.value)} autoFocus={big} style={{ outline: "none" }}
-          placeholder={question ? "Ask a follow-up, or something new" : "Ask a question about your numbers"}
+          placeholder={turns.length ? "Ask a follow-up, or something new" : "Ask a question about your numbers"}
           className={`w-full bg-transparent text-[var(--d-ink)] outline-none placeholder:text-[var(--d-muted)] ${big ? "text-[18px]" : "text-[15px]"}`} />
       </label>
       {busy ? (
@@ -291,7 +349,7 @@ export default function AskPage() {
   return (
     <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-paper)] text-[var(--d-ink)]`}>
       <main className="min-h-0 flex-1 overflow-y-auto">
-        {!question ? (
+        {!turns.length ? (
           <div className="mx-auto flex min-h-full max-w-2xl flex-col justify-center px-6 py-16">
             <h1 className="cond text-[34px] font-semibold leading-tight">Ask a question. Get a dashboard.</h1>
             <p className="mt-2 text-[15px] leading-relaxed text-[var(--d-muted)]">
@@ -308,46 +366,20 @@ export default function AskPage() {
           </div>
         ) : (
           <div className="mx-auto max-w-[1180px] px-8 pb-16 pt-8">
-            <p className="text-[13px] font-semibold uppercase tracking-[.08em] text-[var(--d-muted)]">You asked</p>
-            <h1 className="cond mt-1 text-[28px] font-semibold leading-tight">{question}</h1>
-            <div className="mt-4 max-w-3xl text-[15.5px] leading-relaxed text-[var(--d-ink-2)] [&_p]:mb-2 [&_strong]:text-[var(--d-ink)] [&_ul]:ml-5 [&_ul]:list-disc">
-              {answer ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown> : busy ? <p className="pulse-soft text-[var(--d-muted)]">{step}…</p> : null}
-              {busy && answer && step && <p className="pulse-soft text-[13px] text-[var(--d-muted)]">{step}…</p>}
-            </div>
+            {turns.map((t, i) => (
+              // the last question keeps a window's height below it, so it can sit at the top while its answer comes
+              <div key={t.id} style={i === turns.length - 1 && i > 0 ? { minHeight: "calc(100vh - 160px)" } : undefined}>
+                <Answer turn={t} model={pbiModel} labels={labels} cache={cache.current} first={i === 0}
+                  live={busy && i === turns.length - 1} step={step}
+                  setFocus={(f) => update(t.id, (x) => ({ focus: typeof f === "function" ? f(x.focus) : f }))} />
+              </div>
+            ))}
             {error && <p className="mt-3 rounded-lg bg-[var(--d-rise-soft)] px-3 py-2 text-[13px] text-[var(--d-rise-ink)]">{error}</p>}
-            {!busy && !specs.length && !error && <p className="mt-3 text-[13px] text-[var(--d-muted)]">This answer did not come from a measure, so there is no dashboard for it. Try asking about a number.</p>}
-
-            {specs.length > 0 && (
-              <>
-                <div className="sticky top-0 z-10 -mx-8 mt-6 flex flex-wrap items-center gap-2 bg-[var(--d-paper)]/95 px-8 py-3 backdrop-blur">
-                  <span className="text-[13px] text-[var(--d-muted)]">Showing</span>
-                  <button onClick={() => setFocus([])} className={`rounded-full px-3 py-1 text-[13px] ${focus.length ? "text-[var(--d-teal)] hover:underline" : "bg-[var(--d-navy)] font-semibold text-white"}`}>Everything</button>
-                  {focus.map(([k, v], i) => (
-                    <span key={k} className="flex items-center gap-1.5">
-                      <span className="text-[var(--d-muted)]" aria-hidden>›</span>
-                      <span className={`flex items-center gap-1 rounded-full py-1 pl-3 pr-1.5 text-[13px] ${i === focus.length - 1 ? "bg-[var(--d-navy)] font-semibold text-white" : "bg-[var(--d-sheet)] text-[var(--d-ink)] ring-1 ring-[var(--d-rule)]"}`}>
-                        <button onClick={() => setFocus(focus.slice(0, i + 1))}>{said(k)}: {shown(k, v)}</button>
-                        <button aria-label={`Stop focusing on ${shown(k, v)}`} onClick={() => setFocus(focus.filter(([x]) => x !== k))} className="rounded-full p-0.5 opacity-70 hover:opacity-100"><X size={12} /></button>
-                      </span>
-                    </span>
-                  ))}
-                  <span className="ml-auto flex items-center gap-1">
-                    <button onClick={keep} disabled={kept} className="flex items-center gap-1.5 rounded-full bg-[var(--d-teal)] px-3.5 py-1.5 text-[13px] font-semibold text-white disabled:bg-[var(--d-teal-soft)] disabled:text-[var(--d-teal)]">
-                      {kept ? <Check size={14} /> : <Bookmark size={14} />}{kept ? "Kept in My dashboard" : "Keep"}
-                    </button>
-                    {[["Share", Share2], ["Repeat", Repeat]].map(([label, Icon]: any) => (
-                      <button key={label} disabled title={`${label}: not built yet (needs the server side)`} className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] text-[var(--d-muted)] opacity-60"><Icon size={14} />{label}</button>
-                    ))}
-                  </span>
-                </div>
-                <div className="mt-2 grid grid-cols-1 gap-4 lg:grid-cols-6">{specs.map(tile)}</div>
-              </>
-            )}
           </div>
         )}
       </main>
-      {/* the follow-up box stays at the foot of the window, under the answer however long it is */}
-      {question && <div className="shrink-0 px-8 pb-6 pt-3"><div className="mx-auto max-w-2xl">{composer(false)}</div></div>}
+      {/* the follow-up box stays at the foot of the window, under the answers however long they are */}
+      {turns.length > 0 && <div className="shrink-0 px-8 pb-6 pt-3"><div className="mx-auto max-w-2xl">{composer(false)}</div></div>}
     </div>
   );
 }
