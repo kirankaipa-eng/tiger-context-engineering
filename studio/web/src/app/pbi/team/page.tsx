@@ -7,7 +7,6 @@
    for whoever has it; the lens sets how deep it reads (a leader: the answer; an analyst: every step). */
 
 import { Check, CircleAlert, Link2, Loader2, RefreshCw, Rows3, Sparkles } from "lucide-react";
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { InvestigationExhibit, headline } from "@/components/pbi-investigation";
 import type { DeskActions, ExhibitData } from "@/components/pbi-exhibit";
@@ -62,7 +61,7 @@ export default function TeamSpace() {
     <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-paper)] text-[var(--d-ink)]`}>
       <header className="flex h-14 shrink-0 items-center gap-4 border-b border-[var(--d-rule)] bg-[var(--d-sheet)] px-6">
         <span className="cond text-[19px] font-semibold text-[var(--d-ink)]">{team?.model ?? "…"}</span>
-        <span className="text-[14px] text-[var(--d-muted)]">Team space</span>
+        <span className="text-[14px] text-[var(--d-muted)]">Team</span>
         <div className="ml-auto flex items-center gap-3 text-[13px]">
           <div className="flex rounded-full bg-[var(--d-paper)] p-0.5" role="group" aria-label="Lens">
             {(["leader", "analyst"] as const).map((l) => (
@@ -73,8 +72,6 @@ export default function TeamSpace() {
           <label className="flex items-center gap-2 text-[var(--d-muted)]">You are
             <input value={me} onChange={(e) => { setMe(e.target.value); remember("desk-name", e.target.value); }} placeholder="your name"
               className="w-28 rounded-md border border-[var(--d-rule)] bg-[var(--d-sheet)] px-2 py-1 text-[var(--d-ink)] outline-none focus:border-[var(--d-teal)]" /></label>
-          <Link href="/pbi/board" className="rounded-md px-3 py-1.5 text-[var(--d-ink-2)] hover:bg-[var(--d-paper)]">My dashboard</Link>
-          <Link href="/pbi" className="rounded-md px-3 py-1.5 text-[var(--d-ink-2)] hover:bg-[var(--d-paper)]">Analysis desk</Link>
           <SettingsMenu look={look} />
         </div>
       </header>

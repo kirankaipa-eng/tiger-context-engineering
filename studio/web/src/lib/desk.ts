@@ -74,3 +74,15 @@ export function fold(cards: ExhibitData[]) {
   const answer = (i: number): number => (into.has(i) ? answer(into.get(i)!) : i);  // a step's step lands on the last answer
   return { number, into: new Map([...into.keys()].map((i) => [i, answer(i)])) };
 }
+
+/** A question asked on the Ask page, kept in this browser so the sidebar can reopen it where it left off. */
+export type Asked = { id: string; title: string; question: string; answer: string; specs: unknown[]; focus: [string, unknown][]; at: number };
+const askedKey = (model: string) => `ask-history:${model}`;
+export function readAsked(model: string): Asked[] {
+  try { return JSON.parse(localStorage.getItem(askedKey(model)) ?? "[]"); } catch { return []; }
+}
+/** Saves the list and tells the sidebar (`ask:history`). */
+export function writeAsked(model: string, list: Asked[]) {
+  try { localStorage.setItem(askedKey(model), JSON.stringify(list.slice(0, 30))); } catch { /* full or private */ }
+  window.dispatchEvent(new Event("ask:history"));
+}

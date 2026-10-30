@@ -7,7 +7,6 @@
    model in between: break it down by another column, see its trend, or open the rows behind it. */
 
 import { ArrowUp, ChevronDown, Square } from "lucide-react";
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -339,9 +338,6 @@ export default function PbiDesk() {
         <span className="ml-auto" />
         <nav className="flex items-center gap-1 text-[13px]">
           <button onClick={() => setShowPast(true)} className="rounded-md px-3 py-1.5 text-[var(--d-rail-ink)] hover:bg-[var(--d-navy-2)]">History</button>
-          {[["/pbi/board", `My dashboard${tiles.length ? ` (${tiles.length})` : ""}`], ["/pbi/team", "Team space"], ["/pbi/model", "Coverage"], ["/pbi/metrics", "Measures"], ["/pbi/drill", "Drilldown"], ["/pbi/explore", "Explore rows"], ["/pbi/tables", "Tables"]].map(([href, label]) => (
-            <Link key={href} href={href} className="rounded-md px-3 py-1.5 text-[var(--d-rail-ink)] hover:bg-[var(--d-navy-2)]">{label}</Link>
-          ))}
           <button onClick={reset} className="ml-2 rounded-md border border-[var(--d-navy-2)] px-3 py-1.5 text-[var(--d-rail-ink)] hover:bg-[var(--d-navy-2)]">New analysis</button>
         </nav>
         <SettingsMenu look={look} layout={layout} setLayout={place} onDark />

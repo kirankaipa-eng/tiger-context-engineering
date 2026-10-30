@@ -85,13 +85,11 @@ export default function MyDashboard() {
   return (
     <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-paper)] text-[var(--d-ink)]`}>
       <header className="flex h-14 shrink-0 items-center gap-4 border-b border-[var(--d-rule)] bg-[var(--d-sheet)] px-6">
-        <span className="cond text-[19px] font-semibold">My dashboard</span>
+        <span className="cond text-[19px] font-semibold">My briefs</span>
         <span className="text-[14px] text-[var(--d-muted)]">{owner === "me" ? "" : owner}</span>
         <div className="ml-auto flex items-center gap-3 text-[13px]">
           <button onClick={run} className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[var(--d-ink-2)] hover:bg-[var(--d-paper)]">
             <RefreshCw size={14} />{at ? `Up to date · ${at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "Refreshing…"}</button>
-          <Link href="/pbi" className="rounded-md px-3 py-1.5 text-[var(--d-ink-2)] hover:bg-[var(--d-paper)]">Analysis desk</Link>
-          <Link href="/pbi/team" className="rounded-md px-3 py-1.5 text-[var(--d-ink-2)] hover:bg-[var(--d-paper)]">Team space</Link>
           <SettingsMenu look={look} />
         </div>
       </header>
@@ -101,9 +99,9 @@ export default function MyDashboard() {
           {!live && <p className="flex items-center gap-2 text-[14px] text-[var(--d-muted)]"><Loader2 size={15} className="animate-spin" />Running your questions against today&rsquo;s numbers…</p>}
           {live && live.length === 0 && (
             <div className="mx-auto mt-16 max-w-md text-center">
-              <p className="cond text-[24px] font-semibold">Nothing pinned yet</p>
-              <p className="mt-2 text-[14px] text-[var(--d-muted)]">On the analysis desk, pin any answer or investigation. It shows up here and is worked out again every time you open this page.</p>
-              <Link href="/pbi" className="mt-5 inline-block rounded-lg bg-[var(--d-navy)] px-4 py-2 text-[14px] font-medium text-white">Go to the desk</Link>
+              <p className="cond text-[24px] font-semibold">Nothing kept yet</p>
+              <p className="mt-2 text-[14px] text-[var(--d-muted)]">Ask a question and press Keep on its dashboard. It shows up here and is worked out again every time you open this page.</p>
+              <Link href="/pbi/ask" className="mt-5 inline-block rounded-lg bg-[var(--d-navy)] px-4 py-2 text-[14px] font-medium text-white">Ask a question</Link>
             </div>
           )}
           <div className="space-y-6">

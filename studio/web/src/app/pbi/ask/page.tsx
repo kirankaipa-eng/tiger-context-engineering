@@ -7,7 +7,6 @@
    focuses every tile on it (the trail above says where you are), and Keep pins the tiles to My dashboard. */
 
 import { ArrowUp, Bookmark, Check, Repeat, Share2, Square, X } from "lucide-react";
-import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -15,7 +14,7 @@ import { AutoChart, DESK_PALETTE, isRatio, pctText, periodName } from "@/compone
 import type { ExhibitData } from "@/components/pbi-exhibit";
 import { ResultTable, SqlBlock, num } from "@/components/pbi";
 import { streamNdjson } from "@/lib/api";
-import { owner, tileOf } from "@/lib/desk";
+import { owner, readAsked, tileOf, writeAsked } from "@/lib/desk";
 import { colLabel, columnTypes, isDimension, pbi, type PbiMetric, type Result } from "@/lib/pbi";
 import { useStudio } from "@/lib/studio";
 import { useLook } from "@/lib/theme";
@@ -150,7 +149,32 @@ export default function AskPage() {
       if (err?.name !== "AbortError") setError(String(err?.message ?? err));
     } finally { setStep(""); setBusy(false); abort.current = null; }
   };
-  const fresh = () => { abort.current?.abort(); setSession(newSession()); setQuestion(""); setAnswer(""); setSpecs([]); setRuns({}); setFocus([]); setError(""); setTimeout(() => box.current?.focus()); };
+  const fresh = () => { abort.current?.abort(); setSession(newSession()); setQuestion(""); setAnswer(""); setSpecs([]); setRuns({}); setFocus([]); setError(""); setKept(false); setTimeout(() => box.current?.focus()); };
+  /** A question kept in this browser, reopened where it left off: its answer, tiles and focus, and its
+      conversation, so a follow-up still knows what came before. */
+  const reopen = (id: string) => {
+    const a = readAsked(pbiModel).find((x) => x.id === id);
+    if (!a) return fresh();
+    abort.current?.abort();
+    setSession(a.id); setQuestion(a.question); setAnswer(a.answer); setSpecs(a.specs as Spec[]); setFocus(a.focus); setRuns({}); setError(""); setKept(false);
+  };
+  // the sidebar opens a question (or a new one); arriving with ?c= opens it once the model is known
+  useEffect(() => {
+    if (!pbiModel) return;
+    const c = new URLSearchParams(window.location.search).get("c");
+    if (c) { window.history.replaceState(null, "", "/pbi/ask"); reopen(c); }  // eslint-disable-line react-hooks/set-state-in-effect
+    const on = (e: Event) => { const id = (e as CustomEvent).detail; if (id) reopen(id); else fresh(); };
+    window.addEventListener("ask:open", on);
+    return () => window.removeEventListener("ask:open", on);
+  }, [pbiModel]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { window.dispatchEvent(new CustomEvent("ask:showing", { detail: question ? session : null })); }, [question, session]);
+  // each answered question kept, titled by the conversation's first; a new question moves it to the top
+  useEffect(() => {
+    if (busy || !question || !pbiModel) return;
+    const list = readAsked(pbiModel), prev = list.find((x) => x.id === session);
+    const entry = { id: session, title: prev?.title ?? question, question, answer, specs, focus, at: Date.now() / 1000 };
+    writeAsked(pbiModel, prev?.question === question ? list.map((x) => (x.id === session ? entry : x)) : [entry, ...list.filter((x) => x.id !== session)]);
+  }, [busy, question, answer, specs, focus, session, pbiModel]);
 
   const pick = (s: Spec, values: unknown[]) => setFocus((f) => {
     const next = f.filter(([k]) => !s.by.includes(k));
@@ -253,16 +277,6 @@ export default function AskPage() {
 
   return (
     <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-paper)] text-[var(--d-ink)]`}>
-      <header className="flex h-14 shrink-0 items-center gap-4 bg-[var(--d-navy)] px-6 text-[var(--d-rail-ink)]">
-        <span className="cond text-[19px] font-semibold text-white">{model?.name ?? "…"}</span>
-        <span className="ml-auto" />
-        <nav className="flex items-center gap-1 text-[13px]">
-          {question && <button onClick={fresh} className="rounded-md px-3 py-1.5 hover:bg-[var(--d-navy-2)]">New question</button>}
-          <Link href="/pbi/board" className="rounded-md px-3 py-1.5 hover:bg-[var(--d-navy-2)]">My dashboard</Link>
-          <Link href="/pbi" className="rounded-md px-3 py-1.5 hover:bg-[var(--d-navy-2)]">Analysis desk</Link>
-        </nav>
-      </header>
-
       <main className="min-h-0 flex-1 overflow-y-auto">
         {!question ? (
           <div className="mx-auto flex min-h-full max-w-2xl flex-col justify-center px-6 py-16">
