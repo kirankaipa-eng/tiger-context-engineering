@@ -331,10 +331,11 @@ export default function AskPage() {
                 <div className="mt-2 grid grid-cols-1 gap-4 lg:grid-cols-6">{specs.map(tile)}</div>
               </>
             )}
-            <div className="sticky bottom-6 mx-auto mt-10 max-w-2xl">{composer(false)}</div>
           </div>
         )}
       </main>
+      {/* the follow-up box stays at the foot of the window, under the answer however long it is */}
+      {question && <div className="shrink-0 px-8 pb-6 pt-3"><div className="mx-auto max-w-2xl">{composer(false)}</div></div>}
     </div>
   );
 }
