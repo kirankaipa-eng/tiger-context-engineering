@@ -1,11 +1,11 @@
 "use client";
 
 /* The Power BI desk: a conversation on the left, the analysis it builds on the right, one exhibit per
-   answer. Questions go to the same agent as `ictx pbi ask` (numbers only from the model's captured
+   answer (the results a question took to get there fold into it, under "How I got here"). Questions go to the same agent as `ictx pbi ask` (numbers only from the model's captured
    measures, or rows of its tables); clicking a mark on an exhibit drills in directly, in SQL, with no
    model in between: break it down by another column, see its trend, or open the rows behind it. */
 
-import { ArrowUp, Square } from "lucide-react";
+import { ArrowUp, ChevronDown, Square } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -16,7 +16,7 @@ import { MentionBox, type Mention } from "@/components/mention";
 import { streamNdjson } from "@/lib/api";
 import { colLabel, columnTypes, isDimension, pbi, type PbiMetric, type Tile } from "@/lib/pbi";
 import { periodName } from "@/components/auto-chart";
-import { drillExhibit, drillNote, owner, rowsExhibit, rowsNote, tileOf } from "@/lib/desk";
+import { drillExhibit, drillNote, fold, owner, rowsExhibit, rowsNote, tileOf } from "@/lib/desk";
 import { useStudio } from "@/lib/studio";
 import { SettingsMenu, useLook } from "@/lib/theme";
 
@@ -49,6 +49,8 @@ export default function PbiDesk() {
   const abort = useRef<AbortController | null>(null);
   const railEnd = useRef<HTMLDivElement>(null);
   const count = useRef(0);
+  const turnNo = useRef(0);  // which question a result came from
+  const [steps, setSteps] = useState<Set<number>>(new Set());  // answers whose working steps are open
   const box = useRef<HTMLTextAreaElement>(null);
   // where the conversation sits: a command bar over the canvas (default), a console under it, or a side rail
   const [layout, setLayout] = useState<"bar" | "console" | "rail">("bar");
@@ -75,7 +77,11 @@ export default function PbiDesk() {
   const place = (l: "bar" | "console" | "rail") => { setLayout(l); try { localStorage.setItem("desk-layout", l); } catch { /* fine */ } };
 
   useEffect(() => { railEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [turns]);
-  useEffect(() => { if (cards.length) document.getElementById(`exhibit-${cards.length}`)?.scrollIntoView({ behavior: "smooth", block: "start" }); }, [cards.length]);
+  const folded = fold(cards);
+  const answers = folded.number.size;
+  useEffect(() => { if (answers) document.getElementById(`exhibit-${answers}`)?.scrollIntoView({ behavior: "smooth", block: "start" }); }, [answers]);
+  /** A turn's exhibit numbers: its answers, each once (a working step points at the answer it led to). */
+  const shown = (ids: number[]) => [...new Set(ids.map((id) => folded.number.get(folded.into.get(id - 1) ?? id - 1)).filter((n): n is number => n !== undefined))];
 
   useEffect(() => {
     if (!pbiModel) return;
@@ -149,13 +155,14 @@ export default function PbiDesk() {
     setTurns((ts) => [...ts, { role: "user", text: message, steps: [], exhibits: [] }, { role: "analyst", text: "", steps: [], exhibits: [], busy: true }]);
     const ctrl = new AbortController();
     abort.current = ctrl;
+    const turn = ++turnNo.current;
     try {
       await streamNdjson(pbi.askPath(pbiModel), { message, session_id: session }, (e) => {
         if (e.type === "chunk") last((t) => ({ ...t, text: t.text + (e.data.text ?? "") }));
         else if (e.type === "agent_tool_call" && e.data.status === "started") last((t) => ({ ...t, text: "", steps: STEP[e.data.tool] && !t.steps.includes(STEP[e.data.tool]) ? [...t.steps, STEP[e.data.tool]] : t.steps }));
         else if (e.type === "pbi_result") {
           const d = e.data as any;
-          const n = post({ ...d, filters: d.filters ?? {}, origin: "agent", question: message });
+          const n = post({ ...d, filters: d.filters ?? {}, origin: "agent", question: message, turn });
           last((t) => ({ ...t, exhibits: [...t.exhibits, n] }));
         } else if (e.type === "error") last((t) => ({ ...t, error: e.data.message }));
         else if (e.type === "result") last((t) => ({ ...t, text: t.text || e.data.answer || "" }));
@@ -169,6 +176,9 @@ export default function PbiDesk() {
   };
 
   const labels = Object.fromEntries(metrics.map((m) => [m.key, m.label]));
+  const exhibit = (c: ExhibitData, n: number, landed: boolean) =>
+    c.kind === "explain" && c.explain ? <InvestigationExhibit e={c} n={n} actions={actions} landed={landed} />
+      : <PbiExhibit e={c} n={n} model={pbiModel} actions={actions} landed={landed} dates={cols.dates} types={cols.types} />;
   /** A drill or a start: computed directly, posted as an exhibit and noted in the conversation. */
   const direct = async (note: string, run: () => Promise<ExhibitData>) => {
     setTurns((ts) => [...ts, { role: "user", text: note, steps: [], exhibits: [], drill: true }, { role: "analyst", text: "", steps: ["Computing in SQL"], exhibits: [], busy: true }]);
@@ -196,7 +206,7 @@ export default function PbiDesk() {
       return { kind: "compute", columns: r.columns, rows: r.rows, metrics: [pick.metric], by: [pick.by], filters: {}, sql: r.sql, ms: r.ms, warehouse: r.warehouse, labels, origin: "drill" };
     });
   };
-  const reset = () => { abort.current?.abort(); setTurns([]); setCards([]); count.current = 0; setSession(newSession()); };
+  const reset = () => { abort.current?.abort(); setTurns([]); setCards([]); count.current = 0; setSteps(new Set()); setSession(newSession()); };
 
   // my dashboard: the questions I pinned (the board re-runs them, live)
   const [tiles, setTiles] = useState<Tile[]>([]);
@@ -222,7 +232,10 @@ export default function PbiDesk() {
       return next;
     });
   }, [busy, turns, cards, session, store, pbiModel]);
-  const reopen = (p: (typeof past)[number]) => { abort.current?.abort(); setTurns(p.turns); setCards(p.cards); count.current = p.cards.length; setSession(p.id); setShowPast(false); };
+  const reopen = (p: (typeof past)[number]) => {
+    abort.current?.abort(); setTurns(p.turns); setCards(p.cards); count.current = p.cards.length; setSteps(new Set());
+    turnNo.current = Math.max(0, ...p.cards.map((c) => c.turn ?? 0)); setSession(p.id); setShowPast(false);
+  };
 
   const latest = [...turns].reverse().find((t) => t.role !== "user");
   const mentions: Mention[] = [
@@ -279,9 +292,9 @@ export default function PbiDesk() {
                     <span className={`inline-block h-1.5 w-1.5 rounded-full bg-[#5fc4bf] ${t.busy && j === t.steps.length - 1 ? "pulse-soft" : ""}`} />{s}
                   </div>
                 ))}
-                {t.exhibits.length > 0 && (
+                {shown(t.exhibits).length > 0 && (
                   <div className="mb-2 mt-2 flex flex-wrap gap-1.5">
-                    {t.exhibits.map((n) => <a key={n} href={`#exhibit-${n}`} className="rounded-full bg-[#0f7b78] px-2.5 py-0.5 text-[12px] font-semibold text-white hover:bg-[#13918d]">Exhibit {n}</a>)}
+                    {shown(t.exhibits).map((n) => <a key={n} href={`#exhibit-${n}`} className="rounded-full bg-[#0f7b78] px-2.5 py-0.5 text-[12px] font-semibold text-white hover:bg-[#13918d]">Exhibit {n}</a>)}
                   </div>
                 )}
                 {t.text && <div className="rail-prose"><ReactMarkdown remarkPlugins={[remarkGfm]}>{t.text}</ReactMarkdown></div>}
@@ -363,16 +376,38 @@ export default function PbiDesk() {
             )) : (
             <div className="relative mx-auto max-w-[1180px] px-8 py-8">
               <div className="absolute bottom-8 left-[52px] top-12 w-0.5 bg-[var(--d-rule)]" aria-hidden />
-              {cards.map((c, i) => (
+              {cards.map((c, i) => {
+                const n = folded.number.get(i);
+                if (n === undefined) return null;  // a working step: under its answer
+                const before = cards.flatMap((d, k) => (folded.into.get(k) === i ? [d] : []));
+                const open = steps.has(i);
+                return (
                 <div key={i} className="relative mb-8 grid grid-cols-[48px_minmax(0,1fr)] gap-4">
                   <div className="relative pt-5">
-                    <span className="num relative z-10 flex h-9 w-9 items-center justify-center rounded-full border-2 border-[var(--d-teal)] bg-[var(--d-sheet)] text-[15px] font-semibold text-[var(--d-teal)]">{i + 1}</span>
+                    <span className="num relative z-10 flex h-9 w-9 items-center justify-center rounded-full border-2 border-[var(--d-teal)] bg-[var(--d-sheet)] text-[15px] font-semibold text-[var(--d-teal)]">{n}</span>
                   </div>
-                  {c.kind === "explain" && c.explain
-                    ? <InvestigationExhibit e={c} n={i + 1} actions={actions} landed={i === cards.length - 1} />
-                    : <PbiExhibit e={c} n={i + 1} model={pbiModel} actions={actions} landed={i === cards.length - 1} dates={cols.dates} types={cols.types} />}
+                  <div className="min-w-0">
+                    {exhibit(c, n, n === answers)}
+                    {before.length > 0 && (
+                      <div className="mt-2">
+                        <button onClick={() => setSteps((s) => { const x = new Set(s); if (open) x.delete(i); else x.add(i); return x; })} aria-expanded={open}
+                          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12.5px] text-[var(--d-ink-2)] hover:bg-[var(--d-sheet)] hover:text-[var(--d-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--d-teal)]">
+                          <ChevronDown size={14} className={`transition-transform ${open ? "" : "-rotate-90"}`} />
+                          How I got here: {before.length} earlier result{before.length === 1 ? "" : "s"}
+                        </button>
+                        {open && (
+                          <ol className="mt-2 space-y-4 border-l border-[var(--d-rule)] pl-5">
+                            {before.map((d, k) => (
+                              <li key={k}>{exhibit(d, 0, false)}</li>
+                            ))}
+                          </ol>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
             )}
           </main>
@@ -398,7 +433,7 @@ export default function PbiDesk() {
                     <div className="line-clamp-3 text-[14px] leading-relaxed text-[var(--d-ink)] [&_p]:inline"><ReactMarkdown remarkPlugins={[remarkGfm]}>{latest.text}</ReactMarkdown></div>
                   )}
                   <div className="mt-1.5 flex gap-3 text-[12px] text-[var(--d-muted)]">
-                    {latest.exhibits.map((n) => <a key={n} href={`#exhibit-${n}`} className="font-semibold text-[var(--d-teal)] hover:underline">Exhibit {n}</a>)}
+                    {shown(latest.exhibits).map((n) => <a key={n} href={`#exhibit-${n}`} className="font-semibold text-[var(--d-teal)] hover:underline">Exhibit {n}</a>)}
                     <button onClick={() => setHistory(true)} className="ml-auto hover:text-[var(--d-ink)]">Conversation ({turns.filter((t) => t.role === "user").length})</button>
                     {!latest.busy && <button onClick={() => setShut(turns.length)} aria-label="Hide the reply" className="hover:text-[var(--d-ink)]">Hide</button>}
                   </div>
@@ -419,7 +454,7 @@ export default function PbiDesk() {
                 <li key={p.id}>
                   <button onClick={() => reopen(p)} className={`w-full rounded-lg px-3 py-2.5 text-left hover:bg-[var(--d-paper)] ${p.id === session ? "bg-[var(--d-paper)]" : ""}`}>
                     <span className="line-clamp-2 text-[14px] font-medium">{p.title}</span>
-                    <span className="mt-0.5 block text-[12px] text-[var(--d-muted)]">{p.cards.length} answer{p.cards.length === 1 ? "" : "s"} · {new Date(p.at * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                    <span className="mt-0.5 block text-[12px] text-[var(--d-muted)]">{fold(p.cards).number.size} answer{fold(p.cards).number.size === 1 ? "" : "s"} · {new Date(p.at * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
                   </button>
                 </li>
               ))}

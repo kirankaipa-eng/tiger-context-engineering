@@ -21,6 +21,8 @@ export type ExhibitData = {
   receipt?: Receipt;
   /** A drill-down: the value it breaks down. */
   parent?: { label: string; value: unknown; within: string };
+  /** The question (the desk's turn) it came from: results of one question fold into one answer. */
+  turn?: number;
 };
 
 export type Receipt = {
@@ -155,7 +157,7 @@ export function PbiExhibit({ e, n, model, actions, landed, dates, types }: { e: 
     <section id={`exhibit-${n}`} className={`rounded-xl border border-[var(--d-rule)] bg-[var(--d-sheet)] shadow-[0_1px_2px_rgba(20,35,56,.06)] ${landed ? "landed" : ""}`}>
       <div className="flex flex-wrap items-start gap-3 border-b border-[var(--d-rule)] px-6 pb-3 pt-4">
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-semibold uppercase tracking-[.08em] text-[var(--d-muted)]">{n ? `Exhibit ${n} · ` : ""}{e.origin === "drill" ? (e.receipt ? "the transactions" : Object.keys(e.filters).length ? "drill-down" : "from the measure") : "answer"}</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[.08em] text-[var(--d-muted)]">{n ? `Exhibit ${n} · ` : ""}{e.origin === "drill" ? (e.receipt ? "the transactions" : Object.keys(e.filters).length ? "drill-down" : "from the measure") : n ? "answer" : "a step on the way"}</div>
           <h2 className="cond text-[21px] font-semibold leading-snug text-[var(--d-ink)]">{e.receipt ? `The rows behind ${e.receipt.label}` : exhibitTitle(e)}</h2>
           {e.parent && <div className="mt-0.5 text-[13px] text-[var(--d-ink-2)]">Breaking down {e.parent.label} for {e.parent.within}: <span className="num font-semibold text-[var(--d-ink)]">{num(e.parent.value)}</span></div>}
           {(filters.length > 0 || (e.conditions?.length ?? 0) > 0) && (

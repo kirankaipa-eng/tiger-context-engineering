@@ -58,3 +58,19 @@ export function tileOf(e: ExhibitData): Tile {
 
 /** Who the person is, as they told the team space (a name, not a sign-in). */
 export const owner = () => { try { return localStorage.getItem("desk-name")?.trim() || "me"; } catch { return "me"; } };
+
+/** One answer per question: within one question's results, a result a later one covers (the same kind, its
+    measures all in the later one: a total before its breakdown, a call redone) is a working step, folded into
+    that later answer, not an exhibit of its own. Results that answer different parts stay separate.
+    `number` is each answer's exhibit number (1, 2, ...); `into` maps a working step to the answer it led to. */
+export function fold(cards: ExhibitData[]) {
+  const into = new Map<number, number>(), number = new Map<number, number>();
+  cards.forEach((c, i) => {
+    if (c.turn === undefined || c.origin !== "agent") return;
+    const j = cards.findIndex((d, k) => k > i && d.turn === c.turn && d.kind === c.kind && c.metrics.every((m) => d.metrics.includes(m)));
+    if (j > 0) into.set(i, j);
+  });
+  cards.forEach((_, i) => { if (!into.has(i)) number.set(i, number.size + 1); });
+  const answer = (i: number): number => (into.has(i) ? answer(into.get(i)!) : i);  // a step's step lands on the last answer
+  return { number, into: new Map([...into.keys()].map((i) => [i, answer(i)])) };
+}
