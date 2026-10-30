@@ -23,7 +23,9 @@ import { useLook } from "@/lib/theme";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 type Role = "number" | "trend" | "breakdown" | "detail";
-type Spec = { id: string; role: Role; metrics: string[]; by: string[]; filters: Record<string, unknown> };
+/** `latest`: measures that only exist month by month (a change on the month before): the number tile
+    shows them at the month in focus, or the last one, from the trend's rows. */
+type Spec = { id: string; role: Role; metrics: string[]; by: string[]; filters: Record<string, unknown>; latest?: string[] };
 type Run = { result?: Result; error?: string; loading?: boolean };
 
 const PERIOD = /:(year|quarter|month|week|day)$/;
@@ -37,11 +39,19 @@ const shown = (ref: string, v: unknown) => (PERIOD.test(ref) ? periodName(v) : v
 const key = (metrics: string[], by: string[], filters: Record<string, unknown>) => JSON.stringify([metrics, by, Object.entries(filters).sort()]);
 const newSession = () => `ask-${Math.random().toString(36).slice(2, 10)}`;
 
-/** The tiles for the measure an answer settled on: its number, its trend by month, two breakdowns (the
-    answer's own first, then columns of other tables before its own), and the detail of the first two. */
-async function plan(model: string, lead: ExhibitData, dates: string[], types: Record<string, string>): Promise<Spec[]> {
-  const metrics = lead.metrics.slice(0, 3), filters = lead.filters;
-  const d = await pbi.metric(model, metrics[0]).catch(() => null);
+/** The tiles for the measures an answer settled on: their number, their trend by month, two breakdowns
+    (the answer's own first, then columns of other tables before its own), and the detail of the first two.
+    A measure that needs a month (a change on the month before) goes on the trend and, at its latest
+    month, on the number; one that needs anything else (a column to rank over, a what-if value) is left out. */
+async function plan(model: string, lead: ExhibitData, dates: string[], types: Record<string, string>, all: PbiMetric[]): Promise<Spec[]> {
+  const filters = lead.filters;
+  const needs = (k: string) => all.find((x) => x.key === k)?.needs;
+  const bare = (k: string) => !needs(k)?.by?.length && !Object.values(needs(k)?.params ?? {}).some((x) => x.default == null);
+  const monthly = lead.metrics.filter((k) => !bare(k) && needs(k)!.by.length === 1 && PERIOD.test(needs(k)!.by[0]) && !Object.keys(needs(k)!.params ?? {}).length);
+  const metrics = lead.metrics.filter(bare).slice(0, 3);
+  const first = metrics[0] ?? monthly[0];
+  if (!first) return [];
+  const d = await pbi.metric(model, first).catch(() => null);
   const columns = d?.columns ?? [];
   const own = new Set(d?.tables ?? []);
   const date = columns.find((c) => dates.includes(c));
@@ -52,9 +62,11 @@ async function plan(model: string, lead: ExhibitData, dates: string[], types: Re
   const outside = (c: string) => !own.has(table(c));
   const breakdowns = [...lead.by.filter((b) => !PERIOD.test(b)), ...dims.filter(outside), ...dims.filter((c) => !outside(c))]
     .filter((c, i, a) => a.indexOf(c) === i).slice(0, 2);
-  const trend = lead.by.find((b) => PERIOD.test(b)) ?? (date ? `${date}:month` : undefined);
-  const specs: Spec[] = [{ id: "number", role: "number", metrics, by: [], filters }];
-  if (trend) specs.push({ id: "trend", role: "trend", metrics: metrics.slice(0, 1), by: [trend], filters });
+  const trend = monthly.length ? needs(monthly[0])!.by[0] : lead.by.find((b) => PERIOD.test(b)) ?? (date ? `${date}:month` : undefined);
+  const latest = trend ? monthly.filter((k) => needs(k)!.by[0] === trend) : [];
+  const specs: Spec[] = [{ id: "number", role: "number", metrics, by: [], filters, latest }];
+  if (trend) specs.push({ id: "trend", role: "trend", metrics: [...metrics.slice(0, 1), ...latest], by: [trend], filters });
+  if (!metrics.length) return specs;
   breakdowns.forEach((b, i) => specs.push({ id: `by${i}`, role: "breakdown", metrics: metrics.slice(0, 1), by: [b], filters }));
   if (breakdowns.length === 2) specs.push({ id: "detail", role: "detail", metrics, by: breakdowns, filters });
   return specs;
@@ -100,6 +112,7 @@ export default function AskPage() {
     if (!specs.length) return;
     for (const s of specs) {
       const filters = { ...s.filters, ...Object.fromEntries(focus.filter(([k]) => s.role === "detail" || !s.by.includes(k))) };
+      if (!s.metrics.length) continue;  // the number of a measure that needs a month: read off the trend
       const k = key(s.metrics, s.by, filters);
       const hit = cache.current.get(k);
       if (hit) { setRuns((r) => ({ ...r, [s.id]: { result: hit } })); continue; }
@@ -132,7 +145,7 @@ export default function AskPage() {
         else if (e.type === "result") setAnswer((a) => a || e.data.answer || "");
       }, ctrl.signal);
       const lead = [...results].reverse().find((r) => r.kind === "compute" && r.metrics.length);
-      if (lead) { setStep("Laying out the dashboard"); setSpecs(await plan(pbiModel, lead, cols.dates, cols.types)); }
+      if (lead) { setStep("Laying out the dashboard"); setSpecs(await plan(pbiModel, lead, cols.dates, cols.types, metrics)); }
     } catch (err: any) {
       if (err?.name !== "AbortError") setError(String(err?.message ?? err));
     } finally { setStep(""); setBusy(false); abort.current = null; }
@@ -152,10 +165,18 @@ export default function AskPage() {
   };
 
   const name = (k: string) => labels[k] ?? k;
+  /** A month-by-month measure at the month in focus, or the last month: [value, month]. */
+  const atMonth = (m: string): [unknown, unknown] | null => {
+    const t = specs.find((x) => x.role === "trend"), r = runs.trend?.result;
+    if (!t || !r?.rows.length) return null;
+    const i = r.columns.indexOf(t.by[0]), want = focus.find(([k]) => k === t.by[0])?.[1];
+    const row = want !== undefined ? r.rows.find((x) => x[i] === want) : [...r.rows].sort((a, b) => String(a[i]).localeCompare(String(b[i]))).at(-1);
+    return row ? [row[r.columns.indexOf(m)], row[i]] : null;
+  };
   const tile = (s: Spec) => {
-    const run = runs[s.id], r = run?.result;
+    const run = s.role === "number" && !s.metrics.length ? runs.trend : runs[s.id], r = run?.result;
     const mine = s.role === "detail" ? undefined : focus.find(([k]) => s.by.includes(k));
-    const title = s.role === "number" ? s.metrics.map(name).join(" · ") : s.role === "detail" ? `${name(s.metrics[0])}${s.metrics.length > 1 ? " and more" : ""}, by ${s.by.map(said).join(" and ")}`
+    const title = s.role === "number" ? [...s.metrics, ...(s.latest ?? [])].map(name).join(" · ") : s.role === "detail" ? `${name(s.metrics[0])}${s.metrics.length > 1 ? " and more" : ""}, by ${s.by.map(said).join(" and ")}`
       : `${name(s.metrics[0])} by ${said(s.by[0])}`;
     const span = { number: "lg:col-span-2", trend: "lg:col-span-4", breakdown: "lg:col-span-3", detail: "lg:col-span-6" }[s.role];
     return (
@@ -176,14 +197,25 @@ export default function AskPage() {
                   const v = r.rows[0]?.[r.columns.indexOf(m)];
                   return (
                     <div key={m}>
-                      {s.metrics.length > 1 && <div className="text-[13px] text-[var(--d-muted)]">{name(m)}</div>}
+                      {s.metrics.length + (s.latest?.length ?? 0) > 1 && <div className="text-[13px] text-[var(--d-muted)]">{name(m)}</div>}
                       <div className="num text-[44px] font-semibold leading-none text-[var(--d-ink)]">{isRatio(name(m), [v]) ? pctText(v) : num(v)}</div>
                     </div>
                   );
                 })}
-                <div className="text-[13px] text-[var(--d-muted)]">
-                  {focus.length ? `For ${focus.map(([k, v]) => shown(k, v)).join(", ")}` : Object.keys(s.filters).length ? `For ${Object.entries(s.filters).map(([k, v]) => shown(k, v)).join(", ")}` : "Every month, everything"}
-                </div>
+                {s.metrics.length > 0 && (
+                  <div className="text-[13px] text-[var(--d-muted)]">
+                    {focus.length ? `For ${focus.map(([k, v]) => shown(k, v)).join(", ")}` : Object.keys(s.filters).length ? `For ${Object.entries(s.filters).map(([k, v]) => shown(k, v)).join(", ")}` : "Every month, everything"}
+                  </div>
+                )}
+                {(s.latest ?? []).map((m) => {
+                  const at = atMonth(m);
+                  return (
+                    <div key={m}>
+                      <div className="text-[13px] text-[var(--d-muted)]">{name(m)}{at ? `, ${periodName(at[1])}` : ""}</div>
+                      <div className="num text-[30px] font-semibold leading-none text-[var(--d-ink)]">{!at ? "…" : isRatio(name(m), [at[0]]) ? pctText(at[0]) : num(at[0])}</div>
+                    </div>
+                  );
+                })}
               </div>
             ) : s.role === "detail" ? (
               <div className="max-h-80 overflow-auto"><ResultTable columns={r.columns} rows={r.rows} numeric={s.metrics} labels={{ ...labels, ...Object.fromEntries(s.by.map((b) => [b, said(b)])) }} /></div>
