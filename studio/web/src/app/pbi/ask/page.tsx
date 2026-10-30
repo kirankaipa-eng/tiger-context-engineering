@@ -36,6 +36,14 @@ const STEP: Record<string, string> = {
 const said = (ref: string) => (PERIOD.test(ref) ? ref.match(PERIOD)![1] : colLabel(ref).replace(/ · .*$/, ""));
 const shown = (ref: string, v: unknown) => (PERIOD.test(ref) ? periodName(v) : v === null || v === undefined || v === "" ? "(blank)" : Array.isArray(v) ? v.join(", ") : String(v));
 const key = (metrics: string[], by: string[], filters: Record<string, unknown>) => JSON.stringify([metrics, by, Object.entries(filters).sort()]);
+/** A focus on a few values of one column (Product: Word, Excel) is a comparison: the values it names. */
+const versusOf = (focus: [string, unknown][]) => focus.find(([k, v]) => Array.isArray(v) && v.length > 1 && v.length <= 6 && !PERIOD.test(k)) as [string, unknown[]] | undefined;
+/** What a tile is split by: its own columns, plus the compared column (along the trend as a line each,
+    and along a breakdown's axis, so each value's bar is made of the breakdown); the detail already has it. */
+const split = (s: Spec, focus: [string, unknown][]) => {
+  const v = versusOf(focus)?.[0];
+  return !v || s.role === "detail" || s.by.includes(v) ? s.by : s.role === "trend" ? [...s.by, v] : [v, ...s.by];
+};
 const newSession = () => `ask-${Math.random().toString(36).slice(2, 10)}`;
 
 /** The tiles for the measures an answer settled on: their number, their trend by month, two breakdowns
@@ -96,19 +104,20 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
     for (const s of specs) {
       const filters = { ...s.filters, ...Object.fromEntries(focus.filter(([k]) => s.role === "detail" || !s.by.includes(k))) };
       if (!s.metrics.length) continue;  // the number of a measure that needs a month: read off the trend
-      const k = key(s.metrics, s.by, filters);
+      const by = split(s, focus), k = key(s.metrics, by, filters);
       const hit = cache.get(k);
       if (hit) { setRuns((r) => ({ ...r, [s.id]: { result: hit } })); continue; }  // eslint-disable-line react-hooks/set-state-in-effect
       setRuns((r) => ({ ...r, [s.id]: { result: r[s.id]?.result, loading: true } }));
-      pbi.compute(model, { metrics: s.metrics, by: s.by, filters })
+      pbi.compute(model, { metrics: s.metrics, by, filters })
         .then((res) => { cache.set(k, res); setRuns((r) => ({ ...r, [s.id]: { result: res } })); })
         .catch((err) => setRuns((r) => ({ ...r, [s.id]: { error: String(err?.message ?? err) } })));
     }
   }, [specs, focus, model, cache]);
 
+  // a mark's values come in the order the tile was split by; the compared column's is not a pick
   const pick = (s: Spec, values: unknown[]) => setFocus((f) => {
-    const next = f.filter(([k]) => !s.by.includes(k));
-    s.by.forEach((b, i) => { if (values[i] !== undefined) next.push([b, values[i]]); });
+    const dims = split(s, f), next = f.filter(([k]) => !s.by.includes(k));
+    s.by.forEach((b) => { const v = values[dims.indexOf(b)]; if (v !== undefined) next.push([b, v]); });
     return next;
   });
   const keep = async () => {
@@ -119,19 +128,24 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
   };
 
   const name = (k: string) => labels[k] ?? k;
-  /** A month-by-month measure at the month in focus, or the last month: [value, month]. */
-  const atMonth = (m: string): [unknown, unknown] | null => {
+  const versus = versusOf(focus);
+  /** A month-by-month measure at the month in focus, or the last month: [value, month]; in a comparison,
+      for one of the compared values. */
+  const atMonth = (m: string, of?: unknown): [unknown, unknown] | null => {
     const t = specs.find((x) => x.role === "trend"), r = runs.trend?.result;
     if (!t || !r?.rows.length) return null;
     const i = r.columns.indexOf(t.by[0]), want = focus.find(([k]) => k === t.by[0])?.[1];
-    const row = want !== undefined ? r.rows.find((x) => x[i] === want) : [...r.rows].sort((a, b) => String(a[i]).localeCompare(String(b[i]))).at(-1);
+    const vi = versus ? r.columns.indexOf(versus[0]) : -1, rows = vi < 0 ? r.rows : r.rows.filter((x) => x[vi] === of);
+    const row = want !== undefined ? rows.find((x) => x[i] === want) : [...rows].sort((a, b) => String(a[i]).localeCompare(String(b[i]))).at(-1);
     return row ? [row[r.columns.indexOf(m)], row[i]] : null;
   };
   const tile = (s: Spec) => {
-    const run = s.role === "number" && !s.metrics.length ? runs.trend : runs[s.id], r = run?.result;
+    // until a re-split tile's rows arrive, its old ones (without the compared column) are not drawn
+    const run = s.role === "number" && !s.metrics.length ? runs.trend : runs[s.id], held = run?.result;
+    const r = held && split(s, focus).every((d) => held.columns.includes(d)) ? held : undefined;
     const mine = s.role === "detail" ? undefined : focus.find(([k]) => s.by.includes(k));
-    const title = s.role === "number" ? [...s.metrics, ...(s.latest ?? [])].map(name).join(" · ") : s.role === "detail" ? `${name(s.metrics[0])}${s.metrics.length > 1 ? " and more" : ""}, by ${s.by.map(said).join(" and ")}`
-      : `${name(s.metrics[0])} by ${said(s.by[0])}`;
+    const title = (s.role === "number" ? [...s.metrics, ...(s.latest ?? [])].map(name).join(" · ") : s.role === "detail" ? `${name(s.metrics[0])}${s.metrics.length > 1 ? " and more" : ""}, by ${s.by.map(said).join(" and ")}`
+      : `${name(s.metrics[0])} by ${said(s.by[0])}`) + (versus && split(s, focus).length > s.by.length ? `, ${versus[1].map((x) => shown(versus[0], x)).join(" vs ")}` : "");
     const span = { number: "lg:col-span-2", trend: "lg:col-span-4", breakdown: "lg:col-span-3", detail: "lg:col-span-6" }[s.role];
     return (
       <section key={s.id} className={`flex min-w-0 flex-col rounded-2xl bg-[var(--d-sheet)] p-5 shadow-[0_1px_2px_rgba(20,35,56,.06)] ${span}`}>
@@ -145,7 +159,30 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
           {run?.error ? <p className="text-[13px] text-[var(--d-rise-ink)]">{run.error}</p>
             : !r ? <div className="h-40 rounded-xl bg-[var(--d-paper)]" />
             : !r.rows.length ? <p className="py-6 text-[13px] text-[var(--d-muted)]">Nothing here for this focus.</p>
-            : s.role === "number" ? (
+            : s.role === "number" && versus ? (
+              <div className="flex h-full flex-col justify-center gap-5">
+                {[...s.metrics, ...(s.latest ?? [])].map((m) => {
+                  const vi = r.columns.indexOf(versus[0]), monthly = !s.metrics.includes(m);
+                  return (
+                    <div key={m}>
+                      <div className="text-[13px] text-[var(--d-muted)]">{name(m)}{monthly && atMonth(m, versus[1][0]) ? `, ${periodName(atMonth(m, versus[1][0])![1])}` : ""}</div>
+                      <div className="mt-1.5 grid gap-4" style={{ gridTemplateColumns: `repeat(${versus[1].length}, minmax(0, 1fr))` }}>
+                        {versus[1].map((x) => {
+                          const v = monthly ? atMonth(m, x)?.[0] : r.rows.find((row) => row[vi] === x)?.[r.columns.indexOf(m)];
+                          return (
+                            <div key={String(x)} className="min-w-0">
+                              <div className="num truncate text-[30px] font-semibold leading-none text-[var(--d-ink)]">{v === undefined || v === null ? "—" : isRatio(name(m), [v]) ? pctText(v) : num(v)}</div>
+                              <div className="mt-1 truncate text-[12.5px] font-semibold text-[var(--d-ink-2)]">{shown(versus[0], x)}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+                {focus.some(([k]) => k !== versus[0]) && <div className="text-[13px] text-[var(--d-muted)]">For {focus.filter(([k]) => k !== versus[0]).map(([k, v]) => shown(k, v)).join(", ")}</div>}
+              </div>
+            ) : s.role === "number" ? (
               <div className="flex h-full flex-col justify-center gap-4">
                 {s.metrics.map((m) => {
                   const v = r.rows[0]?.[r.columns.indexOf(m)];
@@ -174,7 +211,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
             ) : s.role === "detail" ? (
               <div className="max-h-80 overflow-auto"><ResultTable columns={r.columns} rows={r.rows} numeric={s.metrics} labels={{ ...labels, ...Object.fromEntries(s.by.map((b) => [b, said(b)])) }} /></div>
             ) : (
-              <AutoChart columns={r.columns} rows={r.rows} dims={s.by} metrics={s.metrics} labels={labels} palette={DESK_PALETTE} height={s.role === "trend" ? 240 : 260} hideKinds
+              <AutoChart columns={r.columns} rows={r.rows} dims={split(s, focus)} metrics={s.metrics} labels={labels} palette={DESK_PALETTE} height={s.role === "trend" ? 240 : 260} hideKinds
                 onPick={(p) => pick(s, p.values)} />
             )}
         </div>
