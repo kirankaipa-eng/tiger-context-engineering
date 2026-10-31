@@ -79,7 +79,7 @@ const SIGNIFICANT = /significan|statistic|\bby chance\b|\bprove\b|confiden|p-?va
 const PLACE = /store|city|region|country|state|location|branch|site|territor|market|area|zone/i;
 const PEOPLE = /gender|\bsex\b|^age|age ?(band|group|range)|income|marital|education|occupation|generation/i;
 /** What a business is usually cut by first, when the question names nothing. */
-const BUSINESS = /category|segment|product|brand|store|region|channel|promotion|type/i;
+const BUSINESS = /category|segment|product|brand|store|region|channel|promotion|type|setting|line of business|plan|facility|specialty|provider|drug|network|funding|condition/i;
 
 /** The pictures for an answer: up to three of different kinds, the first the one the question asks for most.
     From the answer it takes the measures and the columns it settled on; the question's words (and the
@@ -410,7 +410,10 @@ export default function AskPage() {
   }, [pbiModel]);
   const labels = useMemo(() => Object.fromEntries(metrics.map((m) => [m.key, m.label])), [metrics]);
   const starters = useMemo(() => {
-    const plain = metrics.filter((m) => !m.needs?.by?.length && !Object.keys(m.needs?.params ?? {}).length).slice(0, 2);
+    // a rate or a per-member figure reads as the business's pulse; a raw count (member months) seldom does
+    const pulse = (m: { label: string }) => (/pmpm|per |ratio|rate/i.test(m.label) ? 0 : 1);
+    const plain = metrics.filter((m) => !m.needs?.by?.length && !Object.keys(m.needs?.params ?? {}).length)
+      .sort((a, b) => pulse(a) - pulse(b)).slice(0, 2);
     return plain.length ? [`Where is ${plain[0].label} highest, and how has it moved?`, `Why did ${plain[0].label} change last month?`,
       ...(plain[1] ? [`What is ${plain[1].label} made of?`] : [])] : [];
   }, [metrics]);
