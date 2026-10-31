@@ -28,7 +28,9 @@ export const chartsOf = (tiles: Saved[], dash: string): Chart[] =>
     .sort((a, b) => (a.pos ?? 1e9) - (b.pos ?? 1e9) || a.at - b.at);
 
 export async function load(model: string, owner: string): Promise<Saved[]> {
-  return ((await pbi.board(model, owner)).tiles ?? []) as Saved[];
+  // one of each: a board saved before Keep dropped repeats can hold a chart twice (and is set right on its next save)
+  const tiles = ((await pbi.board(model, owner)).tiles ?? []) as Saved[];
+  return tiles.filter((t, i) => tiles.findIndex((x) => x.id === t.id) === i);
 }
 export async function save(model: string, owner: string, tiles: Saved[]) {
   if (tiles.length > LIMIT) throw new Error(`a person's dashboards hold ${LIMIT} charts in all; remove one first`);
