@@ -1,7 +1,9 @@
 "use client";
 
-import { MyBoard } from "@/components/my-board";
+import { Suspense } from "react";
+import { Dashboards } from "@/components/dashboards";
 
-export default function MyDashboard() {
-  return <MyBoard show="dashboard" />;
+export default function DashboardsPage() {
+  // the open dashboard is in the address (?d=), read on the client
+  return <Suspense><Dashboards /></Suspense>;
 }

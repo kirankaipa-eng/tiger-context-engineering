@@ -8,17 +8,19 @@
    where you are), and Keep pins the views to My dashboard. Follow-ups add to the conversation, each with
    views the ones above do not already show. */
 
-import { ArrowUp, Bookmark, Check, Layers, Repeat, Share2, Square, X } from "lucide-react";
+import { ArrowUp, Layers, Repeat, Share2, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { pctText, periodName } from "@/components/auto-chart";
+import { AddToDashboard } from "@/components/add-to-dashboard";
 import { DrillTree, PickMenu, type DrillStart } from "@/components/ask-drill";
 import { EXPORT_GAPS, KIND_NAME, RATE, Visual, kindsFor, noteOf, type Data, type VisualKind } from "@/components/ask-visuals";
 import type { ExhibitData } from "@/components/pbi-exhibit";
 import { ResultTable, SqlBlock, num } from "@/components/pbi";
 import { streamNdjson } from "@/lib/api";
-import { owner, readAsked, tileOf, writeAsked } from "@/lib/desk";
+import type { Chart } from "@/lib/dashboards";
+import { readAsked, tileOf, writeAsked } from "@/lib/desk";
 import { colLabel, columnTypes, isDimension, pbi, type PbiMetric, type Result } from "@/lib/pbi";
 import { useStudio } from "@/lib/studio";
 import { BUSINESS, PEOPLE, PLACE } from "@/lib/vocab";
@@ -33,7 +35,7 @@ import { SettingsMenu, useLook } from "@/lib/theme";
 type View = { id: string; kind: VisualKind | "rows"; title: string; metrics: string[]; queries: string[][]; dims: string[]; own: string[];
   filters: Record<string, unknown>; table?: Data; ran?: Ran; was?: View };
 /** The answer's own picture: the agent's result whose numbers the answer states, drawn as computed. */
-type Picture = { kind: VisualKind; scope: string; data: Data[]; metrics: string[]; dims: string[] };
+type Picture = { kind: VisualKind; scope: string; data: Data[]; metrics: string[]; dims: string[]; filters?: Record<string, unknown> };
 /** The picture's title, in the measures' names as the model has them now. */
 const pictureTitle = (p: Picture, labels: Record<string, string>) => {
   const names = p.metrics.map((m) => labels[m] ?? m).join(", "), over = p.dims.filter((d) => !PERIOD.test(d)).map(said);
@@ -132,7 +134,8 @@ function pictureOf(results: ExhibitData[], answer: string): Picture | undefined 
   const scope = Object.entries(best.filters).filter(([k]) => !dims.includes(k)).map(([k, v]) => `${said(k)}: ${shown(k, v)}`).join(" · ");
   // a line or a ranking draws one measure: the picture names only what it draws
   const drawn = kind === "trend" || kind === "leaderboard" ? [leadM] : metrics;
-  return { kind, scope, data: [{ columns: best.columns, rows }], metrics: drawn, dims: ordered };
+  const filters = { ...best.filters, ...(picked.length >= 2 && month ? { [month]: named.filter((x) => picked.some((row) => String(row[best!.columns.indexOf(month)]).startsWith(x))) } : {}) };
+  return { kind, scope, data: [{ columns: best.columns, rows }], metrics: drawn, dims: ordered, filters };
 }
 
 /** The month an answer is about: the latest it names ("from September 2025 to September 2026" -> "2026-09"). */
@@ -339,8 +342,6 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
   const switchTo = (v: View, kind: VisualKind) => setViews((vs) => vs.map((x) => (x.id === v.id ? asKind(x, kind) ?? x : x)));
 
   const [runs, setRuns] = useState<Record<string, Run>>({});
-  const [kept, setKept] = useState(false);
-  const [keepError, setKeepError] = useState("");
 
   // every view, re-run whenever the trail changes: one leaves alone a pick on its own columns, so it keeps
   // showing every value and marks the picked one
@@ -372,13 +373,14 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
     setMenu(null);
     setTimeout(() => document.getElementById(`drill-${turn.id}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 80);
   };
-  const keep = async () => {
-    const board = await pbi.board(model, owner()).catch(() => ({ tiles: [] as ReturnType<typeof tileOf>[] }));
-    const mine = views.filter((v) => !v.table).flatMap((v) => v.queries.map((by) => tileOf({ kind: "compute", columns: [], rows: [], metrics: v.metrics, by, filters: filtersOf(v, focus), labels, origin: "agent" })))
-      .filter((t, i, all) => all.findIndex((x) => x.id === t.id) === i);  // two charts of one computation: one tile
-    const tiles = [...board.tiles, ...mine.filter((t) => !board.tiles.some((x) => x.id === t.id))];
-    await pbi.saveBoard(model, owner(), tiles).then(() => setKept(true)).catch((err) => setKeepError(`Could not keep it: ${err?.message ?? err}`));
-  };
+  // a chart as a dashboard keeps it: its question (measures, columns, filters) and its kind, re-run when opened
+  const chartOf = (v: View): Chart => ({
+    ...tileOf({ kind: "compute", columns: [], rows: [], metrics: v.metrics, by: v.dims, filters: filtersOf(v, focus), labels, origin: "agent" }),
+    title: v.title, chart: v.kind as VisualKind, dims: v.dims });
+  const pictureChart = (): Chart[] => picture ? [{
+    ...tileOf({ kind: "compute", columns: [], rows: [], metrics: picture.metrics, by: picture.dims, filters: picture.filters ?? {}, labels, origin: "agent" }),
+    title: pictureTitle(picture, labels), chart: picture.kind, dims: picture.dims }] : [];
+  const everything = () => [...pictureChart(), ...(lead ? [lead] : []).concat(supports).map(chartOf)];
   const picked = Object.fromEntries(focus);
 
   const tile = (v: View, place: "answer" | "support" | "more") => {
@@ -406,6 +408,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
           <h2 className={`cond mr-auto font-semibold text-[var(--d-ink)] ${hero ? "text-[16px]" : "text-[15px]"}`}>{v.title}</h2>
           {mine && <span className="rounded-full bg-[var(--d-teal-soft)] px-2 py-0.5 text-[12px] font-semibold text-[var(--d-teal)]">{shown(mine[0], mine[1])} picked</span>}
           {kinds.length > 1 && toggle(kinds.map((k) => k.kind), v.kind as VisualKind, (k) => switchTo(v, k))}
+          {!v.table && <AddToDashboard model={model} charts={() => [chartOf(v)]} label="Add this chart to a dashboard" compact />}
           {(!run || run.loading) && <span className="pulse-soft text-[12px] text-[var(--d-muted)]">Computing…</span>}
         </header>
         {note && <p className="mt-2.5 rounded-lg bg-[var(--d-teal-soft)] px-3 py-2 text-[13.5px] leading-snug text-[var(--d-ink)]">{note}</p>}
@@ -502,6 +505,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
             <figcaption className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
               <span className="cond mr-auto text-[16px] font-semibold text-[var(--d-ink)]">{pictureTitle(picture, labels)}</span>
               {pictureKinds.length > 1 && toggle(pictureKinds.map((k) => k.kind), picture.kind, (k) => setPicture({ ...picture, kind: k, dims: pictureKinds.find((o) => o.kind === k)!.dims }))}
+              <AddToDashboard model={model} charts={pictureChart} label="Add this chart to a dashboard" compact />
             </figcaption>
             {picture.scope && <p className="mt-0.5 text-[12.5px] text-[var(--d-muted)]">{picture.scope}</p>}
             <div className="mt-2 min-h-0 flex-1">
@@ -513,7 +517,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
             onPointerDownCapture={(e) => { pointer.current = { x: e.clientX, y: e.clientY }; }}>{tile(lead, "answer")}</div>
         ) : null}
       </div>
-      {(error || keepError) && <p className="mt-3 rounded-lg bg-[var(--d-rise-soft)] px-3 py-2 text-[13px] text-[var(--d-rise-ink)]">{error || keepError}</p>}
+      {error && <p className="mt-3 rounded-lg bg-[var(--d-rise-soft)] px-3 py-2 text-[13px] text-[var(--d-rise-ink)]">{error}</p>}
       {!live && !views.length && !error && <p className="mt-3 text-[13px] text-[var(--d-muted)]">{turn.repeat ? "The pictures for this are already on the page, above." : "This answer did not come from a measure, so there is nothing to draw. Try asking about a number."}</p>}
 
       {turn.note && views.length > 0 && <p className="mt-4 rounded-lg bg-[var(--d-teal-soft)] px-3 py-2 text-[13px] text-[var(--d-teal)]">{turn.note}</p>}
@@ -536,9 +540,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
                 <button onClick={() => { const v = views.find((x) => !x.table && x.metrics.length)!; drillFrom(v, { at: Date.now() }); }}
                   className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] text-[var(--d-ink-2)] ring-1 ring-[var(--d-rule)] hover:ring-[var(--d-teal)]"><Layers size={14} />Drill down</button>
               )}
-              <button onClick={keep} disabled={kept} className="flex items-center gap-1.5 rounded-full bg-[var(--d-teal)] px-3.5 py-1.5 text-[13px] font-semibold text-white disabled:bg-[var(--d-teal-soft)] disabled:text-[var(--d-teal)]">
-                {kept ? <Check size={14} /> : <Bookmark size={14} />}{kept ? "Kept in My dashboard" : "Keep"}
-              </button>
+              <AddToDashboard model={model} charts={everything} />
               {[["Share", Share2], ["Repeat", Repeat]].map(([label, Icon]: any) => (
                 <button key={label} disabled title={`${label}: not built yet (needs the server side)`} className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] text-[var(--d-muted)] opacity-60"><Icon size={14} />{label}</button>
               ))}
