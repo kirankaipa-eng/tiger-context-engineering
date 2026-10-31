@@ -213,7 +213,10 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
   // the columns to draw by: those named (the question's words win), then the answer's own, then places for a
   // "where", then the business's usual cuts; people (gender, age) only when asked for. One per column name.
   const rest = [...dims.filter((c) => !own.has(table(c))), ...dims.filter((c) => own.has(table(c)))].filter((c) => !PEOPLE.test(field(c)));
-  const ordered = [...named, ...lead.by.filter((b) => !PERIOD.test(b)), ...(/\bwhere\b/.test(q) ? rest.filter((c) => PLACE.test(field(c))) : []),
+  // the answer's own columns count, but not people's (an age, a gender) the question did not ask for: a driver path
+  // that passed through Age is no reason to draw Total PMPM by every single age
+  const ordered = [...named, ...lead.by.filter((b) => !PERIOD.test(b) && (!PEOPLE.test(field(b)) || named.includes(b))),
+    ...(/\bwhere\b/.test(q) ? rest.filter((c) => PLACE.test(field(c))) : []),
     ...rest.filter((c) => BUSINESS.test(field(c))), ...rest.filter((c) => !BUSINESS.test(field(c)))]
     // a part of a date (a Month or Year column) is the trend's, not something to rank or split by
     .filter((c, i, a) => c !== V && !/^(month|year|quarter|week|day|date)/i.test(field(c)) && a.findIndex((x) => field(x) === field(c)) === i);
