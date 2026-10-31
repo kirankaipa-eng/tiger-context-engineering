@@ -571,16 +571,16 @@ export default function AskPage() {
     <div className={`desk ${look.look} relative flex h-screen flex-col bg-[var(--d-ground)] text-[var(--d-ink)]`}>
       <main className="min-h-0 flex-1 overflow-y-auto">
         {!turns.length ? (
-          <div className="mx-auto flex min-h-full max-w-2xl flex-col justify-center px-6 py-16">
-            <h1 className="cond text-[34px] font-semibold leading-tight">Ask a question. See the answer.</h1>
-            <p className="mt-2 text-[15px] leading-relaxed text-[var(--d-muted)]">
-              The answer comes first, then the picture your question asks for: a ranking, a trend, a comparison and its gap, what drove a change,
-              what something is made of, how it flows. Click anything to focus every view on it.
-              Every number comes from your Power BI measures, translated to SQL{model ? ` (${model.captured} of ${model.measures} so far)` : ""}.
+          // centred like a search page, lifted a little above the middle where the eye lands
+          <div className="mx-auto flex min-h-full w-full max-w-[720px] flex-col items-center justify-center px-6 pb-[14vh] pt-16 text-center">
+            <h1 className="cond text-[34px] font-semibold leading-tight tracking-[-.01em]">Ask a question. See the answer.</h1>
+            <p className="mt-3 max-w-[54ch] text-[15px] leading-relaxed text-[var(--d-muted)]">
+              The answer first, then the picture it calls for. Every number comes from your Power BI measures,
+              translated to SQL{model ? ` (${model.captured} of ${model.measures} so far)` : ""}.
             </p>
-            <div className="mt-8">{composer(true)}</div>
+            <div className="mt-8 w-full text-left">{composer(true)}</div>
             {error && <p className="mt-3 text-[13px] text-[var(--d-rise-ink)]">{error}</p>}
-            <div className="mt-5 flex flex-wrap gap-2">
+            <div className="mt-5 flex flex-wrap justify-center gap-2">
               {starters.map((s) => (
                 <button key={s} onClick={() => ask(s)} className="rounded-full bg-[var(--d-sheet)] px-4 py-2 text-[13.5px] text-[var(--d-ink-2)] ring-1 ring-[var(--d-rule)] hover:ring-[var(--d-teal)]">{s}</button>
               ))}
