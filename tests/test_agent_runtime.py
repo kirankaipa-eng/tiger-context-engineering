@@ -96,3 +96,68 @@ def test_an_error_reaches_the_consumer():
     orch = Orchestrator(None, None, "scripted", "base", chat_model=lambda http: model)
     events = run(orch, "Hello?")
     assert events[-1]["type"] == "error" and "IndexError" in events[-1]["data"]["message"]
+
+
+def paired(messages):
+    """Every tool call sent has its result, and every result its call, as the model's API requires."""
+    calls = {c["id"] for m in messages for c in getattr(m, "tool_calls", None) or []}
+    results = {m.tool_call_id for m in messages if m.type == "tool"}
+    return calls == results
+
+
+def test_a_long_conversation_across_topics_stays_within_its_budget(monkeypatch):
+    import insurance_context.agent_runtime as rt
+
+    async def wide(ctx: RunContext, topic: str) -> str:
+        """A result as wide as a breakdown by provider."""
+        return f"{topic}: " + "row " * 5000
+
+    monkeypatch.setattr(rt, "HISTORY_CHARS", 5_000)  # room for about two earlier turns, once cut
+    topics = ["pmpm", "mlr", "glp1", "er visits", "modifier 25", "admits", "pharmacy", "members"]
+    script = []
+    for i, t in enumerate(topics):
+        script += [call("wide", {"topic": t}, i=f"c{i}"), AIMessage(f"About {t}.")]
+    model = Scripted(script=script, seen=[])
+    orch = Orchestrator(None, None, "scripted", "base", tools=[wide], chat_model=lambda http: model)
+    for t in topics:
+        events = run(orch, f"Now tell me about {t}")
+        assert events[-1] == {"type": "result", "data": {"type": "analysis", "answer": f"About {t}."}}
+    for sent in model.seen:
+        history = sent[1:]
+        assert paired(history) and history[0].type == "human"
+    last = model.seen[-1][1:]
+    assert sum(len(str(m.content)) for m in last) < 5_000 + 25_000  # the budget, plus the current turn whole
+    assert last[-1].content.startswith("members: ") and "cut from" not in last[-1].content  # this turn's result whole
+    assert any("cut from" in str(m.content) for m in last if m.type == "tool")  # earlier ones cut
+    asked = [m.content for m in last if m.type == "human"]
+    assert "Now tell me about pmpm" not in asked and "Now tell me about admits" in asked  # oldest out, recent in
+
+
+def test_a_stopped_turn_and_a_failed_turn_do_not_break_the_next_one():
+    from langchain_core.messages import HumanMessage
+
+    model = Scripted(script=[AIMessage("Fine again.")], seen=[])
+    orch = Orchestrator(None, None, "scripted", "base", tools=[compute], chat_model=lambda http: model)
+    graph = orch._graph(model, [as_tool(compute)], "base")
+    config = {"configurable": {"thread_id": "s1"}}
+    # a turn stopped mid tool call: the call has no result
+    asyncio.run(graph.aupdate_state(config, {"messages": [HumanMessage("Why is MLR up?"),
+                                                          call("compute", {"metrics": ["mlr"]})]}, as_node="agent"))
+    assert run(orch, "Forget that. GLP-1 members by quarter?")[-1]["data"]["answer"] == "Fine again."
+    assert paired(model.seen[-1][1:])
+    # a turn the model failed on (nothing scripted: it raises), then a new topic
+    assert run(orch, "And ER visits?")[-1]["type"] == "error"
+    model.script.append(AIMessage("ER answer."))
+    assert run(orch, "ER visits per 1,000 by state?")[-1]["data"]["answer"] == "ER answer."
+
+
+def test_fitting_leaves_the_kept_history_whole():
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    from insurance_context.agent_runtime import fit
+
+    msgs = [HumanMessage("a"), call("compute", {}, i="x"), ToolMessage("r" * 5000, tool_call_id="x"), AIMessage("A"),
+            HumanMessage("b")]
+    sent = fit(msgs, budget=10_000, old_result=100)
+    assert len(sent[2].content) < 300 and len(msgs[2].content) == 5000
+    assert fit(msgs, budget=50, old_result=100) == [msgs[-1]]

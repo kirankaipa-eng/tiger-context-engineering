@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import itertools
 import json
 import typing
 import uuid
@@ -32,6 +33,8 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 MAX_STEPS = 60  # graph steps per question (each model call and each tool round is one)
+HISTORY_CHARS = 120_000  # earlier turns sent to the model, at most (about 30k tokens); the current turn is always whole
+OLD_RESULT_CHARS = 1_500  # a tool result from an earlier turn is sent cut to this
 
 
 class RunContext:
@@ -88,6 +91,38 @@ def _text(content) -> str:
     return "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content or [])
 
 
+def fit(messages: list, budget: int | None = None, old_result: int | None = None) -> list:
+    """What of a session's messages to send the model, so a long conversation never outgrows its context
+    (once it has, every later turn fails the same way). The current turn, from the last person's message
+    on, goes whole. Earlier turns' tool results go cut short: the answers given from them stay, and a tool
+    can be run again. If that is still over `budget` characters, the oldest turns are left out whole: a
+    turn begins at a person's message, so a tool call is never sent without its result or a result
+    without its call. The kept history is unchanged; only what is sent is fitted."""
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    budget = HISTORY_CHARS if budget is None else budget
+    old_result = OLD_RESULT_CHARS if old_result is None else old_result
+    starts = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    if not starts:
+        return list(messages)
+    current = starts[-1]
+
+    def cut(m):
+        text = _text(m.content)
+        if not isinstance(m, ToolMessage) or len(text) <= old_result:
+            return m
+        return m.model_copy(update={"content": text[:old_result] + f"\n… (cut from {len(text):,} characters: an "
+                                    "earlier turn's result; run the tool again if it is needed now)"})
+
+    def size(ms):
+        return sum(len(_text(m.content)) + len(json.dumps(getattr(m, "tool_calls", None) or [], default=str)) for m in ms)
+
+    turns = [[cut(m) for m in messages[a:b]] for a, b in itertools.pairwise(starts)]
+    while turns and size([m for t in turns for m in t]) > budget:
+        turns.pop(0)
+    return [m for t in turns for m in t] + list(messages[current:])
+
+
 def skills_prompt(skills: list[dict]) -> str:
     """Skills as guidance in the system prompt: which way of working fits which kind of request."""
     lines = ["", "", "Ways of working, by kind of request (use the one that fits):"]
@@ -125,7 +160,7 @@ class Orchestrator:
         bound = model.bind_tools(tools) if tools else model
 
         async def agent(state: MessagesState):
-            return {"messages": [await bound.ainvoke([SystemMessage(system_prompt), *state["messages"]])]}
+            return {"messages": [await bound.ainvoke([SystemMessage(system_prompt), *fit(state["messages"])])]}
 
         g = StateGraph(MessagesState)
         g.add_node("agent", agent)

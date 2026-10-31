@@ -85,6 +85,17 @@ Limits:
 - **Cron syntax.** See the `pbi_schedule.py` docstring.
 - **Tests:** `tests/test_schedule.py`.
 
+### 4. Long conversations fitted to the model's context (`agent_runtime.py`, after this range)
+
+- **Problem.** The orchestrator sent a session's whole history on every turn, and nothing trimmed it. On Plains Health a conversation grew by roughly 2k to 6k tokens a turn, and one breakdown by provider returned 15k characters on its own. A conversation that outgrows the model's context fails, and every later turn in that session fails the same way, because the full history is sent each time.
+- **Change.** `fit()` decides what the model is sent. The checkpointed history is not changed.
+  - The current turn, from the last human message on, is sent whole.
+  - Tool results from earlier turns are cut to `OLD_RESULT_CHARS` (1,500 characters), with a note saying the tool can be run again.
+  - If earlier turns still exceed `HISTORY_CHARS` (120,000 characters, about 30k tokens), the oldest are left out whole. Turns are cut at human messages, so a tool call is never sent without its result.
+- **Tests:** `tests/test_agent_runtime.py`, which covers topic changes across 8 turns, a stopped turn, a failed turn, and the kept history staying whole.
+- **Checked live:** 8 turns on Plains Health with topic changes and a cancelled tool call; and 7 turns with the budget cut to 8,000 characters. A question about a dropped turn was answered by running the tool again.
+- **Still open:** the `InMemorySaver` keeps every checkpoint of every session for the life of the process, so memory grows with use, and an API restart loses every conversation (item 1 below).
+
 ## What the frontend relies on
 
 The Ask page (`studio/web/src/app/pbi/ask/page.tsx`) calls:
