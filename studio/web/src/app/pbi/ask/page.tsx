@@ -193,13 +193,15 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
   // named in the question, in the order named ("from category to product")
   // the columns a text names, in the order named ("from category to product"); a word for a kind of column
   // ("demography", "geography") stands for its columns
+  const at = (t: string, name: string) => t.search(new RegExp(`\\b${name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`));
   const nameIn = (t: string) => [
     ...(/demograph|customer profile|\bwho (buys|bought|are)\b/.test(t) ? dims.filter((c) => PEOPLE.test(field(c))) : []),
     // people named by what they are: women, men -> gender; young, older -> age
     ...(/\b(wom[ae]n|m[ae]n|females?|males?|ladies|gentlemen)\b/.test(t) ? dims.filter((c) => /gender|\bsex\b/i.test(field(c))) : []),
     ...(/\b(young(er)?|old(er)?|seniors?|youth|elderly)\b/.test(t) ? dims.filter((c) => /^age|age ?(band|group|range)/i.test(field(c))) : []),
     ...(/geograph|\bregions?\b|\blocations?\b/.test(t) ? dims.filter((c) => PLACE.test(field(c))) : []),
-    ...dims.filter((c) => t.includes(said(c).toLowerCase())).sort((a, b) => t.indexOf(said(a).toLowerCase()) - t.indexOf(said(b).toLowerCase())),
+    // whole words only: "Medicare Advantage" does not name Age
+    ...dims.filter((c) => at(t, said(c)) >= 0).sort((a, b) => at(t, said(a)) - at(t, said(b))),
   ];
   // a value named stands for its column ("PowerApps" -> Product): the business's usual columns are looked through
   const looked = dims.filter((c) => BUSINESS.test(field(c)) && !PEOPLE.test(field(c))).filter((c, i, a) => a.findIndex((x) => field(x) === field(c)) === i).slice(0, 6);
