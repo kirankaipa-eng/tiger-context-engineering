@@ -79,7 +79,7 @@ const SIGNIFICANT = /significan|statistic|\bby chance\b|\bprove\b|confiden|p-?va
 const PLACE = /store|city|region|country|state|location|branch|site|territor|market|area|zone/i;
 const PEOPLE = /gender|\bsex\b|^age|age ?(band|group|range)|income|marital|education|occupation|generation/i;
 /** What a business is usually cut by first, when the question names nothing. */
-const BUSINESS = /category|segment|product|brand|store|region|channel|promotion|type|setting|line of business|plan|facility|specialty|provider|drug|network|funding|condition/i;
+const BUSINESS = /category|segment|product|brand|store|region|channel|promotion|type|setting|line of business|\blob\b|plan|facility|specialty|provider|drug|network|funding|condition|episode|\bmdc\b|\bdrg\b/i;
 
 /** The pictures for an answer: up to three of different kinds, the first the one the question asks for most.
     From the answer it takes the measures and the columns it settled on; the question's words (and the

@@ -10,6 +10,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { InvestigationExhibit } from "@/components/pbi-investigation";
 import { PbiExhibit, type DeskActions, type ExhibitData } from "@/components/pbi-exhibit";
+import { pbi } from "@/lib/pbi";
 import { inWords, PRESETS, schedules, type Edition, type Schedule } from "@/lib/schedules";
 
 const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return "UTC"; } })();
@@ -27,6 +28,16 @@ export function ScheduledBriefs({ model, owner, actions, below, dates, types }: 
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
   const named = owner && owner !== "me";
+  // the example is the model's own: one of its measures, a rate or per-member one when it has one
+  const [example, setExample] = useState<{ ask: string; title: string }>({ ask: "What changed in our main numbers this month, and what is behind it?", title: "Monthly numbers" });
+  useEffect(() => {
+    if (!model) return;
+    pbi.metrics(model).then(({ metrics }) => {
+      const ok = metrics.filter((m) => m.status === "captured" && !m.needs?.by?.length && !Object.keys(m.needs?.params ?? {}).length);
+      const m = ok.find((x) => /per |ratio|rate|pmpm|margin|share/i.test(x.label)) ?? ok[0];
+      if (m) setExample({ ask: `${m.label}: what changed this month, where, and is it out of the ordinary?`, title: `${m.label} watch` });
+    }).catch(() => {});
+  }, [model]);
 
   const load = useCallback(async () => {
     if (!model || !named) return;
@@ -65,7 +76,7 @@ export function ScheduledBriefs({ model, owner, actions, below, dates, types }: 
       </div>
       {!named && <p className="mt-4 text-[14px] text-[var(--d-muted)]">A scheduled brief is written for someone: <Link href="/pbi/team" className="font-medium text-[var(--d-teal)]">say who you are on the Team page</Link> first.</p>}
       {error && <p className="mt-4 rounded-lg bg-[var(--d-rise-soft)] px-4 py-2 text-[13px] text-[var(--d-rise-ink)]">{error}</p>}
-      {draft && <Editor model={model} draft={draft} onCancel={() => setDraft(null)} onSave={save} />}
+      {draft && <Editor model={model} example={example} draft={draft} onCancel={() => setDraft(null)} onSave={save} />}
       <div className="mt-5 space-y-5">
         {list?.map((s) => (
           <BriefCard key={s.id} s={s} model={model} actions={actions} below={below} dates={dates} types={types}
@@ -77,7 +88,7 @@ export function ScheduledBriefs({ model, owner, actions, below, dates, types }: 
         {named && list?.length === 0 && !draft && (
           <button onClick={() => setDraft({ ask: "", title: "", cron: PRESETS[1].cron })}
             className="flex w-full items-center gap-3 rounded-xl border border-dashed border-[var(--d-rule)] px-5 py-4 text-left text-[14px] text-[var(--d-muted)] hover:border-[var(--d-teal)] hover:text-[var(--d-ink)]">
-            <CalendarClock size={18} />For example: &ldquo;GLP-1 spend in Commercial: who is driving it, and is it speeding up?&rdquo; every Monday at 7:00.
+            <CalendarClock size={18} />For example: &ldquo;{example.ask}&rdquo; every Monday at 7:00.
           </button>
         )}
       </div>
@@ -85,7 +96,7 @@ export function ScheduledBriefs({ model, owner, actions, below, dates, types }: 
   );
 }
 
-function Editor({ model, draft, onCancel, onSave }: { model: string; draft: Draft; onCancel: () => void; onSave: (d: Draft, now: boolean) => void }) {
+function Editor({ model, example, draft, onCancel, onSave }: { model: string; example: { ask: string; title: string }; draft: Draft; onCancel: () => void; onSave: (d: Draft, now: boolean) => void }) {
   const [d, setD] = useState(draft);
   const [check, setCheck] = useState<{ ok: boolean; next?: string[]; error?: string } | null>(null);
   // the server reads the expression: when it comes round next, or why it is not one
@@ -100,12 +111,12 @@ function Editor({ model, draft, onCancel, onSave }: { model: string; draft: Draf
       <label className="block">
         <span className="text-[13px] font-semibold text-[var(--d-ink-2)]">What do you want a brief on?</span>
         <textarea value={d.ask} onChange={(e) => setD({ ...d, ask: e.target.value })} rows={3} autoFocus
-          placeholder="GLP-1 spend in Commercial: who is driving it, and is it speeding up?"
+          placeholder={example.ask}
           className="mt-1.5 w-full resize-y rounded-lg bg-[var(--d-paper)] px-3.5 py-2.5 text-[15px] leading-relaxed text-[var(--d-ink)] placeholder:text-[var(--d-muted)]" />
       </label>
       <label className="mt-4 block">
         <span className="text-[13px] font-semibold text-[var(--d-ink-2)]">Title <span className="font-normal text-[var(--d-muted)]">(optional)</span></span>
-        <input value={d.title} onChange={(e) => setD({ ...d, title: e.target.value })} placeholder="GLP-1 watch"
+        <input value={d.title} onChange={(e) => setD({ ...d, title: e.target.value })} placeholder={example.title}
           className="mt-1.5 w-full rounded-lg bg-[var(--d-paper)] px-3.5 py-2 text-[14px] text-[var(--d-ink)] placeholder:text-[var(--d-muted)]" />
       </label>
       <div className="mt-4">
