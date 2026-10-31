@@ -65,7 +65,7 @@ function Sidebar() {
       <button onClick={() => fold(true)} aria-label="Open the sidebar" className="grid h-10 w-10 place-items-center rounded-lg text-[var(--d-rail-ink)] hover:bg-[var(--d-rail-hover)]"><PanelLeft size={18} /></button>
       <button onClick={() => openAsked(null, path, router.push)} aria-label="New question" className="grid h-10 w-10 place-items-center rounded-lg text-[var(--d-rail-ink)] hover:bg-[var(--d-rail-hover)]"><SquarePen size={18} /></button>
       {PLACES.map(({ href, label, icon: Icon }) => (
-        <Link key={href} href={href} aria-label={label} title={label} className={clsx("grid h-10 w-10 place-items-center rounded-lg text-[var(--d-rail-ink)] hover:bg-[var(--d-rail-hover)]", on(href) && "bg-[var(--d-rail-hover)]")}><Icon size={18} /></Link>
+        <Link key={href} href={href} aria-label={label} title={label} className={clsx("grid h-10 w-10 place-items-center rounded-lg text-[var(--d-rail-ink)] hover:bg-[var(--d-rail-hover)]", on(href) && "bg-[var(--d-rail-hover)] text-[var(--d-rail-accent)]")}><Icon size={18} /></Link>
       ))}
       <Link href="/pbi/model" aria-label="About the data" title="About the data" className="mt-auto grid h-10 w-10 place-items-center rounded-lg text-[var(--d-rail-muted)] hover:bg-[var(--d-rail-hover)]"><Database size={18} /></Link>
     </nav>
@@ -86,7 +86,7 @@ function Sidebar() {
       <div className="space-y-0.5 px-2">
         <button onClick={() => openAsked(null, path, router.push)} className={`${item} w-full font-semibold`}><SquarePen size={17} />New question</button>
         {PLACES.slice(1).map(({ href, label, icon: Icon }) => (
-          <Link key={href} href={href} className={clsx(item, on(href) && "bg-[var(--d-rail-hover)] font-semibold")}><Icon size={17} />{label}</Link>
+          <Link key={href} href={href} className={clsx(item, on(href) && "bg-[var(--d-rail-hover)] font-semibold text-[var(--d-rail-accent)]")}><Icon size={17} />{label}</Link>
         ))}
       </div>
 
@@ -95,7 +95,7 @@ function Sidebar() {
         {asked.length === 0 && <p className="px-2.5 text-[13px] leading-relaxed text-[var(--d-rail-muted)]">Questions you ask show up here, to pick up where you left off.</p>}
         {asked.map((a) => (
           <div key={a.id} className={clsx("group flex items-center rounded-lg hover:bg-[var(--d-rail-hover)]", path === "/pbi/ask" && active === a.id && "bg-[var(--d-rail-hover)]")}>
-            <button onClick={() => openAsked(a.id, path, router.push)} title={a.title} className="min-w-0 flex-1 truncate px-2.5 py-2 text-left text-[13.5px] text-[var(--d-rail-ink)]">{a.title}</button>
+            <button onClick={() => openAsked(a.id, path, router.push)} title={a.title} className={clsx("min-w-0 flex-1 truncate px-2.5 py-2 text-left text-[13.5px]", path === "/pbi/ask" && active === a.id ? "text-[var(--d-rail-accent)]" : "text-[var(--d-rail-ink)]")}>{a.title}</button>
             <button onClick={() => writeAsked(pbiModel, asked.filter((x) => x.id !== a.id))} aria-label={`Remove "${a.title}" from recent`}
               className="mr-1 hidden h-7 w-7 shrink-0 place-items-center rounded-md text-[var(--d-rail-muted)] hover:text-[var(--d-rail-ink)] group-hover:grid group-focus-within:grid"><X size={14} /></button>
           </div>

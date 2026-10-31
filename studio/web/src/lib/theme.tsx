@@ -9,7 +9,7 @@ import { Check, Settings } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 export const THEMES = [
-  { key: "tiger", label: "Tiger Analytics", swatch: ["#f37820", "#141414", "#00a4db"] },
+  { key: "tiger", label: "Tiger Analytics", swatch: ["#f7901c", "#141414", "#02b1e8"] },
   { key: "hcsc", label: "HCSC", swatch: ["#003333", "#90cbff", "#628181"] },
   { key: "neutral", label: "Neutral", swatch: ["#1d1d1f", "#0a66c2", "#c7c7cc"] },
 ] as const;
