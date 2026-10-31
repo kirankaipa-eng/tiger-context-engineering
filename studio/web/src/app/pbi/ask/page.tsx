@@ -14,7 +14,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { pctText, periodName } from "@/components/auto-chart";
 import { DrillTree, PickMenu, type DrillStart } from "@/components/ask-drill";
-import { Visual, type Data, type VisualKind } from "@/components/ask-visuals";
+import { EXPORT_GAPS, KIND_NAME, RATE, Visual, kindsFor, noteOf, type Data, type VisualKind } from "@/components/ask-visuals";
 import type { ExhibitData } from "@/components/pbi-exhibit";
 import { ResultTable, SqlBlock, num } from "@/components/pbi";
 import { streamNdjson } from "@/lib/api";
@@ -31,7 +31,14 @@ import { useLook } from "@/lib/theme";
     pick on the trail leaves alone (`own`: it keeps showing every value, the picked one marked).
     `table`: rows the agent brought itself (a listing, an analysis), drawn as they are. */
 type View = { id: string; kind: VisualKind | "rows"; title: string; metrics: string[]; queries: string[][]; dims: string[]; own: string[];
-  filters: Record<string, unknown>; table?: Data; ran?: Ran };
+  filters: Record<string, unknown>; table?: Data; ran?: Ran; was?: View };
+/** The answer's own picture: the agent's result whose numbers the answer states, drawn as computed. */
+type Picture = { kind: VisualKind; scope: string; data: Data[]; metrics: string[]; dims: string[] };
+/** The picture's title, in the measures' names as the model has them now. */
+const pictureTitle = (p: Picture, labels: Record<string, string>) => {
+  const names = p.metrics.map((m) => labels[m] ?? m).join(", "), over = p.dims.filter((d) => !PERIOD.test(d)).map(said);
+  return over.length ? `${names} by ${over.join(" and ")}` : names;
+};
 /** How an analysis was run, as the sandbox reports it: shown under its result, code and all. */
 type Ran = { code?: string; rows?: number; seconds?: number; isolated?: boolean; commit?: string | null; row_security?: boolean;
   method?: { test?: string; n?: number; basis?: string; assumptions?: string[]; caveats?: string[] }; checks?: { check: string; passed: boolean }[];
@@ -78,6 +85,75 @@ const INTENTS: [Intent, RegExp][] = [
   ["trend", /\btrend|\bmoved?\b|\bover time\b|\bgrow|\bdeclin|\bchang|\bhistory\b|\bmonth by month\b|\bsince\b|\btrajectory\b|\bmoving\b/i],
 ];
 const SIGNIFICANT = /significan|statistic|\bby chance\b|\bprove\b|confiden|p-?value|hypothes/i;
+
+/** The numbers a text states, dates and periods left out; 14.4% reads as 14.4 and 0.144. */
+const stated = (t: string) => [...t.replace(/\b(19|20)\d{2}(-\d{2})?\b|\bQ[1-4]\b/gi, " ").matchAll(/(-?\d[\d,]*\.?\d*)\s*(%|[kKmM](?![A-Za-z]))?/g)]
+  .flatMap(([, raw, u]) => {
+    const x = Number(raw.replace(/,/g, "").replace(/\.$/, ""));
+    if (!Number.isFinite(x)) return [];
+    return u === "%" ? [x, x / 100] : [u ? x * (/k/i.test(u) ? 1e3 : 1e6) : x];
+  });
+const close = (a: number, b: number) => Math.abs(a - b) <= Math.max(Math.abs(b) * 0.006, Math.abs(b) >= 10 && Number.isInteger(a) ? 0.51 : 0.051);
+
+/** The answer's picture: of the agent's results, the one whose numbers the answer states most, drawn by its shape
+    (two values of a column, two periods most often, as a slope; several measures alone as bars; one column as a
+    ranking or, over time, a line). None when the answer states none of its numbers. */
+function pictureOf(results: ExhibitData[], answer: string): Picture | undefined {
+  const said_ = stated(answer).filter((x) => !(Number.isInteger(x) && Math.abs(x) <= 12));
+  let best: ExhibitData | undefined, score = 0;
+  for (const r of results) {
+    // a breakdown of one row (the agent asked for the top one) shows nothing to compare: the full chart stands in
+    if (r.kind !== "compute" || !r.metrics.length || !r.rows.length || (r.by.length && r.rows.length < 2)) continue;
+    const cells = r.rows.flatMap((row) => r.metrics.map((m) => Number(row[r.columns.indexOf(m)])).filter(Number.isFinite));
+    const hits = said_.filter((x) => cells.some((c) => close(x, c))).length;
+    if (hits >= score && hits > 0) { best = r; score = hits; }
+  }
+  if (!best) return undefined;
+  // one scale: measures far apart in size (a level and its percent change) are not drawn together; the one the
+  // answer states most leads, and those within twenty times its size stay beside it
+  const size = (m: string) => {
+    const xs = best!.rows.map((row) => Math.abs(Number(row[best!.columns.indexOf(m)]))).filter((x) => Number.isFinite(x) && x > 0).sort((a, b) => a - b);
+    return xs[Math.floor(xs.length / 2)] ?? 0;
+  };
+  const hitsOf = (m: string) => said_.filter((x) => best!.rows.some((row) => close(x, Number(row[best!.columns.indexOf(m)])))).length;
+  const leadM = [...best.metrics].sort((a, b) => hitsOf(b) - hitsOf(a))[0];
+  const metrics = best.metrics.filter((m) => m === leadM || (size(m) && size(leadM) && Math.max(size(m), size(leadM)) / Math.min(size(m), size(leadM)) <= 20));
+  // a result over every month, an answer about some of them ("from September 2025 to September 2026"): the
+  // picture is those months, the ones the answer's numbers are from
+  const named = monthsIn(answer), month = best.by.find((d) => /:month$/.test(d));
+  const picked = month && named.length >= 2 ? best.rows.filter((row) => named.includes(String(row[best!.columns.indexOf(month)]).slice(0, 7))) : [];
+  const rows = picked.length >= 2 ? picked : best.rows;
+  const dims = best.by, vals = (d: string) => new Set(rows.map((row) => row[best!.columns.indexOf(d)])).size;
+  const kind: VisualKind = !dims.length ? (metrics.length > 1 ? "measures" : "number")
+    : dims.length === 1 ? (vals(dims[0]) === 2 ? "slope" : PERIOD.test(dims[0]) ? "trend" : "leaderboard")
+    : kindsFor(dims, (c) => PERIOD.test(c))[0]?.kind ?? "heatmap";
+  const ordered = dims.length === 2 ? kindsFor(dims, (c) => PERIOD.test(c))[0]?.dims ?? dims : dims;
+  const scope = Object.entries(best.filters).filter(([k]) => !dims.includes(k)).map(([k, v]) => `${said(k)}: ${shown(k, v)}`).join(" · ");
+  // a line or a ranking draws one measure: the picture names only what it draws
+  const drawn = kind === "trend" || kind === "leaderboard" ? [leadM] : metrics;
+  return { kind, scope, data: [{ columns: best.columns, rows }], metrics: drawn, dims: ordered };
+}
+
+/** The month an answer is about: the latest it names ("from September 2025 to September 2026" -> "2026-09"). */
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const monthsIn = (t: string) => [...new Set([...t.matchAll(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(20\d{2})\b/gi)]
+  .map((m) => `${m[2]}-${String(MONTHS.indexOf(m[1].toLowerCase()) + 1).padStart(2, "0")}`))].sort();
+const monthIn = (t: string) => monthsIn(t).at(-1);
+
+/** An answer's closing offer ("Would you like a split by drug class or the claim rows?") as choices to click. */
+const OFFER = /^(?:would you like|do you want|want me to|shall i|should i|i can also|if you(?:'d| would) like,? i can)\b\s*(?:me to\s*)?(.*?)\??\s*$/i;
+function offersOf(answer: string): { body: string; offers: string[] } {
+  const paras = answer.trim().split(/\n+/), last = paras.at(-1)?.trim() ?? "", m = last.match(OFFER);
+  if (!m || paras.length < 2) return { body: answer, offers: [] };
+  const offers = m[1].split(/,\s*(?:or\s+)?|\s+or\s+/).map((x) => x.replace(/^(a|an|the)\s+/i, "").replace(/[.?]$/, "").trim()).filter((x) => x.length > 3);
+  return offers.length ? { body: paras.slice(0, -1).join("\n\n"), offers: offers.slice(0, 3) } : { body: answer, offers: [] };
+}
+
+/** A chart as another kind: its columns reordered as that kind reads them, the old one kept for Undo. */
+function asKind(v: View, kind: VisualKind, dims = v.queries[0] ?? v.dims, additive = true): View | null {
+  const opt = kindsFor(dims, (c) => PERIOD.test(c), additive).find((o) => o.kind === kind);
+  return opt ? { ...v, kind, dims: opt.dims, queries: [opt.dims], own: opt.dims, was: v.was ?? v } : null;
+}
 
 /** The pictures for an answer: up to three of different kinds, the first the one the question asks for most.
     From the answer it takes the measures and the columns it settled on; the question's words (and the
@@ -145,13 +221,13 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
     const L = labels[first] ?? first;
     return P ? [view("trend", `${L}, month by month`, [[P]], [P], [first]), view("seasons", `${L} by month of the year`, [[P]], [P], [first])].map((v, i) => ({ ...v, id: `${v.kind}${i}` })) : [];
   }
-  const ratio = /%|\brate\b|ratio|pct|percent|share|margin/i.test(M);
+  const ratio = RATE.test(M);
   const second = all.find((x) => x.key !== metrics[0] && bare(x.key) && x.status === "captured" && !/%|rate|ratio|variance/i.test(x.label))?.key;
   const pictures: Record<Intent, () => (View | null)[]> = {
     rank: () => [A ? view("leaderboard", `Where ${M} is highest, by ${said(A)}`, [[A]], [A]) : null,
       A && P ? view("trend", `How the top ${lower(A)} values moved`, [[P, A]], [P, A]) : null,
       A && B && !ratio ? view("treemap", `What each ${lower(A)} is made of`, [[A, B]], [A, B]) : null],
-    trend: () => [P ? view("trend", `${M}, month by month`, [[P]], [P]) : null, P ? view("seasons", `${M} by month of the year`, [[P]], [P]) : null,
+    trend: () => [P ? view("trend", `${M}, ${/:month$/.test(P) ? "month by month" : `by ${P.match(PERIOD)![1]}`}`, [[P]], [P]) : null, P ? view("seasons", `${M} by month of the year`, [[P]], [P]) : null,
       P && A && !ratio ? view("mix", `How the mix of ${M} by ${lower(A)} shifted`, [[P, A]], [P, A]) : null],
     compare: () => V ? [view("versus", `${M} and more, side by side`, [[V]], [V], metrics, []),
       P ? view("gap", "The gap, month by month", [[P, V]], [P, V], m1, [P]) : null,
@@ -210,18 +286,52 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
 
 /** One question of the conversation, with what came of it. `repeat`: its pictures are all above already. */
 /** `measure`: what the turn was about, for a follow-up that names none. */
-type Turn = { id: string; question: string; answer: string; views: View[]; focus: Focus; error?: string; repeat?: boolean; note?: string; measure?: string[] };
+type Turn = { id: string; question: string; answer: string; views: View[]; focus: Focus; error?: string; repeat?: boolean; note?: string; measure?: string[]; picture?: Picture };
 const newTurn = (question: string): Turn => ({ id: Math.random().toString(36).slice(2, 10), question, answer: "", views: [], focus: [] });
 /** A kept turn as saved (views under `specs`); one saved before views existed opens with its answer only. */
 const fromSaved = (t: { id: string; question: string; answer: string; specs: unknown[]; focus: Focus; error?: string }): Turn =>
-  ({ id: t.id, question: t.question, answer: t.answer, focus: t.focus, error: t.error, note: (t as any).note, measure: (t as any).measure, views: (t.specs as any[]).filter((v) => v && "queries" in v && "kind" in v) });
+  ({ id: t.id, question: t.question, answer: t.answer, focus: t.focus, error: t.error, note: (t as any).note, measure: (t as any).measure, picture: (t as any).picture, views: (t.specs as any[]).filter((v) => v && "queries" in v && "kind" in v) });
 
 /** A turn's answer and its views: each runs here, re-run when its trail changes. */
-function Answer({ turn, model, labels, cache, live, step, first, setFocus, dates, types }: {
+function Answer({ turn, model, labels, cache, live, step, first, setFocus, setViews, setPicture, onAsk, dates, types }: {
   turn: Turn; model: string; labels: Record<string, string>; cache: Map<string, Result>; live: boolean; step: string; first: boolean;
-  setFocus: (f: Focus | ((f: Focus) => Focus)) => void; dates: string[]; types: Record<string, string>;
+  setFocus: (f: Focus | ((f: Focus) => Focus)) => void; setViews: (change: (v: View[]) => View[]) => void; setPicture: (p: Picture) => void; onAsk: (q: string) => void;
+  dates: string[]; types: Record<string, string>;
 }) {
-  const { question, answer, views, focus, error } = turn;
+  const { question, answer, views, focus, error, picture } = turn;
+  // the answer's picture is the agent's own result; without one, the first chart drawn for it stands in. Beside it,
+  // up to two charts of the same measures support it; the rest wait under "More views" and run only when opened
+  const lead = picture ? undefined : views.find((v) => !v.table);
+  const linked = new Set(picture?.metrics ?? lead?.metrics ?? []);
+  const rest = views.filter((v) => v !== lead && !v.table);
+  // a chart of the same measure over the same columns as the answer's picture is that picture again: left out
+  const shape = (dims: string[]) => [...dims].sort().join("|");
+  const top = picture ?? lead;
+  const overTime = (dims: string[]) => dims.length === 1 && PERIOD.test(dims[0]);  // a line of the measure alone, at any grain
+  const again = (v: View) => !!top && linked.has(v.metrics[0]) && (shape(v.dims) === shape(top.dims) || (overTime(v.dims) && overTime(top.dims)));
+  const supports = rest.filter((v) => !again(v) && v.metrics.some((m) => linked.has(m))).slice(0, 2);
+  const more = rest.filter((v) => !again(v) && !supports.includes(v));
+  const tables = views.filter((v) => v.table);
+  const [openMore, setOpenMore] = useState(false);
+  const shownIds = [lead, ...supports, ...(openMore ? more : [])].filter(Boolean).map((v) => v!.id).join(",");
+  const { body, offers } = useMemo(() => (live ? { body: answer, offers: [] } : offersOf(answer)), [answer, live]);
+  // the answer's picture can be shown another way too: a before-and-after side by side or as a table
+  const pictureKinds = !picture ? [] : picture.kind === "slope" ? [{ kind: "slope" as VisualKind, dims: picture.dims }, { kind: "versus" as VisualKind, dims: picture.dims }, { kind: "table" as VisualKind, dims: picture.dims }]
+    : picture.kind === "versus" || picture.kind === "table" && picture.dims.length === 1 && new Set(picture.data[0].rows.map((r) => r[picture.data[0].columns.indexOf(picture.dims[0])])).size === 2
+      ? [{ kind: "slope" as VisualKind, dims: picture.dims }, { kind: "versus" as VisualKind, dims: picture.dims }, { kind: "table" as VisualKind, dims: picture.dims }]
+      : picture.kind === "measures" || picture.kind === "number" ? [{ kind: picture.kind, dims: [] }, { kind: "table" as VisualKind, dims: [] }]
+        : kindsFor(picture.dims, (c) => PERIOD.test(c), !RATE.test(labels[picture.metrics[0]] ?? picture.metrics[0]));
+  /** The chart-kind switch: what a chart can be shown as, the current one pressed. */
+  const toggle = (kinds: VisualKind[], current: VisualKind, choose: (k: VisualKind) => void) => (
+    <span role="group" aria-label="Show as" className="flex overflow-hidden rounded-lg ring-1 ring-[var(--d-rule)]">
+      {kinds.map((k) => (
+        <button key={k} aria-pressed={k === current} onClick={() => k !== current && choose(k)}
+          className={`px-2 py-1 text-[11.5px] ${k === current ? "bg-[var(--d-navy)] font-semibold text-white" : "text-[var(--d-ink-2)] hover:bg-[var(--d-paper)]"}`}>{KIND_NAME[k]}</button>
+      ))}
+    </span>
+  );
+  const switchTo = (v: View, kind: VisualKind) => setViews((vs) => vs.map((x) => (x.id === v.id ? asKind(x, kind) ?? x : x)));
+
   const [runs, setRuns] = useState<Record<string, Run>>({});
   const [kept, setKept] = useState(false);
   const [keepError, setKeepError] = useState("");
@@ -230,8 +340,9 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, dates
   // every view, re-run whenever the trail changes: one leaves alone a pick on its own columns, so it keeps
   // showing every value and marks the picked one
   useEffect(() => {
+    const wanted = new Set(shownIds.split(","));
     for (const v of views) {
-      if (v.table) continue;
+      if (v.table || !wanted.has(v.id)) continue;
       const filters = filtersOf(v, focus);
       const keys = v.queries.map((by) => key(v.metrics, by, filters));
       const hits = keys.map((k) => cache.get(k));
@@ -241,7 +352,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, dates
         .then((results) => setRuns((r) => ({ ...r, [v.id]: { results } })))
         .catch((err) => setRuns((r) => ({ ...r, [v.id]: { error: String(err?.message ?? err) } })));
     }
-  }, [views, focus, model, cache]);
+  }, [views, focus, model, cache, shownIds]);
 
   // a pick replaces any earlier one on that column
   const pick = (dim: string, value: unknown) => setFocus((f) => [...f.filter(([k]) => k !== dim), [dim, value]]);
@@ -264,14 +375,15 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, dates
   };
   const picked = Object.fromEntries(focus);
 
-  const tile = (v: View, i: number) => {
+  const tile = (v: View, place: "answer" | "support" | "more") => {
     const run: Run | undefined = v.table ? { results: [{ ...v.table, sql: "", ms: 0, warehouse: "", truncated: false, notes: [] }] } : runs[v.id];
-    const hero = i === 0, rs = run?.results;
+    const hero = place === "answer", rs = run?.results;
     // until a re-run view's rows arrive, rows without its columns are not drawn
     const ready = !!rs && rs.length === (v.table ? 1 : v.queries.length) && v.queries.every((by, j) => by.every((c) => rs[j].columns.includes(c)));
     const mine = focus.find(([k]) => v.own.includes(k) && !PERIOD.test(k));
-    const compact = v.kind === "number" || v.kind === "versus";
-    const span = compact ? "lg:col-span-2" : hero ? "lg:col-span-6" : "lg:col-span-3";
+    const kinds = v.table ? [] : kindsFor(v.queries[0] ?? v.dims, (c) => PERIOD.test(c), !RATE.test(labels[v.metrics[0]] ?? v.metrics[0]));
+    const note = !hero && ready && !run?.loading && v.kind !== "rows" && rs![0].rows.length ? noteOf(v.kind as VisualKind, rs!, v.metrics, v.dims, labels) : null;
+    const gap = v.kind !== "rows" ? EXPORT_GAPS[v.kind as VisualKind] : undefined;
     const t = v.table, at = (c: string) => t!.columns.indexOf(c);
     const textCol = t?.columns.find((c) => t.rows.some((r) => typeof r[at(c)] === "string"));
     const nums = t?.columns.filter((c) => t.rows.every((r) => r[at(c)] === null || typeof r[at(c)] === "number")) ?? [];
@@ -283,12 +395,14 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, dates
     const figures = !!t && !!textCol && nums.length === 1 && t.rows.length <= 30
       && (/^(metric|measure|stat(istic)?|name|key|item|field|quantity|figure)s?$/i.test(textCol) || (sizes.length > 1 && Math.max(...sizes) / Math.min(...sizes) > 1000));
     return (
-      <section key={v.id} className={`flex min-w-0 flex-col rounded-2xl bg-[var(--d-sheet)] p-5 shadow-[0_1px_2px_rgba(20,35,56,.06)] ring-1 ring-[var(--d-rule)] ${span}`}>
-        <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <h2 className={`cond font-semibold text-[var(--d-ink)] ${hero ? "text-[17px]" : "text-[15px]"}`}>{v.title}</h2>
+      <section key={v.id} id={`view-${turn.id}-${v.id}`} className={hero ? "flex min-w-0 flex-col" : "flex min-w-0 flex-col rounded-2xl bg-[var(--d-sheet)] p-5 shadow-[0_1px_2px_rgba(20,35,56,.06)] ring-1 ring-[var(--d-rule)]"}>
+        <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+          <h2 className={`cond mr-auto font-semibold text-[var(--d-ink)] ${hero ? "text-[16px]" : "text-[15px]"}`}>{v.title}</h2>
           {mine && <span className="rounded-full bg-[var(--d-teal-soft)] px-2 py-0.5 text-[12px] font-semibold text-[var(--d-teal)]">{shown(mine[0], mine[1])} picked</span>}
-          {(!run || run.loading) && <span className="pulse-soft ml-auto text-[12px] text-[var(--d-muted)]">Computing…</span>}
+          {kinds.length > 1 && toggle(kinds.map((k) => k.kind), v.kind as VisualKind, (k) => switchTo(v, k))}
+          {(!run || run.loading) && <span className="pulse-soft text-[12px] text-[var(--d-muted)]">Computing…</span>}
         </header>
+        {note && <p className="mt-2.5 rounded-lg bg-[var(--d-teal-soft)] px-3 py-2 text-[13.5px] leading-snug text-[var(--d-ink)]">{note}</p>}
         <div className={`mt-3 min-h-0 flex-1 transition-opacity ${run?.loading && ready ? "opacity-40" : ""}`}>
           {run?.error ? <p className="text-[13px] text-[var(--d-rise-ink)]">{run.error}</p>
             : !ready ? <div className={`${hero ? "h-72" : "h-48"} rounded-xl bg-[var(--d-paper)]`} />
@@ -343,6 +457,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, dates
             </div>
           </details>
         )}
+        {gap && <p className="mt-2 text-[12px] text-[var(--d-muted)]">Export: {gap}.</p>}
         {ready && rs![0].sql && (
           <details className="mt-3 text-[12px] text-[var(--d-muted)]">
             <summary className="cursor-pointer select-none hover:text-[var(--d-ink)]">How this was computed</summary>
@@ -357,13 +472,40 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, dates
     <article id={`turn-${turn.id}`} className={first ? "" : "mt-12 border-t border-[var(--d-rule)] pt-10"}>
       <p className="text-[13px] font-semibold uppercase tracking-[.08em] text-[var(--d-muted)]">{first ? "You asked" : "Then you asked"}</p>
       <h1 className="cond mt-1 text-[22px] font-semibold leading-snug text-[var(--d-ink-2)]">{question}</h1>
-      {/* the answer leads the turn: its first paragraph at headline size, the rest as body */}
-      <div className="mt-4 max-w-4xl rounded-2xl border border-[var(--d-rule)] bg-[var(--d-sheet)] px-7 py-6 shadow-[0_1px_2px_rgba(0,0,0,.04)]">
-        <p className="mb-2 text-[12px] font-semibold uppercase tracking-[.08em] text-[var(--d-teal)]">{live && !answer ? "Working on it" : "The answer"}</p>
-        <div className="text-[17px] leading-relaxed text-[var(--d-ink-2)] [&_p]:mb-3 [&_p:last-child]:mb-0 [&>p:first-child]:text-[22px] [&>p:first-child]:font-medium [&>p:first-child]:leading-snug [&>p:first-child]:text-[var(--d-ink)] [&_strong]:font-semibold [&_strong]:text-[var(--d-ink)] [&_ul]:ml-5 [&_ul]:list-disc">
-          {answer ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown> : live ? <p className="pulse-soft text-[var(--d-muted)]">{step}…</p> : null}
+      {/* the answer leads the turn, its own picture beside it: the numbers it states, drawn as the agent computed them */}
+      <div className={`mt-4 overflow-hidden rounded-2xl border border-[var(--d-rule)] bg-[var(--d-sheet)] shadow-[0_1px_2px_rgba(0,0,0,.04)] ${picture || lead ? "grid lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]" : "max-w-4xl"}`}>
+        <div className="flex flex-col px-7 py-6">
+          <p className="mb-2 text-[12px] font-semibold uppercase tracking-[.08em] text-[var(--d-teal)]">{live && !answer ? "Working on it" : "The answer"}</p>
+          <div className="text-[17px] leading-relaxed text-[var(--d-ink-2)] [&_p]:mb-3 [&_p:last-child]:mb-0 [&>p:first-child]:text-[21px] [&>p:first-child]:font-medium [&>p:first-child]:leading-snug [&>p:first-child]:text-[var(--d-ink)] [&_strong]:font-semibold [&_strong]:text-[var(--d-ink)] [&_ul]:ml-5 [&_ul]:list-disc">
+            {body ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown> : live ? <p className="pulse-soft text-[var(--d-muted)]">{step}…</p> : null}
+          </div>
+          {live && answer && step && <p className="pulse-soft mt-2 text-[13px] text-[var(--d-muted)]">{step}…</p>}
+          {offers.length > 0 && (
+            // the agent's closing offer, as choices
+            <div className="mt-5 flex flex-wrap gap-2">
+              {offers.map((o) => (
+                <button key={o} onClick={() => onAsk(`Show me ${o}`)} className="rounded-full bg-[var(--d-sheet)] px-3.5 py-1.5 text-left text-[13.5px] text-[var(--d-ink)] ring-1 ring-[var(--d-rule)] hover:ring-[var(--d-teal)]">
+                  {o.charAt(0).toUpperCase() + o.slice(1)}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
-        {live && answer && step && <p className="pulse-soft mt-2 text-[13px] text-[var(--d-muted)]">{step}…</p>}
+        {picture ? (
+          <figure className="flex min-w-0 flex-col border-t border-[var(--d-rule)] bg-[var(--d-paper)]/40 p-5 lg:border-l lg:border-t-0">
+            <figcaption className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+              <span className="cond mr-auto text-[16px] font-semibold text-[var(--d-ink)]">{pictureTitle(picture, labels)}</span>
+              {pictureKinds.length > 1 && toggle(pictureKinds.map((k) => k.kind), picture.kind, (k) => setPicture({ ...picture, kind: k, dims: pictureKinds.find((o) => o.kind === k)!.dims }))}
+            </figcaption>
+            {picture.scope && <p className="mt-0.5 text-[12.5px] text-[var(--d-muted)]">{picture.scope}</p>}
+            <div className="mt-2 min-h-0 flex-1">
+              <Visual kind={picture.kind} data={picture.data} metrics={picture.metrics} dims={picture.dims} labels={labels} height={280} />
+            </div>
+          </figure>
+        ) : lead ? (
+          <div className="border-t border-[var(--d-rule)] bg-[var(--d-paper)]/40 p-5 lg:border-l lg:border-t-0"
+            onPointerDownCapture={(e) => { pointer.current = { x: e.clientX, y: e.clientY }; }}>{tile(lead, "answer")}</div>
+        ) : null}
       </div>
       {(error || keepError) && <p className="mt-3 rounded-lg bg-[var(--d-rise-soft)] px-3 py-2 text-[13px] text-[var(--d-rise-ink)]">{error || keepError}</p>}
       {!live && !views.length && !error && <p className="mt-3 text-[13px] text-[var(--d-muted)]">{turn.repeat ? "The pictures for this are already on the page, above." : "This answer did not come from a measure, so there is nothing to draw. Try asking about a number."}</p>}
@@ -396,8 +538,26 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, dates
               ))}
             </span>
           </div>
-          <div className="mt-2 grid grid-cols-1 gap-4 lg:grid-flow-row-dense lg:grid-cols-6"
-            onPointerDownCapture={(e) => { pointer.current = { x: e.clientX, y: e.clientY }; }}>{views.map(tile)}</div>
+          {supports.length > 0 && (
+            <div className="mt-4 flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-[12px] font-semibold uppercase tracking-[.08em] text-[var(--d-muted)]">Supporting the answer</h2>
+            </div>
+          )}
+          <div className={`mt-3 grid grid-cols-1 gap-4 ${supports.length > 1 ? "lg:grid-cols-2" : ""}`}
+            onPointerDownCapture={(e) => { pointer.current = { x: e.clientX, y: e.clientY }; }}>
+            {supports.map((v) => tile(v, "support"))}
+            {tables.map((v) => <div key={v.id} className="lg:col-span-2">{tile(v, "support")}</div>)}
+          </div>
+          {more.length > 0 && (
+            <div className="mt-4">
+              <button onClick={() => setOpenMore((o) => !o)} aria-expanded={openMore}
+                className="text-[13.5px] text-[var(--d-ink-2)] hover:text-[var(--d-ink)]">{openMore ? "▾" : "▸"} More views ({more.length}): {more.map((v) => v.title).join(" · ")}</button>
+              {openMore && (
+                <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2"
+                  onPointerDownCapture={(e) => { pointer.current = { x: e.clientX, y: e.clientY }; }}>{more.map((v) => tile(v, "more"))}</div>
+              )}
+            </div>
+          )}
           {drill && (
             <div id={`drill-${turn.id}`}>
               <DrillTree key={drill.start.at} model={model} metric={drill.metric} label={labels[drill.metric] ?? drill.metric} base={drill.base}
@@ -460,12 +620,13 @@ export default function AskPage() {
     // the new question goes to the top of the window, as in a chat; what came before stays above it
     setTimeout(() => document.getElementById(`turn-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
     const results: ExhibitData[] = [];
+    let answer = "";
     const ctrl = new AbortController();
     abort.current = ctrl;
     try {
       await streamNdjson(pbi.askPath(pbiModel), { message, session_id: session }, (e) => {
-        if (e.type === "chunk") update(id, (t) => ({ answer: t.answer + (e.data.text ?? "") }));
-        else if (e.type === "agent_tool_call" && e.data.status === "started") { update(id, () => ({ answer: "" })); if (STEP[e.data.tool]) setStep(STEP[e.data.tool]); }
+        if (e.type === "chunk") { answer += e.data.text ?? ""; update(id, (t) => ({ answer: t.answer + (e.data.text ?? "") })); }
+        else if (e.type === "agent_tool_call" && e.data.status === "started") { answer = ""; update(id, () => ({ answer: "" })); if (STEP[e.data.tool]) setStep(STEP[e.data.tool]); }
         else if (e.type === "pbi_result") {
           const d = e.data as any, r: ExhibitData = { ...d, filters: d.filters ?? {}, origin: "agent" };
           results.push(r);
@@ -473,7 +634,7 @@ export default function AskPage() {
           // breakdowns: it may have kept only the top rows it showed)
           if (r.kind === "compute" && !r.by.length) cache.current.set(key(r.metrics, r.by, r.filters), { columns: r.columns, rows: r.rows, sql: r.sql ?? "", ms: r.ms, warehouse: r.warehouse ?? "", truncated: false, notes: [] });
         } else if (e.type === "error") update(id, () => ({ error: e.data.message }));
-        else if (e.type === "result") update(id, (t) => ({ answer: t.answer || e.data.answer || "" }));
+        else if (e.type === "result") { answer = answer || e.data.answer || ""; update(id, (t) => ({ answer: t.answer || e.data.answer || "" })); }
       }, ctrl.signal);
       // the measure it settled on (a "why" answer's too, with the columns it walked down)
       const last = [...results].reverse().find((r) => (r.kind === "compute" || r.kind === "explain") && r.metrics.length);
@@ -506,12 +667,18 @@ export default function AskPage() {
       if (SIGNIFICANT.test(message)) views.unshift(...brought); else views.push(...brought);
       // on a follow-up, a picture the conversation already shows is not drawn again
       const above = new Set(turns.flatMap((t) => t.views.map(sig)));
-      const fresh = views.filter((v) => v.table || !above.has(sig(v)));
+      const unique = views.filter((v) => v.table || !above.has(sig(v)));
+      // an answer about one month ("highest in Illinois, $952 in September 2026"): a chart not over time is of that
+      // month too, so its numbers are the answer's, not an average of every month
+      const picture = pictureOf(results, answer), month = monthIn(answer);
+      const per = [...(picture?.dims ?? []), ...results.flatMap((r) => [...r.by, ...Object.keys(r.filters)])].find((d) => /:month$/.test(d));
+      const fresh = per && month ? unique.map((v) => v.table || [...v.dims, ...Object.keys(v.filters)].some((d) => PERIOD.test(d)) ? v
+        : { ...v, filters: { ...v.filters, [per]: month }, title: `${v.title}, ${periodName(month)}` }) : unique;
       const drawn = own.map((k) => labels[k] ?? k).join(" and ");
       const note = lead || !fresh.some((v) => !v.table) ? undefined : brought.length
         ? `Beside the agent's analysis, these pictures are drawn straight from ${drawn} in the model.`
         : `The agent did not compute this, so these are drawn straight from ${drawn} in the model.`;
-      update(id, () => ({ views: fresh, focus, note, measure: basis?.metrics.slice(0, 1), repeat: !fresh.length && views.length > 0 }));
+      update(id, () => ({ views: fresh, focus, note, measure: basis?.metrics.slice(0, 1), repeat: !fresh.length && views.length > 0, picture }));
     } catch (err: any) {
       if (err?.name !== "AbortError") update(id, () => ({ error: String(err?.message ?? err) }));
     } finally { setStep(""); setBusy(false); abort.current = null; }
@@ -533,17 +700,24 @@ export default function AskPage() {
     const at = new URLSearchParams(window.location.search), c = at.get("c"), q = at.get("q");
     if (c || q) window.history.replaceState(null, "", "/pbi/ask");
     if (c) reopen(c);
-    else if (q) ask(q);
+    else if (q) waiting.current = q;
     const on = (e: Event) => { const id = (e as CustomEvent).detail; if (id) reopen(id); else fresh(); };
     window.addEventListener("ask:open", on);
     return () => window.removeEventListener("ask:open", on);
   }, [pbiModel]); // eslint-disable-line react-hooks/exhaustive-deps
+  const waiting = useRef<string | null>(null);
+  useEffect(() => {
+    if (!metrics.length || !waiting.current) return;
+    const q = waiting.current;
+    waiting.current = null;
+    ask(q);
+  }, [metrics]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { window.dispatchEvent(new CustomEvent("ask:showing", { detail: turns.length ? session : null })); }, [turns.length, session]);
   // each conversation kept, titled by its first question; a new question moves it to the top
   useEffect(() => {
     if (busy || !turns.length || !pbiModel) return;
     const list = readAsked(pbiModel), prev = list.find((x) => x.id === session), last = turns[turns.length - 1];
-    const saved = turns.map((t) => ({ id: t.id, question: t.question, answer: t.answer, specs: t.views, focus: t.focus, error: t.error, note: t.note, measure: t.measure }));
+    const saved = turns.map((t) => ({ id: t.id, question: t.question, answer: t.answer, specs: t.views, focus: t.focus, error: t.error, note: t.note, measure: t.measure, picture: t.picture }));
     const entry = { id: session, title: prev?.title ?? turns[0].question, question: last.question, answer: last.answer, specs: last.views, focus: last.focus, turns: saved, at: Date.now() / 1000 };
     const same = prev && (prev.turns?.length ?? 1) === turns.length;
     writeAsked(pbiModel, same ? list.map((x) => (x.id === session ? entry : x)) : [entry, ...list.filter((x) => x.id !== session)]);
@@ -551,7 +725,7 @@ export default function AskPage() {
 
   const composer = (big: boolean) => (
     <form onSubmit={(e) => { e.preventDefault(); ask(input); }}
-      className={`flex items-center gap-2 rounded-2xl bg-[var(--d-sheet)] p-1.5 pl-5 shadow-[0_12px_40px_-24px_rgba(20,35,56,.5)] ring-1 ring-[var(--d-rule)] focus-within:ring-2 focus-within:ring-[var(--d-teal)] ${big ? "py-2" : ""}`}>
+      className={`relative flex items-center gap-2 rounded-2xl bg-[var(--d-sheet)] p-1.5 pl-5 shadow-[0_12px_40px_-24px_rgba(20,35,56,.5)] ring-1 ring-[var(--d-rule)] focus-within:ring-2 focus-within:ring-[var(--d-teal)] ${big ? "py-2" : ""}`}>
       <label className="min-w-0 flex-1">
         <span className="sr-only">Ask a question</span>
         {/* the box's ring shows the focus; the desk's outline on the field itself would draw a box inside it */}
@@ -593,7 +767,9 @@ export default function AskPage() {
               <div key={t.id} style={i === turns.length - 1 && i > 0 ? { minHeight: "calc(100vh - 160px)" } : undefined}>
                 <Answer turn={t} model={pbiModel} labels={labels} cache={cache.current} first={i === 0}
                   live={busy && i === turns.length - 1} step={step}
-                  setFocus={(f) => update(t.id, (x) => ({ focus: typeof f === "function" ? f(x.focus) : f }))} dates={cols.dates} types={cols.types} />
+                  setFocus={(f) => update(t.id, (x) => ({ focus: typeof f === "function" ? f(x.focus) : f }))}
+                  setViews={(change) => update(t.id, (x) => ({ views: change(x.views) }))} setPicture={(p) => update(t.id, () => ({ picture: p }))}
+                  onAsk={ask} dates={cols.dates} types={cols.types} />
               </div>
             ))}
             {error && <p className="mt-3 rounded-lg bg-[var(--d-rise-soft)] px-3 py-2 text-[13px] text-[var(--d-rise-ink)]">{error}</p>}
@@ -601,7 +777,10 @@ export default function AskPage() {
         )}
       </main>
       {/* the follow-up box floats at the foot of the window with nothing behind it: the answers scroll on under it */}
-      {turns.length > 0 && <div className="pointer-events-none absolute inset-x-0 bottom-0 px-8 pb-6"><div className="pointer-events-auto mx-auto max-w-2xl">{composer(false)}</div></div>}
+      {turns.length > 0 && <div className="pointer-events-none absolute inset-x-0 bottom-0 px-8 pb-6"><div className="pointer-events-auto mx-auto max-w-2xl">
+        {error && !busy && <p role="alert" className="mb-2 rounded-xl bg-[var(--d-rise-soft)] px-3 py-2 text-[13px] text-[var(--d-rise-ink)]">{error}</p>}
+        {composer(false)}
+      </div></div>}
     </div>
   );
 }

@@ -9,7 +9,7 @@
 
 import dynamic from "next/dynamic";
 import { isRatio, pctText, periodName } from "./auto-chart";
-import { num } from "./pbi";
+import { ResultTable, num } from "./pbi";
 
 const ECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
 
@@ -22,7 +22,43 @@ const RAMP = ["#e3f3f1", "#a8dcd6", "#5fb8ae", "#14958e", "#0b5f5a"];
 const PERIOD = /:(year|quarter|month|week|day)$/;
 
 export type VisualKind = "number" | "leaderboard" | "trend" | "seasons" | "versus" | "gap" | "waterfall" | "treemap" | "donut"
-  | "mix" | "heatmap" | "sankey" | "scatter" | "boxplot" | "calendar";
+  | "mix" | "heatmap" | "sankey" | "scatter" | "boxplot" | "calendar" | "slope" | "measures" | "columns" | "table";
+
+/** A measure that is a rate (PMPM, per 1,000, an average, a ratio or share): not a part of a whole, so it is never
+    summed across values, shown as shares, folded into "Other", or drawn as a waterfall, treemap, donut, stack or flow. */
+export const RATE = /pmpm|\bper\b|average|\bavg\b|\bmean\b|median|ratio|\brate\b|%|share|margin|pct|percent|length of stay/i;
+const SUMMED: VisualKind[] = ["waterfall", "treemap", "donut", "mix", "sankey"];
+
+/** What a kind is called, as a person says it. */
+export const KIND_NAME: Record<VisualKind, string> = {
+  number: "Number", leaderboard: "Bars", trend: "Line", seasons: "Seasons", versus: "Side by side", gap: "Gap",
+  waterfall: "Waterfall", treemap: "Treemap", donut: "Donut", mix: "Stacked", heatmap: "Heatmap", sankey: "Sankey",
+  scatter: "Scatter", boxplot: "Spread", calendar: "Calendar", slope: "Slope", measures: "Bars", columns: "Columns", table: "Table",
+};
+
+/** Kinds Power BI or Tableau has no built-in chart for: an export lands as something else, and the card says so. */
+export const EXPORT_GAPS: Partial<Record<VisualKind, string>> = {
+  sankey: "Power BI and Tableau have no built-in sankey: an export would show it as bars",
+  boxplot: "Power BI has no built-in box plot: an export to it would show bars",
+  calendar: "Power BI has no built-in calendar: an export to it would show a heatmap",
+};
+
+/** The kinds a chart can switch to, from the columns it is drawn by (`period` tells a period column), each with
+    the columns in the order that kind reads them. */
+export function kindsFor(dims: string[], period: (c: string) => boolean, additive = true): { kind: VisualKind; dims: string[] }[] {
+  return shapes(dims, period).filter((o) => additive || !SUMMED.includes(o.kind));
+}
+function shapes(dims: string[], period: (c: string) => boolean): { kind: VisualKind; dims: string[] }[] {
+  const p = dims.filter(period), a = dims.filter((c) => !period(c));
+  if (dims.length === 1 && a.length === 1) return ["leaderboard", "columns", "donut", "table"].map((k) => ({ kind: k as VisualKind, dims: a }));
+  if (dims.length === 1 && p.length === 1) return ["trend", "columns", "seasons", "table"].map((k) => ({ kind: k as VisualKind, dims: p }));
+  if (dims.length === 2 && a.length === 1 && p.length === 1)
+    return [{ kind: "trend", dims: [p[0], a[0]] }, { kind: "heatmap", dims: [a[0], p[0]] }, { kind: "mix", dims: [p[0], a[0]] },
+      { kind: "waterfall", dims: [a[0], p[0]] }, { kind: "boxplot", dims: [a[0], p[0]] }, { kind: "table", dims: [a[0], p[0]] }];
+  if (dims.length >= 2 && !p.length) return [{ kind: "heatmap", dims: a.slice(0, 2) }, { kind: "treemap", dims: a.slice(0, 2) },
+    { kind: "sankey", dims: a }, { kind: "table", dims: a }];
+  return [];
+}
 export type Data = { columns: string[]; rows: unknown[][] };
 type Props = {
   kind: VisualKind; data: Data[]; metrics: string[]; dims: string[]; labels: Record<string, string>;
@@ -51,6 +87,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
   const sheet = (typeof document !== "undefined" && getComputedStyle(document.querySelector(".desk") ?? document.body).getPropertyValue("--d-sheet").trim()) || "#fff";
   const m = metrics[0], label = (k: string) => labels[k] ?? k;
   const ratio = (k: string) => isRatio(label(k), d.rows.map((r) => r[at(d, k)]));
+  const whole_ = (k: string) => !ratio(k) && !RATE.test(label(k));  // a measure whose values add up to a whole
   const f = (k: string) => (v: unknown) => (ratio(k) ? pctText(v) : num(v));
   const fm = f(m);
   const base = { animationDuration: 500, textStyle: { color: AXIS, fontFamily: "inherit" } };
@@ -105,15 +142,15 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
       // ranked, the leader in full color, each row's share of the whole (not for a rate)
       const [dim] = dims, rows = totals(d, dim, m), shown = rows.slice(0, 12), whole = rows.reduce((s, [, v]) => s + v, 0);
       const rest = rows.slice(12).reduce((s, [, v]) => s + v, 0);
-      const items = [...shown, ...(rest && !ratio(m) ? [["Other", rest] as [string, number]] : [])];
+      const items = [...shown, ...(rest && whole_(m) ? [["Other", rest] as [string, number]] : [])];
       const pick = picked[dim] !== undefined ? new Set((Array.isArray(picked[dim]) ? picked[dim] as unknown[] : [picked[dim]]).map((v) => text(dim, v))) : null;
       return chart({
         grid: { left: 8, right: 110, top: 8, bottom: 8, containLabel: true },
-        tooltip: { trigger: "item", confine: true, formatter: (p: any) => `${p.name}<br/><b>${fm(p.value)}</b>${ratio(m) ? "" : ` · ${pctOf(p.value / whole)} of all`}` },
+        tooltip: { trigger: "item", confine: true, formatter: (p: any) => `${p.name}<br/><b>${fm(p.value)}</b>${whole_(m) ? ` · ${pctOf(p.value / whole)} of all` : ""}` },
         xAxis: { type: "value", show: false }, yAxis: { ...catAxis(dim, items.map(([k]) => k)), inverse: true, axisLabel: { color: "#5b6472", fontSize: 12 } },
         series: [{ type: "bar", barMaxWidth: 22, data: items.map(([k, v], i) => ({ value: v, itemStyle: {
           color: k === "Other" ? OTHER : (pick ? pick.has(k) : i === 0) ? UP : "rgba(20,149,142,.42)", borderRadius: [0, 4, 4, 0] } })),
-          label: { show: true, position: "right", color: "#5b6472", fontSize: 11.5, formatter: (p: any) => `${fm(p.value)}${ratio(m) ? "" : `  ${pctOf(p.value / whole)}`}` } }],
+          label: { show: true, position: "right", color: "#5b6472", fontSize: 11.5, formatter: (p: any) => `${fm(p.value)}${whole_(m) ? `  ${pctOf(p.value / whole)}` : ""}` } }],
       }, Math.max(200, items.length * 28 + 24), (e: any) => e.name !== "Other" && onPick?.(dim, raw(d, dim, e.name)));
     }
 
@@ -400,6 +437,56 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
       }, Math.max(200, names.length * 30 + 40), (e: any) => onPick?.(dim, raw(d, dim, names[e.dataIndex])));
     }
 
+    case "slope": {
+      // two values of one column (most often two periods): each measure from the first to the second, its end labelled
+      const [v] = dims, vs = [...new Set(d.rows.map((r) => r[at(d, v)]))].sort((a, b) => String(a).localeCompare(String(b)));
+      const of = (x: unknown, k: string) => n(d.rows.find((r) => r[at(d, v)] === x)?.[at(d, k)]);
+      return chart({
+        grid: { left: 90, right: 190, top: 16, bottom: 30 },
+        tooltip: { trigger: "item", confine: true },
+        xAxis: { type: "category", data: vs.map((x) => text(v, x)), boundaryGap: false, axisTick: { show: false }, axisLine: { lineStyle: { color: GRID } }, axisLabel: { color: AXIS, fontSize: 12 } },
+        yAxis: { type: "value", show: false, scale: true },
+        series: metrics.map((k, j) => ({
+          type: "line", name: label(k), data: vs.map((x) => of(x, k)), symbolSize: j === 0 ? 10 : 8,
+          lineStyle: { width: j === 0 ? 4 : 2.5, color: VIS_PALETTE[j % VIS_PALETTE.length] }, itemStyle: { color: VIS_PALETTE[j % VIS_PALETTE.length] },
+          label: { show: true, fontSize: 12, color: "inherit", formatter: (q: any) => q.dataIndex === 0 ? f(k)(q.value) : "", position: "left" },
+          endLabel: { show: true, fontSize: 12.5, fontWeight: 600, formatter: (q: any) => {
+            const a = of(vs[0], k), b = of(vs.at(-1), k);
+            return `${label(k)}  ${f(k)(q.value)}\n${signed(f(k)(b - a), b - a)}`;
+          } },
+        })),
+      });
+    }
+
+    case "measures": {
+      // several measures with nothing to break them down by: each a bar, labelled with its value
+      const vals = metrics.map((k) => n(d.rows[0]?.[at(d, k)]));
+      return chart({
+        grid: { left: 150, right: 90, top: 8, bottom: 8 },
+        xAxis: { type: "value", show: false },
+        yAxis: { type: "category", inverse: true, data: metrics.map(label), axisTick: { show: false }, axisLine: { show: false }, axisLabel: { color: AXIS, fontSize: 12.5 } },
+        series: [{ type: "bar", barWidth: 18, data: vals.map((x, j) => ({ value: x, itemStyle: { color: VIS_PALETTE[j % VIS_PALETTE.length], borderRadius: [0, 4, 4, 0] } })),
+          label: { show: true, position: "right", color: AXIS, fontSize: 12.5, formatter: (q: any) => f(metrics[q.dataIndex])(q.value) } }],
+      }, Math.max(140, metrics.length * 44 + 20));
+    }
+
+    case "columns": {
+      // one column's values as upright bars: periods in time order, anything else largest first
+      const [dim] = dims, period = PERIOD.test(dim);
+      const rows = period ? [...d.rows].sort((x, y) => String(x[at(d, dim)]).localeCompare(String(y[at(d, dim)]))).map((r) => [text(dim, r[at(d, dim)], true), n(r[at(d, m)])] as [string, number])
+        : totals(d, dim, m).slice(0, 16);
+      return chart({
+        grid: { left: 56, right: 12, top: 22, bottom: 40 },
+        tooltip: { trigger: "item", confine: true, formatter: (q: any) => `${q.name}<br/><b>${fm(q.value)}</b>` },
+        xAxis: catAxis(dim, rows.map(([k]) => k)), yAxis: axisNum(),
+        series: [{ type: "bar", barMaxWidth: 28, data: rows.map(([, v], j) => ({ value: v, itemStyle: { color: !period && j === 0 ? UP : "#9fd2cc", borderRadius: [4, 4, 0, 0] } })),
+          label: { show: rows.length <= 12, position: "top", color: AXIS, fontSize: 11, formatter: (q: any) => fm(q.value) } }],
+      }, height, (e: any) => onPick?.(dim, raw(d, dim, rows[e.dataIndex][0])));
+    }
+
+    case "table":
+      return <div className="max-h-80 overflow-auto"><ResultTable columns={d.columns} rows={d.rows} labels={labels} /></div>;
+
     case "calendar": {
       // the last year of days, a cell each, darker for more
       const [day] = dims;
@@ -415,5 +502,77 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
         series: [{ type: "heatmap", coordinateSystem: "calendar", data: shown }],
       }, 210);
     }
+  }
+}
+
+/** One sentence on what a chart shows, from its own rows: the support note under it. Its numbers are the
+    chart's, formatted as the chart formats them; null when there is nothing worth saying. */
+export function noteOf(kind: VisualKind, data: Data[], metrics: string[], dims: string[], labels: Record<string, string>): string | null {
+  const d = data[0], m = metrics[0];
+  if (!d?.rows.length || !m) return null;
+  const label = (k: string) => labels[k] ?? k;
+  const f = (k: string) => (v: unknown) => (isRatio(label(k), d.rows.map((r) => r[at(d, k)])) ? pctText(v) : num(v));
+  const fm = f(m);
+  const sorted = (dim: string) => [...new Set(d.rows.map((r) => r[at(d, dim)]))].sort((a, b) => String(a).localeCompare(String(b)));
+  const change = (dim: string, p: string) => {  // each value of `dim`: last period against the first
+    const ps = sorted(p), first = ps[0], last = ps.at(-1);
+    const by = new Map<string, [number, number]>();
+    for (const r of d.rows) {
+      const k = text(dim, r[at(d, dim)]), [a, b] = by.get(k) ?? [0, 0];
+      if (r[at(d, p)] === first) by.set(k, [a + n(r[at(d, m)]), b]);
+      if (r[at(d, p)] === last) by.set(k, [a, b + n(r[at(d, m)])]);
+    }
+    return { first, last, moves: [...by.entries()].map(([k, [a, b]]) => [k, b - a] as [string, number]).sort((x, y) => y[1] - x[1]) };
+  };
+  switch (kind) {
+    case "leaderboard": case "donut": {
+      const rows = totals(d, dims[0], m);
+      if (rows.length < 2) return null;
+      return `Highest: ${rows[0][0]} at ${fm(rows[0][1])}, then ${rows[1][0]} at ${fm(rows[1][1])}.`;
+    }
+    case "treemap": {
+      const [x] = [...dims].sort((p, q) => new Set(d.rows.map((r) => r[at(d, p)])).size - new Set(d.rows.map((r) => r[at(d, q)])).size);
+      const rows = totals(d, x, m), whole = rows.reduce((s, [, v]) => s + v, 0);
+      return rows.length && whole ? `${rows[0][0]} is the largest part: ${pctOf(rows[0][1] / whole)} of the whole.` : null;
+    }
+    case "trend": case "seasons": {
+      const [p, s] = dims;
+      if (s) {
+        const { last, moves } = change(s, p);
+        const at2 = totals({ columns: d.columns, rows: d.rows.filter((r) => r[at(d, p)] === last) }, s, m);
+        return at2.length ? `In ${text(p, last)}, ${at2[0][0]} is highest at ${fm(at2[0][1])}; ${moves[0][0]} moved most since the start.` : null;
+      }
+      const ps = sorted(p), v0 = d.rows.find((r) => r[at(d, p)] === ps[0])?.[at(d, m)], v1 = d.rows.find((r) => r[at(d, p)] === ps.at(-1))?.[at(d, m)];
+      return ps.length > 1 ? `From ${fm(v0)} in ${text(p, ps[0])} to ${fm(v1)} in ${text(p, ps.at(-1))}.` : null;
+    }
+    case "waterfall": case "boxplot": case "mix": {
+      const [a, p] = kind === "mix" ? [dims[1], dims[0]] : dims;
+      if (!p) return null;
+      const { first, last, moves } = change(a, p);
+      const up = moves[0], down = moves.at(-1)!;
+      const parts = [up[1] > 0 ? `${up[0]} rose most (${signed(fm(up[1]), up[1])})` : null,
+        down[1] < 0 ? `${down[0]} fell most (${signed(fm(down[1]), down[1])})` : null].filter(Boolean);
+      return parts.length ? `${text(p, first)} to ${text(p, last)}: ${parts.join("; ")}.` : null;
+    }
+    case "heatmap": {
+      let best: unknown[] | null = null;
+      for (const r of d.rows) if (!best || n(r[at(d, m)]) > n(best[at(d, m)])) best = r;
+      return best ? `Highest: ${text(dims[0], best[at(d, dims[0])])}, ${text(dims[1], best[at(d, dims[1])])} at ${fm(best[at(d, m)])}.` : null;
+    }
+    case "sankey": {
+      const rows = totals(d, dims[0], m), whole = rows.reduce((s, [, v]) => s + v, 0);
+      return rows.length && whole ? `Most of it flows from ${rows[0][0]}: ${pctOf(rows[0][1] / whole)} of the whole.` : null;
+    }
+    case "slope": {
+      const [v] = dims, vs = sorted(v);
+      if (vs.length !== 2) return null;
+      const moves = metrics.map((k) => {
+        const a = n(d.rows.find((r) => r[at(d, v)] === vs[0])?.[at(d, k)]), b = n(d.rows.find((r) => r[at(d, v)] === vs[1])?.[at(d, k)]);
+        return { k, a, b, x: b - a };
+      }).sort((p, q) => Math.abs(q.x) - Math.abs(p.x));
+      const t = moves[0];
+      return `${label(t.k)} moved most: ${f(t.k)(t.a)} to ${f(t.k)(t.b)} (${signed(f(t.k)(t.x), t.x)}).`;
+    }
+    default: return null;
   }
 }
