@@ -8,11 +8,12 @@
    where you are), and Keep pins the views to My dashboard. Follow-ups add to the conversation, each with
    views the ones above do not already show. */
 
-import { ArrowUp, Bookmark, Check, Repeat, Share2, Square, X } from "lucide-react";
+import { ArrowUp, Bookmark, Check, Layers, Repeat, Share2, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { pctText, periodName } from "@/components/auto-chart";
+import { DrillTree, PickMenu, type DrillStart } from "@/components/ask-drill";
 import { Visual, type Data, type VisualKind } from "@/components/ask-visuals";
 import type { ExhibitData } from "@/components/pbi-exhibit";
 import { ResultTable, SqlBlock, num } from "@/components/pbi";
@@ -20,6 +21,7 @@ import { streamNdjson } from "@/lib/api";
 import { owner, readAsked, tileOf, writeAsked } from "@/lib/desk";
 import { colLabel, columnTypes, isDimension, pbi, type PbiMetric, type Result } from "@/lib/pbi";
 import { useStudio } from "@/lib/studio";
+import { BUSINESS, PEOPLE, PLACE } from "@/lib/vocab";
 import { useLook } from "@/lib/theme";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -76,10 +78,6 @@ const INTENTS: [Intent, RegExp][] = [
   ["trend", /\btrend|\bmoved?\b|\bover time\b|\bgrow|\bdeclin|\bchang|\bhistory\b|\bmonth by month\b|\bsince\b|\btrajectory\b|\bmoving\b/i],
 ];
 const SIGNIFICANT = /significan|statistic|\bby chance\b|\bprove\b|confiden|p-?value|hypothes/i;
-const PLACE = /store|city|region|country|state|location|branch|site|territor|market|area|zone/i;
-const PEOPLE = /gender|\bsex\b|^age|age ?(band|group|range)|income|marital|education|occupation|generation/i;
-/** What a business is usually cut by first, when the question names nothing. */
-const BUSINESS = /category|segment|product|brand|store|region|channel|promotion|type|setting|line of business|\blob\b|plan|facility|specialty|provider|drug|network|funding|condition|episode|\bmdc\b|\bdrg\b/i;
 
 /** The pictures for an answer: up to three of different kinds, the first the one the question asks for most.
     From the answer it takes the measures and the columns it settled on; the question's words (and the
@@ -219,9 +217,9 @@ const fromSaved = (t: { id: string; question: string; answer: string; specs: unk
   ({ id: t.id, question: t.question, answer: t.answer, focus: t.focus, error: t.error, note: (t as any).note, measure: (t as any).measure, views: (t.specs as any[]).filter((v) => v && "queries" in v && "kind" in v) });
 
 /** A turn's answer and its views: each runs here, re-run when its trail changes. */
-function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
+function Answer({ turn, model, labels, cache, live, step, first, setFocus, dates, types }: {
   turn: Turn; model: string; labels: Record<string, string>; cache: Map<string, Result>; live: boolean; step: string; first: boolean;
-  setFocus: (f: Focus | ((f: Focus) => Focus)) => void;
+  setFocus: (f: Focus | ((f: Focus) => Focus)) => void; dates: string[]; types: Record<string, string>;
 }) {
   const { question, answer, views, focus, error } = turn;
   const [runs, setRuns] = useState<Record<string, Run>>({});
@@ -247,6 +245,17 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
 
   // a pick replaces any earlier one on that column
   const pick = (dim: string, value: unknown) => setFocus((f) => [...f.filter(([k]) => k !== dim), [dim, value]]);
+  // a click on a mark asks what to do with it: focus every view, drill into it, or see its rows
+  const pointer = useRef({ x: 0, y: 0 });
+  const [menu, setMenu] = useState<{ x: number; y: number; v: View; dim: string; value: unknown } | null>(null);
+  const [drill, setDrill] = useState<{ metric: string; base: Record<string, unknown>; start: DrillStart } | null>(null);
+  const drillFrom = (v: View, start: DrillStart, dim?: string) => {
+    const base = filtersOf(v, focus);
+    if (dim) delete base[dim];
+    setDrill({ metric: v.metrics[0], base, start });
+    setMenu(null);
+    setTimeout(() => document.getElementById(`drill-${turn.id}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 80);
+  };
   const keep = async () => {
     const board = await pbi.board(model, owner()).catch(() => ({ tiles: [] as ReturnType<typeof tileOf>[] }));
     const mine = views.filter((v) => !v.table).flatMap((v) => v.queries.map((by) => tileOf({ kind: "compute", columns: [], rows: [], metrics: v.metrics, by, filters: filtersOf(v, focus), labels, origin: "agent" })));
@@ -300,7 +309,8 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
                 <div className="max-h-72 overflow-auto"><ResultTable columns={rs![0].columns} rows={rs![0].rows} labels={labels} /></div>
               </div>
             ) : (
-              <Visual kind={v.kind} data={rs!} metrics={v.metrics} dims={v.dims} labels={labels} picked={picked} height={hero ? 330 : 260} onPick={pick} />
+              <Visual kind={v.kind} data={rs!} metrics={v.metrics} dims={v.dims} labels={labels} picked={picked} height={hero ? 330 : 260}
+                onPick={(dim, value) => setMenu({ ...pointer.current, v, dim, value })} />
             )}
         </div>
         {/* the test's own numbers (p-value, interval, effect): for a statistical question, the answer itself */}
@@ -370,6 +380,10 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
               </span>
             ))}
             <span className="ml-auto flex items-center gap-1">
+              {views.some((v) => !v.table && v.metrics.length) && (
+                <button onClick={() => { const v = views.find((x) => !x.table && x.metrics.length)!; drillFrom(v, { at: Date.now() }); }}
+                  className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] text-[var(--d-ink-2)] ring-1 ring-[var(--d-rule)] hover:ring-[var(--d-teal)]"><Layers size={14} />Drill down</button>
+              )}
               <button onClick={keep} disabled={kept} className="flex items-center gap-1.5 rounded-full bg-[var(--d-teal)] px-3.5 py-1.5 text-[13px] font-semibold text-white disabled:bg-[var(--d-teal-soft)] disabled:text-[var(--d-teal)]">
                 {kept ? <Check size={14} /> : <Bookmark size={14} />}{kept ? "Kept in My dashboard" : "Keep"}
               </button>
@@ -378,7 +392,20 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus }: {
               ))}
             </span>
           </div>
-          <div className="mt-2 grid grid-cols-1 gap-4 lg:grid-flow-row-dense lg:grid-cols-6">{views.map(tile)}</div>
+          <div className="mt-2 grid grid-cols-1 gap-4 lg:grid-flow-row-dense lg:grid-cols-6"
+            onPointerDownCapture={(e) => { pointer.current = { x: e.clientX, y: e.clientY }; }}>{views.map(tile)}</div>
+          {drill && (
+            <div id={`drill-${turn.id}`}>
+              <DrillTree key={drill.start.at} model={model} metric={drill.metric} label={labels[drill.metric] ?? drill.metric} base={drill.base}
+                start={drill.start} dates={dates} types={types} onClose={() => setDrill(null)} />
+            </div>
+          )}
+          {menu && (
+            <PickMenu x={menu.x} y={menu.y} label={`${said(menu.dim)}: ${shown(menu.dim, menu.value)}`} onClose={() => setMenu(null)}
+              onFocus={() => { pick(menu.dim, menu.value); setMenu(null); }}
+              onDrill={() => drillFrom(menu.v, { by: menu.dim, value: menu.value, at: Date.now() }, menu.dim)}
+              onRows={() => drillFrom(menu.v, { by: menu.dim, value: menu.value, rows: true, at: Date.now() }, menu.dim)} />
+          )}
         </>
       )}
     </article>
@@ -495,11 +522,14 @@ export default function AskPage() {
     setSession(a.id); setError("");
     setTurns((a.turns ?? [{ id: "t0", question: a.question, answer: a.answer, specs: a.specs, focus: a.focus }]).map(fromSaved));
   };
-  // the sidebar opens a conversation (or a new one); arriving with ?c= opens it once the model is known
+  // the sidebar opens a conversation (or a new one); arriving with ?c= opens it, and with ?q= (from a brief or a
+  // kept exhibit) asks that question, once the model is known
   useEffect(() => {
     if (!pbiModel) return;
-    const c = new URLSearchParams(window.location.search).get("c");
-    if (c) { window.history.replaceState(null, "", "/pbi/ask"); reopen(c); }
+    const at = new URLSearchParams(window.location.search), c = at.get("c"), q = at.get("q");
+    if (c || q) window.history.replaceState(null, "", "/pbi/ask");
+    if (c) reopen(c);
+    else if (q) ask(q);
     const on = (e: Event) => { const id = (e as CustomEvent).detail; if (id) reopen(id); else fresh(); };
     window.addEventListener("ask:open", on);
     return () => window.removeEventListener("ask:open", on);
@@ -559,7 +589,7 @@ export default function AskPage() {
               <div key={t.id} style={i === turns.length - 1 && i > 0 ? { minHeight: "calc(100vh - 160px)" } : undefined}>
                 <Answer turn={t} model={pbiModel} labels={labels} cache={cache.current} first={i === 0}
                   live={busy && i === turns.length - 1} step={step}
-                  setFocus={(f) => update(t.id, (x) => ({ focus: typeof f === "function" ? f(x.focus) : f }))} />
+                  setFocus={(f) => update(t.id, (x) => ({ focus: typeof f === "function" ? f(x.focus) : f }))} dates={cols.dates} types={cols.types} />
               </div>
             ))}
             {error && <p className="mt-3 rounded-lg bg-[var(--d-rise-soft)] px-3 py-2 text-[13px] text-[var(--d-rise-ink)]">{error}</p>}

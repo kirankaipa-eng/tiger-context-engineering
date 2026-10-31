@@ -106,7 +106,6 @@ function Sidebar() {
           <Database size={17} className="text-[var(--d-rail-muted)]" />
           <span className="min-w-0 flex-1">About the data<span className="block text-[12px] text-[var(--d-rail-muted)]">{model ? `${model.captured} of ${model.measures} measures translated` : "…"}</span></span>
         </Link>
-        <Link href="/pbi" className={clsx(item, "text-[13px] text-[var(--d-rail-muted)]", path === "/pbi" && "bg-[var(--d-navy-2)]")}><span className="w-[17px]" />Classic desk</Link>
         <div className="flex items-center gap-3 px-2.5 py-2">
           <span className="grid h-7 w-7 place-items-center rounded-full bg-[var(--d-teal)] text-[12px] font-semibold uppercase text-white">{(me === "me" ? "You" : me).slice(0, 1)}</span>
           <span className="min-w-0 flex-1 truncate text-[14px] text-[var(--d-rail-ink)]">{me === "me" ? "You" : me}</span>

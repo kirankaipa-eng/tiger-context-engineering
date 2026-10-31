@@ -1,6 +1,6 @@
-/* What a click on an exhibit does, in one place for every screen that shows exhibits (the desk, my
-   dashboard): break a value down by another column, or open the transactions behind it; and the pinned
-   form of an exhibit (its question, never its numbers). */
+/* What a click on an exhibit does, in one place for every screen that shows exhibits (My briefs, the team
+   space): break a value down by another column, or open the transactions behind it; and the pinned form of
+   an exhibit (its question, never its numbers). */
 
 import { exhibitTitle, narrowed, valueAt, type ExhibitData } from "@/components/pbi-exhibit";
 import { headline } from "@/components/pbi-investigation";
@@ -8,13 +8,7 @@ import { colLabel, pbi, type Tile } from "@/lib/pbi";
 
 const within = (filters: Record<string, unknown>) =>
   Object.entries(filters).map(([k, v]) => `${colLabel(k).replace(/ · .*$/, "")} = ${v ?? "(blank)"}`).join(", ");
-
-export const drillNote = (e: ExhibitData, values: unknown[], by: string) => `${exhibitTitle({ ...e, by: [by] })}, within ${within(narrowed(e, values))}`;
 const rowsWithin = (e: ExhibitData, values: unknown[]) => Object.values(narrowed(e, values)).map((v) => v ?? "(blank)").join(", ") || "everything";
-export const rowsNote = (e: ExhibitData, values: unknown[]) => {
-  const m = e.kind === "compute" ? e.metrics[0] : undefined;
-  return m ? `The transactions behind ${e.labels[m] ?? m}, for ${rowsWithin(e, values)}` : `The transactions behind ${exhibitTitle(e).toLowerCase()}, for ${rowsWithin(e, values)}`;
-};
 
 /** The value under a mark, broken down by another column. */
 export async function drillExhibit(model: string, e: ExhibitData, values: unknown[], by: string): Promise<ExhibitData> {
@@ -58,22 +52,6 @@ export function tileOf(e: ExhibitData): Tile {
 
 /** Who the person is, as they told the team space (a name, not a sign-in). */
 export const owner = () => { try { return localStorage.getItem("desk-name")?.trim() || "me"; } catch { return "me"; } };
-
-/** One answer per question: within one question's results, a result a later one covers (the same kind, its
-    measures all in the later one: a total before its breakdown, a call redone) is a working step, folded into
-    that later answer, not an exhibit of its own. Results that answer different parts stay separate.
-    `number` is each answer's exhibit number (1, 2, ...); `into` maps a working step to the answer it led to. */
-export function fold(cards: ExhibitData[]) {
-  const into = new Map<number, number>(), number = new Map<number, number>();
-  cards.forEach((c, i) => {
-    if (c.turn === undefined || c.origin !== "agent") return;
-    const j = cards.findIndex((d, k) => k > i && d.turn === c.turn && d.kind === c.kind && c.metrics.every((m) => d.metrics.includes(m)));
-    if (j > 0) into.set(i, j);
-  });
-  cards.forEach((_, i) => { if (!into.has(i)) number.set(i, number.size + 1); });
-  const answer = (i: number): number => (into.has(i) ? answer(into.get(i)!) : i);  // a step's step lands on the last answer
-  return { number, into: new Map([...into.keys()].map((i) => [i, answer(i)])) };
-}
 
 /** A question asked on the Ask page, kept in this browser so the sidebar can reopen it where it left off. */
 export type Asked = { id: string; title: string; question: string; answer: string; specs: unknown[]; focus: [string, unknown][]; at: number;

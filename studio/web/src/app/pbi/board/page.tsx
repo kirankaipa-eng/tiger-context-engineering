@@ -79,7 +79,7 @@ export default function MyDashboard() {
   const actionsFor = (id: string, depth: number): DeskActions => ({
     drill: (e, values, by) => extend(id, depth, () => drillExhibit(pbiModel, e, values, by)),
     rows: (e, values) => extend(id, depth, () => rowsExhibit(pbiModel, e, values)),
-    ask: (text) => { window.location.href = `/pbi?q=${encodeURIComponent(text)}`; },
+    ask: (text) => { window.location.href = `/pbi/ask?q=${encodeURIComponent(text)}`; },
     pin: (e) => togglePin(e),
     pinned: (e) => pinned.has(tileOf(e).id),
   });
