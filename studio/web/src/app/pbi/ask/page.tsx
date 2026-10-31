@@ -369,7 +369,8 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
   };
   const keep = async () => {
     const board = await pbi.board(model, owner()).catch(() => ({ tiles: [] as ReturnType<typeof tileOf>[] }));
-    const mine = views.filter((v) => !v.table).flatMap((v) => v.queries.map((by) => tileOf({ kind: "compute", columns: [], rows: [], metrics: v.metrics, by, filters: filtersOf(v, focus), labels, origin: "agent" })));
+    const mine = views.filter((v) => !v.table).flatMap((v) => v.queries.map((by) => tileOf({ kind: "compute", columns: [], rows: [], metrics: v.metrics, by, filters: filtersOf(v, focus), labels, origin: "agent" })))
+      .filter((t, i, all) => all.findIndex((x) => x.id === t.id) === i);  // two charts of one computation: one tile
     const tiles = [...board.tiles, ...mine.filter((t) => !board.tiles.some((x) => x.id === t.id))];
     await pbi.saveBoard(model, owner(), tiles).then(() => setKept(true)).catch((err) => setKeepError(`Could not keep it: ${err?.message ?? err}`));
   };

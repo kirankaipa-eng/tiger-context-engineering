@@ -32,7 +32,10 @@ export default function MyDashboard() {
     setLive(null);
     const [board, t] = await Promise.all([pbi.board(pbiModel, owner), pbi.tables(pbiModel).catch(() => null)]);
     if (t) setCols(columnTypes(t.tables));
-    const out = await Promise.all(board.tiles.map(async (tile): Promise<Live> => {
+    // one tile per computation: two kept charts that compute the same thing are one (a board saved with
+    // repeats, before Keep dropped them, shows each once)
+    const tiles = board.tiles.filter((t, i, all) => all.findIndex((x) => x.id === t.id) === i);
+    const out = await Promise.all(tiles.map(async (tile): Promise<Live> => {
       try {
         if (tile.kind === "explain" && tile.explain) {
           const r = await pbi.explain(pbiModel, tile.explain);
