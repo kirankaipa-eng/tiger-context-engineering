@@ -96,6 +96,13 @@ Limits:
 - **Checked live:** 8 turns on Plains Health with topic changes and a cancelled tool call; and 7 turns with the budget cut to 8,000 characters. A question about a dropped turn was answered by running the tool again.
 - **Still open:** the `InMemorySaver` keeps every checkpoint of every session for the life of the process, so memory grows with use, and an API restart loses every conversation (item 1 below).
 
+### 5. An empty filter list is no filter (`bi_agent.py`, after this range)
+
+- **Problem.** A filter given as an empty list, `{"Member[Line of Business]": []}`, reached the SQL as `IN ()`. DuckDB and Databricks both reject that with a syntax error ("syntax error at or near `)`"). It happened for every metric. Agents send `[]` to clear a filter when the topic changes.
+- **Change.** `BIToolkit.resolve` skips a column whose value list is empty and adds the note "no filter on <column> (no values given)". Every tool and the `/compute`, `/explore` and `/rows` endpoints go through `resolve`, so one change covers them all. `bilayer.py` is unchanged.
+- **Test:** `tests/test_explore.py::test_an_empty_filter_list_is_no_filter`.
+- **How it was found.** Plains Health, 44 metrics, 4 groupings, and 10 kinds of odd filter (an empty list, null, an apostrophe, month, quarter and year grains, a column from another topic, a boolean, a number for text). Only the empty list gave a syntax error. Each of the others gives a plain error the agent can act on, for example "Pharmacy Claims is not related to Medical Claims".
+
 ## What the frontend relies on
 
 The Ask page (`studio/web/src/app/pbi/ask/page.tsx`) calls:

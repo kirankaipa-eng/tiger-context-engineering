@@ -61,3 +61,14 @@ def test_the_toolkit_matches_values_honours_security_and_shows_the_sql(layer):  
     out = BIToolkit(lay, wh).explore(columns=["Claims[ClaimID]"], filters={"Provider[Specialty]": "ortho"})
     assert "read Provider[Specialty]='ortho' as 'Ortho'" in out and "(3 rows)" in out
     assert BIToolkit(lay, wh).explore(columns=["Nope[X]"]).startswith("Error:")
+
+
+def test_an_empty_filter_list_is_no_filter(layer):  # noqa: F811
+    # an agent changing topic clears a filter with []; that once reached the SQL as "IN ()", a syntax error
+    lay, wh = layer
+    kit = BIToolkit(lay, wh)
+    where, notes = kit.resolve({"Provider[Specialty]": [], "Claims[ClaimID]": [1, 2]})
+    assert where == {"Claims[ClaimID]": [1, 2]} and notes == ["no filter on Provider[Specialty] (no values given)"]
+    out = kit.explore(columns=["Claims[ClaimID]"], filters={"Provider[Specialty]": []})
+    assert not out.startswith("Error:") and "no filter on Provider[Specialty]" in out
+    assert "Error" not in kit.compute(["paid"], filters={"Provider[Specialty]": []})

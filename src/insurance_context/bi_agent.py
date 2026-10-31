@@ -300,6 +300,9 @@ class BIToolkit:
         out, notes = {}, []
         for column, value in (filters or {}).items():
             wanted = value if isinstance(value, (list, tuple, set)) else [value]
+            if not wanted:  # an empty list, as an agent clears a filter on a new topic: not "IN ()", which is no SQL
+                notes.append(f"no filter on {column} (no values given)")
+                continue
             if not any(isinstance(v, str) for v in wanted):
                 out[column] = value
                 continue
