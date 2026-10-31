@@ -36,13 +36,16 @@ export function useLook() {
     /* eslint-enable react-hooks/set-state-in-effect */
     const on = (e: MediaQueryListEvent) => setSysDark(e.matches);
     q?.addEventListener?.("change", on);
-    return () => q?.removeEventListener?.("change", on);
+    // a change made in another part of the page (the sidebar has its own look): followed here at once
+    const look = (e: Event) => { const { theme: t, mode: m } = (e as CustomEvent).detail ?? {}; if (t) setTheme(t); if (m) setMode(m); };
+    window.addEventListener("desk-look", look);
+    return () => { q?.removeEventListener?.("change", on); window.removeEventListener("desk-look", look); };
   }, []);
   const dark = mode === "dark" || (mode === "system" && sysDark);
   return {
     theme, mode, dark, look: `theme-${theme} ${dark ? "mode-dark" : "mode-light"}`,
-    setTheme: (t: Theme) => { setTheme(t); write("desk-theme", t); },
-    setMode: (m: Mode) => { setMode(m); write("desk-mode", m); },
+    setTheme: (t: Theme) => { setTheme(t); write("desk-theme", t); window.dispatchEvent(new CustomEvent("desk-look", { detail: { theme: t } })); },
+    setMode: (m: Mode) => { setMode(m); write("desk-mode", m); window.dispatchEvent(new CustomEvent("desk-look", { detail: { mode: m } })); },
   };
 }
 

@@ -8,6 +8,7 @@
    rise and rose for a fall, one teal ramp for magnitude. A click on a mark reports its column and value. */
 
 import dynamic from "next/dynamic";
+import { useEffect, useState } from "react";
 import { isRatio, pctText, periodName } from "./auto-chart";
 import { ResultTable, num } from "./pbi";
 
@@ -15,10 +16,32 @@ const ECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/** Fixed order, never cycled: a seventh series folds into "Other". */
-export const VIS_PALETTE = ["#14958e", "#d07d08", "#5468d4", "#cf4a6a", "#9a55c9", "#6a8f17"];
-const UP = "#14958e", DOWN = "#cf4a6a", OTHER = "#b9c1cb", GRID = "rgba(140,145,155,.18)", AXIS = "#8b9099";
-const RAMP = ["#e3f3f1", "#a8dcd6", "#5fb8ae", "#14958e", "#0b5f5a"];
+/** Fixed order, never cycled: a seventh series folds into "Other". The theme's own order (led by its brand hue, each
+    validated for color blindness) comes from the desk's --d-chart-* tokens; these stand in where a page sets none. */
+const PALETTE = ["#14958e", "#d07d08", "#5468d4", "#cf4a6a", "#9a55c9", "#6a8f17"];
+const OTHER = "#b9c1cb", GRID = "rgba(140,145,155,.18)", AXIS = "#8b9099";
+const DEFAULTS = { palette: PALETTE, up: "#14958e", down: "#cf4a6a", ramp: ["#e3f3f1", "#a8dcd6", "#5fb8ae", "#14958e", "#0b5f5a"] };
+type Colors = typeof DEFAULTS;
+
+/** The theme's chart colors, read from the desk's tokens, and read again when the theme or mode changes (the class
+    on the page's .desk), so the charts follow the switch at once rather than one change behind. */
+function useChartColors(): Colors {
+  const [c, setC] = useState<Colors>(DEFAULTS);
+  useEffect(() => {
+    const read = () => {
+      const css = getComputedStyle(document.querySelector(".desk") ?? document.body);
+      const tok = (k: string, d: string) => css.getPropertyValue(k).trim() || d;
+      const next = { palette: PALETTE.map((d, i) => tok(`--d-chart-${i + 1}`, d)), up: tok("--d-chart-up", DEFAULTS.up),
+        down: tok("--d-chart-down", DEFAULTS.down), ramp: DEFAULTS.ramp.map((d, i) => tok(`--d-ramp-${i + 1}`, d)) };
+      setC((old) => (JSON.stringify(old) === JSON.stringify(next) ? old : next));
+    };
+    read();
+    const watch = new MutationObserver(read);
+    watch.observe(document.body, { attributes: true, attributeFilter: ["class"], subtree: true });
+    return () => watch.disconnect();
+  }, []);
+  return c;
+}
 const PERIOD = /:(year|quarter|month|week|day)$/;
 
 export type VisualKind = "number" | "leaderboard" | "trend" | "seasons" | "versus" | "gap" | "waterfall" | "treemap" | "donut"
@@ -51,7 +74,9 @@ export function kindsFor(dims: string[], period: (c: string) => boolean, additiv
 function shapes(dims: string[], period: (c: string) => boolean): { kind: VisualKind; dims: string[] }[] {
   const p = dims.filter(period), a = dims.filter((c) => !period(c));
   if (dims.length === 1 && a.length === 1) return ["leaderboard", "columns", "donut", "table"].map((k) => ({ kind: k as VisualKind, dims: a }));
-  if (dims.length === 1 && p.length === 1) return ["trend", "columns", "seasons", "table"].map((k) => ({ kind: k as VisualKind, dims: p }));
+  // seasons are months of the year: only for a chart by month
+  if (dims.length === 1 && p.length === 1) return (/:month$/.test(p[0]) ? ["trend", "columns", "seasons", "table"] : ["trend", "columns", "table"])
+    .map((k) => ({ kind: k as VisualKind, dims: p }));
   if (dims.length === 2 && a.length === 1 && p.length === 1)
     return [{ kind: "trend", dims: [p[0], a[0]] }, { kind: "heatmap", dims: [a[0], p[0]] }, { kind: "mix", dims: [p[0], a[0]] },
       { kind: "waterfall", dims: [a[0], p[0]] }, { kind: "boxplot", dims: [a[0], p[0]] }, { kind: "table", dims: [a[0], p[0]] }];
@@ -81,6 +106,9 @@ function totals(d: Data, dim: string, m: string) {
 const raw = (d: Data, dim: string, label: string) => d.rows.map((r) => r[at(d, dim)]).find((v) => text(dim, v) === label || text(dim, v, true) === label) ?? label;
 
 export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick, height = 300 }: Props) {
+  const colors = useChartColors();
+  const VIS_PALETTE = colors.palette, UP = colors.up, DOWN = colors.down, RAMP = colors.ramp;
+  const tint = (alpha: number) => `${UP}${Math.round(alpha * 255).toString(16).padStart(2, "0")}`;  // the lead color, see-through
   const d = data[0];
   if (!d) return null;
   // marks are separated by the card's own color, so the gaps read as gaps in dark mode too
@@ -149,7 +177,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
         tooltip: { trigger: "item", confine: true, formatter: (p: any) => `${p.name}<br/><b>${fm(p.value)}</b>${whole_(m) ? ` · ${pctOf(p.value / whole)} of all` : ""}` },
         xAxis: { type: "value", show: false }, yAxis: { ...catAxis(dim, items.map(([k]) => k)), inverse: true, axisLabel: { color: "#5b6472", fontSize: 12 } },
         series: [{ type: "bar", barMaxWidth: 22, data: items.map(([k, v], i) => ({ value: v, itemStyle: {
-          color: k === "Other" ? OTHER : (pick ? pick.has(k) : i === 0) ? UP : "rgba(20,149,142,.42)", borderRadius: [0, 4, 4, 0] } })),
+          color: k === "Other" ? OTHER : (pick ? pick.has(k) : i === 0) ? UP : tint(.42), borderRadius: [0, 4, 4, 0] } })),
           label: { show: true, position: "right", color: "#5b6472", fontSize: 11.5, formatter: (p: any) => `${fm(p.value)}${whole_(m) ? `  ${pctOf(p.value / whole)}` : ""}` } }],
       }, Math.max(200, items.length * 28 + 24), (e: any) => e.name !== "Other" && onPick?.(dim, raw(d, dim, e.name)));
     }
@@ -180,7 +208,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
             series: groups.map((g, j) => ({
               name: g ?? label(m), type: "line", data: line(g), symbolSize: 6, showSymbol: false, lineStyle: { width: 2 }, itemStyle: { color: VIS_PALETTE[j] },
               ...(s ? { endLabel: { show: groups.length <= 4, formatter: "{a}", color: "#5b6472", fontSize: 11 } } : {
-                areaStyle: { color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: "rgba(20,149,142,.22)" }, { offset: 1, color: "rgba(20,149,142,0)" }] } },
+                areaStyle: { color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: tint(.22) }, { offset: 1, color: tint(0) }] } },
                 markPoint: { symbol: "circle", symbolSize: 8, label: { position: "top", color: "#5b6472", fontSize: 11, formatter: (q: any) => fm(q.value) },
                   data: [{ type: "max", name: "high" }, { coord: [periods.length - 1, one.at(-1)], value: one.at(-1) }] },
               }),
@@ -419,7 +447,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
         xAxis: { ...axisNum(mx), name: label(mx), nameLocation: "middle", nameGap: 26, nameTextStyle: { color: AXIS, fontSize: 11 }, scale: true },
         yAxis: { ...axisNum(my), name: label(my), nameTextStyle: { color: AXIS, fontSize: 11, align: "left" }, scale: true },
         series: [{ type: "scatter", data: pts, symbolSize: (v: number[]) => (ms ? 8 + 22 * Math.sqrt(v[2] / big) : 11),
-          itemStyle: { color: "rgba(20,149,142,.7)", borderColor: sheet, borderWidth: 1.5 },
+          itemStyle: { color: tint(.7), borderColor: sheet, borderWidth: 1.5 },
           label: { show: true, position: "right", color: "#5b6472", fontSize: 11, formatter: (q: any) => (named.has(q.name) ? q.name : "") } }],
       }, height, (e: any) => onPick?.(dim, raw(d, dim, e.name)));
     }
@@ -433,7 +461,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
         grid: { left: 8, right: 24, top: 12, bottom: 8, containLabel: true },
         tooltip: { trigger: "item", confine: true, formatter: (x: any) => `${x.name} · each ${p.match(PERIOD)?.[1] ?? "period"}<br/>median <b>${fm(x.value[3])}</b><br/>middle half ${fm(x.value[2])} – ${fm(x.value[4])}<br/>range ${fm(x.value[1])} – ${fm(x.value[5])}` },
         xAxis: axisNum(), yAxis: { ...catAxis(dim, names), inverse: true, axisLabel: { color: "#5b6472", fontSize: 12 } },
-        series: [{ type: "boxplot", data: stats, boxWidth: [8, 18], itemStyle: { color: "rgba(20,149,142,.18)", borderColor: UP, borderWidth: 1.5 } }],
+        series: [{ type: "boxplot", data: stats, boxWidth: [8, 18], itemStyle: { color: tint(.18), borderColor: UP, borderWidth: 1.5 } }],
       }, Math.max(200, names.length * 30 + 40), (e: any) => onPick?.(dim, raw(d, dim, names[e.dataIndex])));
     }
 
@@ -479,7 +507,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
         grid: { left: 56, right: 12, top: 22, bottom: 40 },
         tooltip: { trigger: "item", confine: true, formatter: (q: any) => `${q.name}<br/><b>${fm(q.value)}</b>` },
         xAxis: catAxis(dim, rows.map(([k]) => k)), yAxis: axisNum(),
-        series: [{ type: "bar", barMaxWidth: 28, data: rows.map(([, v], j) => ({ value: v, itemStyle: { color: !period && j === 0 ? UP : "#9fd2cc", borderRadius: [4, 4, 0, 0] } })),
+        series: [{ type: "bar", barMaxWidth: 28, data: rows.map(([, v], j) => ({ value: v, itemStyle: { color: !period && j === 0 ? UP : RAMP[2], borderRadius: [4, 4, 0, 0] } })),
           label: { show: rows.length <= 12, position: "top", color: AXIS, fontSize: 11, formatter: (q: any) => fm(q.value) } }],
       }, height, (e: any) => onPick?.(dim, raw(d, dim, rows[e.dataIndex][0])));
     }

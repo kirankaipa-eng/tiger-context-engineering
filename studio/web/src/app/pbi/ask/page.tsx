@@ -123,7 +123,8 @@ function pictureOf(results: ExhibitData[], answer: string): Picture | undefined 
   const named = monthsIn(answer), month = best.by.find((d) => /:month$/.test(d));
   const picked = month && named.length >= 2 ? best.rows.filter((row) => named.includes(String(row[best!.columns.indexOf(month)]).slice(0, 7))) : [];
   const rows = picked.length >= 2 ? picked : best.rows;
-  const dims = best.by, vals = (d: string) => new Set(rows.map((row) => row[best!.columns.indexOf(d)])).size;
+  const vals = (d: string) => new Set(rows.map((row) => row[best!.columns.indexOf(d)])).size;
+  const dims = best.by.filter((d) => vals(d) > 1 || best!.by.length === 1);
   const kind: VisualKind = !dims.length ? (metrics.length > 1 ? "measures" : "number")
     : dims.length === 1 ? (vals(dims[0]) === 2 ? "slope" : PERIOD.test(dims[0]) ? "trend" : "leaderboard")
     : kindsFor(dims, (c) => PERIOD.test(c))[0]?.kind ?? "heatmap";
@@ -148,6 +149,11 @@ function offersOf(answer: string): { body: string; offers: string[] } {
   const offers = m[1].split(/,\s*(?:or\s+)?|\s+or\s+/).map((x) => x.replace(/^(a|an|the)\s+/i, "").replace(/[.?]$/, "").trim()).filter((x) => x.length > 3);
   return offers.length ? { body: paras.slice(0, -1).join("\n\n"), offers: offers.slice(0, 3) } : { body: answer, offers: [] };
 }
+
+/** What a chart is computed under: the trail's focus, but for a pick on its own columns (it keeps showing every
+    value, the picked one marked) and a period on a chart over periods (a line by year is not narrowed to one month). */
+const overPeriods = (v: View, k: string) => PERIOD.test(k) && v.dims.some((d) => PERIOD.test(d) && d.split(":")[0] === k.split(":")[0]);
+const filtersOf = (v: View, f: Focus) => ({ ...Object.fromEntries(f.filter(([k]) => !v.own.includes(k) && !overPeriods(v, k))), ...v.filters });
 
 /** A chart as another kind: its columns reordered as that kind reads them, the old one kept for Undo. */
 function asKind(v: View, kind: VisualKind, dims = v.queries[0] ?? v.dims, additive = true): View | null {
@@ -227,7 +233,7 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
     rank: () => [A ? view("leaderboard", `Where ${M} is highest, by ${said(A)}`, [[A]], [A]) : null,
       A && P ? view("trend", `How the top ${lower(A)} values moved`, [[P, A]], [P, A]) : null,
       A && B && !ratio ? view("treemap", `What each ${lower(A)} is made of`, [[A, B]], [A, B]) : null],
-    trend: () => [P ? view("trend", `${M}, ${/:month$/.test(P) ? "month by month" : `by ${P.match(PERIOD)![1]}`}`, [[P]], [P]) : null, P ? view("seasons", `${M} by month of the year`, [[P]], [P]) : null,
+    trend: () => [P ? view("trend", `${M}, ${/:month$/.test(P) ? "month by month" : `by ${P.match(PERIOD)![1]}`}`, [[P]], [P]) : null, P && /:month$/.test(P) ? view("seasons", `${M} by month of the year`, [[P]], [P]) : null,
       P && A && !ratio ? view("mix", `How the mix of ${M} by ${lower(A)} shifted`, [[P, A]], [P, A]) : null],
     compare: () => V ? [view("versus", `${M} and more, side by side`, [[V]], [V], metrics, []),
       P ? view("gap", "The gap, month by month", [[P, V]], [P, V], m1, [P]) : null,
@@ -255,7 +261,7 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
       A && P ? view("heatmap", `${M} by ${lower(A)}, against its own average`, [[A, P]], [A, P]) : null],
     daily: () => [day && latestYear ? { ...view("calendar", `${M}, day by day in ${latestYear}`, [[day]], [day]), filters: { [`${date}:year`]: latestYear } } : null,
       P ? view("seasons", `${M} by month of the year`, [[P]], [P]) : null],
-    season: () => [P ? view("seasons", `${M} by month of the year`, [[P]], [P]) : null, P ? view("trend", `${M}, month by month`, [[P]], [P]) : null],
+    season: () => [P && /:month$/.test(P) ? view("seasons", `${M} by month of the year`, [[P]], [P]) : null, P ? view("trend", `${M}, month by month`, [[P]], [P]) : null],
   };
   let intents = INTENTS.filter(([, re]) => re.test(q)).map(([i]) => i);
   // "is it significant?": the agent's test is the answer (drawn first, see ask); beside it, the columns against each other
@@ -335,7 +341,6 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
   const [runs, setRuns] = useState<Record<string, Run>>({});
   const [kept, setKept] = useState(false);
   const [keepError, setKeepError] = useState("");
-  const filtersOf = (v: View, f: Focus) => ({ ...Object.fromEntries(f.filter(([k]) => !v.own.includes(k))), ...v.filters });
 
   // every view, re-run whenever the trail changes: one leaves alone a pick on its own columns, so it keeps
   // showing every value and marks the picked one
