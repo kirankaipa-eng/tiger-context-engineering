@@ -1,12 +1,14 @@
 "use client";
 
-/* My dashboard: the questions a person pinned from the desk, each run again when the page opens, so the
-   numbers are today's, never a copy. A pinned investigation is investigated again; a pinned answer is
-   computed again. Pins are saved under the person's name, so the same board opens on any machine. */
+/* My briefs: first the briefs a person scheduled (what they want a brief on, and when; the analyst writes each
+   edition), then the questions they kept from Ask, each run again when the page opens, so the numbers are
+   today's, never a copy. A kept investigation is investigated again; a kept answer is computed again. Both are
+   saved under the person's name, so the same page opens on any machine. */
 
 import { CornerDownRight, Loader2, PinOff, RefreshCw, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { ScheduledBriefs } from "@/components/brief-schedules";
 import { InvestigationExhibit } from "@/components/pbi-investigation";
 import { PbiExhibit, type DeskActions, type ExhibitData } from "@/components/pbi-exhibit";
 import { columnTypes, pbi, type Tile } from "@/lib/pbi";
@@ -82,6 +84,24 @@ export default function MyDashboard() {
     pinned: (e) => pinned.has(tileOf(e).id),
   });
 
+  // what was drilled into from an exhibit, right under it
+  const below = (id: string) => (
+    <>
+      {(trail[id]?.length ?? 0) > 0 && (
+        <div className="mt-3 space-y-3 border-l-2 border-[var(--d-rule)] pl-5">
+          <div className="flex items-center gap-2 text-[12px] text-[var(--d-muted)]"><CornerDownRight size={13} />Drilled in from here
+            <button onClick={() => setTrail((t) => ({ ...t, [id]: [] }))} className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[var(--d-paper)]"><X size={12} />Close</button></div>
+          {trail[id].map((d, j) => (
+            <div key={j} id={`trail-${id}-${j}`}>
+              <PbiExhibit e={d} n={0} model={pbiModel} actions={actionsFor(id, j + 1)} dates={cols.dates} types={cols.types} landed={j === trail[id].length - 1} />
+            </div>
+          ))}
+        </div>
+      )}
+      {working === id && <p className="mt-2 flex items-center gap-2 pl-5 text-[13px] text-[var(--d-muted)]"><Loader2 size={13} className="animate-spin" />Working it out…</p>}
+    </>
+  );
+
   return (
     <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-ground)] text-[var(--d-ink)]`}>
       <header className="flex h-14 shrink-0 items-center gap-4 border-b border-[var(--d-rule)] bg-[var(--d-sheet)] px-6">
@@ -96,12 +116,13 @@ export default function MyDashboard() {
       <main className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[1180px] px-8 py-8">
           {note && <p className="mb-4 rounded-lg bg-[var(--d-rise-soft)] px-4 py-2 text-[13px] text-[var(--d-rise-ink)]">{note}</p>}
+          <ScheduledBriefs model={pbiModel} owner={owner} actions={(id) => actionsFor(id, 0)} below={below} dates={cols.dates} types={cols.types} />
+          <h2 className="cond mb-4 text-[22px] font-semibold">Kept from your questions</h2>
           {!live && <p className="flex items-center gap-2 text-[14px] text-[var(--d-muted)]"><Loader2 size={15} className="animate-spin" />Running your questions against today&rsquo;s numbers…</p>}
           {live && live.length === 0 && (
-            <div className="mx-auto mt-16 max-w-md text-center">
-              <p className="cond text-[24px] font-semibold">Nothing kept yet</p>
-              <p className="mt-2 text-[14px] text-[var(--d-muted)]">Ask a question and press Keep on its dashboard. It shows up here and is worked out again every time you open this page.</p>
-              <Link href="/pbi/ask" className="mt-5 inline-block rounded-lg bg-[var(--d-navy)] px-4 py-2 text-[14px] font-medium text-white">Ask a question</Link>
+            <div className="rounded-xl border border-dashed border-[var(--d-rule)] px-5 py-4 text-[14px] text-[var(--d-muted)]">
+              Nothing kept yet. Ask a question and press Keep on its dashboard: it shows up here and is worked out again every time you open this page.
+              <Link href="/pbi/ask" className="ml-2 font-medium text-[var(--d-teal)]">Ask a question</Link>
             </div>
           )}
           <div className="space-y-6">
@@ -112,18 +133,7 @@ export default function MyDashboard() {
                   <div className="rounded-xl border border-[var(--d-rule)] bg-[var(--d-sheet)] px-6 py-4 text-[14px]"><b>{x.tile.title}</b><p className="mt-1 text-[var(--d-muted)]">Could not run it today: {x.error}</p></div>
                 ) : x.e?.kind === "explain" ? <InvestigationExhibit e={x.e} n={i + 1} actions={actionsFor(x.tile.id, 0)} lean />
                   : x.e && <PbiExhibit e={x.e} n={i + 1} model={pbiModel} actions={actionsFor(x.tile.id, 0)} dates={cols.dates} types={cols.types} />}
-                {(trail[x.tile.id]?.length ?? 0) > 0 && (
-                  <div className="mt-3 space-y-3 border-l-2 border-[var(--d-rule)] pl-5">
-                    <div className="flex items-center gap-2 text-[12px] text-[var(--d-muted)]"><CornerDownRight size={13} />Drilled in from here
-                      <button onClick={() => setTrail((t) => ({ ...t, [x.tile.id]: [] }))} className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[var(--d-paper)]"><X size={12} />Close</button></div>
-                    {trail[x.tile.id].map((d, j) => (
-                      <div key={j} id={`trail-${x.tile.id}-${j}`}>
-                        <PbiExhibit e={d} n={0} model={pbiModel} actions={actionsFor(x.tile.id, j + 1)} dates={cols.dates} types={cols.types} landed={j === trail[x.tile.id].length - 1} />
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {working === x.tile.id && <p className="mt-2 flex items-center gap-2 pl-5 text-[13px] text-[var(--d-muted)]"><Loader2 size={13} className="animate-spin" />Working it out…</p>}
+                {below(x.tile.id)}
               </div>
             ))}
           </div>

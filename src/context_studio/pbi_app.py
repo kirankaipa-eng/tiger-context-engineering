@@ -500,3 +500,10 @@ def board_save(mid: str, body: dict = Body(...)):
         put(data)
         p.write_text(json.dumps(data, indent=1, default=str), encoding="utf-8")
     return data[owner.lower()]
+
+
+# ------------------------------------------------------------------ scheduled briefs
+
+from context_studio import pbi_schedule  # noqa: E402
+
+pbi_schedule.install(app, models, _model, ask)
