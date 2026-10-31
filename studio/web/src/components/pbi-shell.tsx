@@ -1,7 +1,7 @@
 "use client";
 
 /* Every Power BI page sits beside one sidebar, as in a chat app: a new question at the top, the three
-   places (Ask, My briefs, Team), the questions asked recently (reopened where they left off), and at the
+   places (Ask, My dashboard, Team), the questions asked recently (reopened where they left off), and at the
    foot what the data covers and who you are. It folds to a rail of icons. The analyst's pages (coverage,
    measures, tables, drilldown, rows) share one frame under "About the data". */
 
@@ -17,7 +17,7 @@ import { useLook } from "@/lib/theme";
 const OWN_FRAME = ["/pbi", "/pbi/team", "/pbi/board", "/pbi/ask"];
 const PLACES = [
   { href: "/pbi/ask", label: "Ask", icon: MessageSquareText },
-  { href: "/pbi/board", label: "My briefs", icon: LayoutGrid },
+  { href: "/pbi/board", label: "My dashboard", icon: LayoutGrid },
   { href: "/pbi/team", label: "Team", icon: Users },
 ];
 const DATA = [

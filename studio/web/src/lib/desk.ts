@@ -1,4 +1,4 @@
-/* What a click on an exhibit does, in one place for every screen that shows exhibits (My briefs, the team
+/* What a click on an exhibit does, in one place for every screen that shows exhibits (My dashboard, the team
    space): break a value down by another column, or open the transactions behind it; and the pinned form of
    an exhibit (its question, never its numbers). */
 

@@ -1,6 +1,6 @@
 "use client";
 
-/* My briefs: first the briefs a person scheduled (what they want a brief on, and when; the analyst writes each
+/* My dashboard: first the briefs a person scheduled (what they want a brief on, and when; the analyst writes each
    edition), then the questions they kept from Ask, each run again when the page opens, so the numbers are
    today's, never a copy. A kept investigation is investigated again; a kept answer is computed again. Both are
    saved under the person's name, so the same page opens on any machine. */
@@ -108,7 +108,7 @@ export default function MyDashboard() {
   return (
     <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-ground)] text-[var(--d-ink)]`}>
       <header className="flex h-14 shrink-0 items-center gap-4 border-b border-[var(--d-rule)] bg-[var(--d-sheet)] px-6">
-        <span className="cond text-[19px] font-semibold">My briefs</span>
+        <span className="cond text-[19px] font-semibold">My dashboard</span>
         <span className="text-[14px] text-[var(--d-muted)]">{owner === "me" ? "" : owner}</span>
         <div className="ml-auto flex items-center gap-3 text-[13px]">
           <button onClick={run} className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[var(--d-ink-2)] hover:bg-[var(--d-paper)]">
