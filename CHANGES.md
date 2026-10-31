@@ -15,7 +15,7 @@ The same commits have different hashes in the two repos. This file cites interna
 | `e071dd7` | `57b01d8` | Plains Health demo |
 | `5d59a7f` | `596a5b1` | scheduled briefs |
 | `c767996` | `7cbc3fd` | last in the range |
-| `cdb9ba7` | none | question chips on the classic desk (`pbi-frame.tsx`); not on public yet |
+| `cdb9ba7` | none | question chips on the classic desk (`pbi-frame.tsx`); never on public, and removed with the desk in `4c8b6d6` (public `bee94e8`) |
 
 No existing endpoint changed its path, request body, response shape or `/ask` event format.
 
@@ -89,7 +89,8 @@ Limits:
 
 The Ask page (`studio/web/src/app/pbi/ask/page.tsx`) calls:
 - `/metrics`, `/metrics/{key}`, `/tables` and `/values`.
-- `/compute` for each view. The exceptions are totals the agent already computed (below) and the agent's row listings, which are drawn from its own rows.
+- `/rows`, for the rows behind a bar in a drill-down (since `4c8b6d6`, public `bee94e8`).
+- `/compute` for each view and each drill-down level. The exceptions are totals the agent already computed (below) and the agent's row listings, which are drawn from its own rows.
 - `GET /board?owner=` and `POST /board {owner, tiles}`.
 - `/ask`.
 
