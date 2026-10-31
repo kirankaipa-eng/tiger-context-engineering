@@ -22,7 +22,7 @@ import { owner, readAsked, tileOf, writeAsked } from "@/lib/desk";
 import { colLabel, columnTypes, isDimension, pbi, type PbiMetric, type Result } from "@/lib/pbi";
 import { useStudio } from "@/lib/studio";
 import { BUSINESS, PEOPLE, PLACE } from "@/lib/vocab";
-import { useLook } from "@/lib/theme";
+import { SettingsMenu, useLook } from "@/lib/theme";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -744,6 +744,8 @@ export default function AskPage() {
 
   return (
     <div className={`desk ${look.look} relative flex h-screen flex-col bg-[var(--d-ground)] text-[var(--d-ink)]`}>
+      {/* light, dark and the look, as on the other pages; it sits over the page's corner, above what scrolls */}
+      <div className="absolute right-5 top-3 z-20"><SettingsMenu look={look} /></div>
       <main className="min-h-0 flex-1 overflow-y-auto">
         {!turns.length ? (
           // centred like a search page, lifted a little above the middle where the eye lands
