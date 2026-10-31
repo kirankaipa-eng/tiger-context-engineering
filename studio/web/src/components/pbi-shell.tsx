@@ -1,12 +1,12 @@
 "use client";
 
 /* Every Power BI page sits beside one sidebar, as in a chat app: a new question at the top, the three
-   places (Ask, My dashboard, Team), the questions asked recently (reopened where they left off), and at the
+   places (Ask, My dashboard, My briefs, Team), the questions asked recently (reopened where they left off), and at the
    foot what the data covers and who you are. It folds to a rail of icons. The analyst's pages (coverage,
    measures, tables, drilldown, rows) share one frame under "About the data". */
 
 import clsx from "clsx";
-import { Database, LayoutGrid, MessageSquareText, PanelLeft, SquarePen, Users, X } from "lucide-react";
+import { CalendarClock, Database, LayoutGrid, MessageSquareText, PanelLeft, SquarePen, Users, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -14,10 +14,11 @@ import { owner, readAsked, writeAsked, type Asked } from "@/lib/desk";
 import { useStudio } from "@/lib/studio";
 import { useLook } from "@/lib/theme";
 
-const OWN_FRAME = ["/pbi", "/pbi/team", "/pbi/board", "/pbi/ask"];
+const OWN_FRAME = ["/pbi", "/pbi/team", "/pbi/board", "/pbi/briefs", "/pbi/ask"];
 const PLACES = [
   { href: "/pbi/ask", label: "Ask", icon: MessageSquareText },
   { href: "/pbi/board", label: "My dashboard", icon: LayoutGrid },
+  { href: "/pbi/briefs", label: "My briefs", icon: CalendarClock },
   { href: "/pbi/team", label: "Team", icon: Users },
 ];
 const DATA = [
