@@ -531,7 +531,7 @@ export default function AskPage() {
   );
 
   return (
-    <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-ground)] text-[var(--d-ink)]`}>
+    <div className={`desk ${look.look} relative flex h-screen flex-col bg-[var(--d-ground)] text-[var(--d-ink)]`}>
       <main className="min-h-0 flex-1 overflow-y-auto">
         {!turns.length ? (
           <div className="mx-auto flex min-h-full max-w-2xl flex-col justify-center px-6 py-16">
@@ -550,7 +550,7 @@ export default function AskPage() {
             </div>
           </div>
         ) : (
-          <div className="mx-auto max-w-[1180px] px-8 pb-16 pt-8">
+          <div className="mx-auto max-w-[1180px] px-8 pb-32 pt-8">
             {turns.map((t, i) => (
               // the last question keeps a window's height below it, so it can sit at the top while its answer comes
               <div key={t.id} style={i === turns.length - 1 && i > 0 ? { minHeight: "calc(100vh - 160px)" } : undefined}>
@@ -563,8 +563,8 @@ export default function AskPage() {
           </div>
         )}
       </main>
-      {/* the follow-up box stays at the foot of the window, under the answers however long they are */}
-      {turns.length > 0 && <div className="shrink-0 px-8 pb-6 pt-3"><div className="mx-auto max-w-2xl">{composer(false)}</div></div>}
+      {/* the follow-up box floats at the foot of the window with nothing behind it: the answers scroll on under it */}
+      {turns.length > 0 && <div className="pointer-events-none absolute inset-x-0 bottom-0 px-8 pb-6"><div className="pointer-events-auto mx-auto max-w-2xl">{composer(false)}</div></div>}
     </div>
   );
 }
