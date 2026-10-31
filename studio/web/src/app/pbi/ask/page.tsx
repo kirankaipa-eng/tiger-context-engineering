@@ -356,10 +356,14 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, dates
   return (
     <article id={`turn-${turn.id}`} className={first ? "" : "mt-12 border-t border-[var(--d-rule)] pt-10"}>
       <p className="text-[13px] font-semibold uppercase tracking-[.08em] text-[var(--d-muted)]">{first ? "You asked" : "Then you asked"}</p>
-      <h1 className="cond mt-1 text-[28px] font-semibold leading-tight">{question}</h1>
-      <div className="mt-4 max-w-3xl text-[15.5px] leading-relaxed text-[var(--d-ink-2)] [&_p]:mb-2 [&_strong]:text-[var(--d-ink)] [&_ul]:ml-5 [&_ul]:list-disc">
-        {answer ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown> : live ? <p className="pulse-soft text-[var(--d-muted)]">{step}…</p> : null}
-        {live && answer && step && <p className="pulse-soft text-[13px] text-[var(--d-muted)]">{step}…</p>}
+      <h1 className="cond mt-1 text-[22px] font-semibold leading-snug text-[var(--d-ink-2)]">{question}</h1>
+      {/* the answer leads the turn: its first paragraph at headline size, the rest as body */}
+      <div className="mt-4 max-w-4xl rounded-2xl border border-[var(--d-rule)] bg-[var(--d-sheet)] px-7 py-6 shadow-[0_1px_2px_rgba(0,0,0,.04)]">
+        <p className="mb-2 text-[12px] font-semibold uppercase tracking-[.08em] text-[var(--d-teal)]">{live && !answer ? "Working on it" : "The answer"}</p>
+        <div className="text-[17px] leading-relaxed text-[var(--d-ink-2)] [&_p]:mb-3 [&_p:last-child]:mb-0 [&>p:first-child]:text-[22px] [&>p:first-child]:font-medium [&>p:first-child]:leading-snug [&>p:first-child]:text-[var(--d-ink)] [&_strong]:font-semibold [&_strong]:text-[var(--d-ink)] [&_ul]:ml-5 [&_ul]:list-disc">
+          {answer ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown> : live ? <p className="pulse-soft text-[var(--d-muted)]">{step}…</p> : null}
+        </div>
+        {live && answer && step && <p className="pulse-soft mt-2 text-[13px] text-[var(--d-muted)]">{step}…</p>}
       </div>
       {(error || keepError) && <p className="mt-3 rounded-lg bg-[var(--d-rise-soft)] px-3 py-2 text-[13px] text-[var(--d-rise-ink)]">{error || keepError}</p>}
       {!live && !views.length && !error && <p className="mt-3 text-[13px] text-[var(--d-muted)]">{turn.repeat ? "The pictures for this are already on the page, above." : "This answer did not come from a measure, so there is nothing to draw. Try asking about a number."}</p>}
