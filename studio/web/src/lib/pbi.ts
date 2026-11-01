@@ -72,6 +72,40 @@ export const pbi = {
     call<Finding>(`${m(id)}/team/${fid}/comment`, { method: "POST", body: JSON.stringify({ who, text }) }),
   status: (id: string, fid: string, who: string, status: Finding["status"], note?: string) =>
     call<Finding>(`${m(id)}/team/${fid}/status`, { method: "POST", body: JSON.stringify({ who, status, note }) }),
+  brief: (id: string, asOf?: string, me?: string) =>
+    call<Brief>(`${m(id)}/brief?${new URLSearchParams({ ...(asOf ? { as_of: asOf } : {}), ...(me && me !== "me" ? { me } : {}) })}`),
+  briefPrefs: (id: string, who: string, prefs: BriefPrefs) =>
+    call<BriefPrefs>(`${m(id)}/brief/prefs`, { method: "POST", body: JSON.stringify({ who, ...prefs }) }),
+  setTarget: (id: string, metric: string, quarter: string, value: number | null, who: string) =>
+    call<unknown>(`${m(id)}/targets`, { method: "POST", body: JSON.stringify({ metric, quarter, value, who }) }),
+  pattern: (id: string, metric?: string, asOf?: string, me?: string) =>
+    call<Pattern>(`${m(id)}/pattern?${new URLSearchParams({ ...(metric ? { metric } : {}), ...(asOf ? { as_of: asOf } : {}), ...(me && me !== "me" ? { me } : {}) })}`),
+  take: (id: string, metric: string, values: string[], who: string, asOf?: string) =>
+    call<Finding>(`${m(id)}/brief/take`, { method: "POST", body: JSON.stringify({ metric, values, who, as_of: asOf }) }),
+};
+
+/** The living brief: where the headline measures land, and what moved out of its own pattern. */
+export type Landing = {
+  metric: string; label: string; format: string | null; quarter: string; months: string[]; so_far: number; months_done: number;
+  landing: number | null; low: number | null; high: number | null; miss: number | null; method: string | null;
+  last_year: { quarter: string; value: number } | null; target: { value: number; by: string; on: string } | null;
+  closed: { quarter: string; actual: number } | null; history: [string, number][]; ahead: [string, number, number, number][];
+};
+export type Claim = {
+  metric: string; label: string; format: string | null; where: { by: string; value: string }[];
+  status: "new" | "growing" | "holding" | "easing" | "settled"; month: string; since: string; value: number; usual: number;
+  excess: number; z: number | null; share: number; series: [string, number][]; also?: string[]; period: string;
+  explain: import("@/components/pbi-investigation").Investigation;
+  finding: { id: string; owner: string | null; status: Finding["status"]; comments: Finding["comments"] } | null;
+  /** The person reading owns it. */
+  mine?: boolean;
+};
+/** A person's brief: the measures they follow (none: all), which get a landing, the slice they answer for. */
+export type BriefPrefs = { measures: string[]; headline: string[]; scope: Record<string, string[]> };
+export type Brief = {
+  as_of: string; as_of_name: string; data_through: string; complete: string[]; partial: string | null;
+  landing: Landing[]; claims: Claim[]; more: number; settled: Claim[]; checked: number; ms: number;
+  me: string | null; prefs: BriefPrefs; choices: { metric: string; label: string }[]; slices: string[];
 };
 
 export type Check = { check: string; passed: boolean | null; said: string };
@@ -123,3 +157,10 @@ export type Tile = {
   explain?: { metric: string; period: string; now: string; before: string; filters?: Record<string, unknown> };
 };
 export type Board = { owner: string; tiles: Tile[]; at?: number };
+
+/** The pattern map: every place a measure adds up from, two levels deep, month by month, against its own usual. */
+export type Pattern = {
+  metric: string; label: string; format: string | null; levels: string[]; months: string[]; as_of: string;
+  groups: { name: string; children: { name: string; values: number[]; z: number[]; out: boolean[] }[] }[];
+  disturbed: number[]; alpha: number; places: number; claim: string[] | null; choices: { metric: string; label: string }[];
+};

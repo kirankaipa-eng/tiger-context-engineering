@@ -41,6 +41,8 @@ export function headline(v: Investigation) {
     const dir = total >= 0 ? "up" : "down";
     return {
       title: v.quiet ? `${v.label} looks flat, but ${steps.map((s) => s.value).join(", ")} jumped`
+        // from nothing there is no percentage to give: say it started
+        : v.total_before === 0 ? `${v.label} from none to ${num(v.total_after)}: ${steps.map((s) => s.value).join(", ")}`
         : `${v.label} ${dir} ${Math.abs(100 * rel).toFixed(0)}%: ${steps.map((s) => s.value).join(", ")}`,
       sub: `${moved}. ${where} alone ${last.after >= last.before ? "added" : "took away"} ${num(Math.abs(last.after - last.before))}${from}` +
         (v.quiet ? "; falls elsewhere hide it in the total." : `: ${Math.round(100 * Math.abs(share))}% of the change.`),

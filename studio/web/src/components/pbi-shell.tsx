@@ -14,7 +14,7 @@ import { owner, readAsked, writeAsked, type Asked } from "@/lib/desk";
 import { useStudio } from "@/lib/studio";
 import { useLook } from "@/lib/theme";
 
-const OWN_FRAME = ["/pbi", "/pbi/team", "/pbi/board", "/pbi/briefs", "/pbi/ask"];
+const OWN_FRAME = ["/pbi", "/pbi/team", "/pbi/board", "/pbi/briefs", "/pbi/brief", "/pbi/ask"];
 const PLACES = [
   { href: "/pbi/ask", label: "Ask", icon: MessageSquareText },
   { href: "/pbi/board", label: "Dashboards", icon: LayoutGrid },

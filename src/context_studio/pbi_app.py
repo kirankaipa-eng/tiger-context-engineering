@@ -12,6 +12,7 @@ when DATABRICKS_* is set, else on the local copy of the .pbix's rows beside capt
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import os
 import re
@@ -444,6 +445,95 @@ def team_status(mid: str, fid: str, body: dict = Body(...)):
         f.setdefault("comments", []).append({"who": who, "event": status, "at": time.time(),
                                              "text": f"{say}" + (f": {note}" if note else "")})
     return _finding(pbi_team.update(m.folder, set_), fid)
+
+
+# ------------------------------------------------------------------ the living brief
+
+from context_studio import pbi_brief  # noqa: E402
+
+
+@app.get("/api/pbi/{mid}/brief")
+def brief(mid: str, as_of: str | None = None, me: str | None = None):
+    """What a leader reads first: where their measures land, and what moved out of its own pattern, in their slice."""
+    m = _model(mid)
+    out = pbi_brief.brief(m, as_of, me)
+    if out.get("error"):
+        raise HTTPException(409, out["error"])
+    return json.loads(json.dumps(out, default=str))
+
+
+@app.get("/api/pbi/{mid}/pattern")
+def pattern(mid: str, metric: str | None = None, as_of: str | None = None, me: str | None = None):
+    """Every place a measure adds up from, two levels deep, month by month, against its own usual."""
+    out = pbi_brief.pattern(_model(mid), metric, as_of, me)
+    if out.get("error"):
+        raise HTTPException(409, out["error"])
+    return json.loads(json.dumps(out, default=str))
+
+
+@app.post("/api/pbi/{mid}/brief/prefs")
+def brief_prefs(mid: str, body: dict = Body(...)):
+    """A person's brief: the measures they follow, which get a landing, and the slice they answer for."""
+    m = _model(mid)
+    who = str(body.get("who") or "").strip()[:60]
+    if not who or who.lower() == "me":
+        raise HTTPException(400, "say who you are: the brief is yours")
+    known = set(pbi_team._additive(m.layer))
+    measures = [k for k in body.get("measures") or [] if k in known]
+    headline = [k for k in body.get("headline") or [] if k in known][:3]
+    scope = {}
+    for col, vals in (body.get("scope") or {}).items():
+        try:
+            t, c, grain = parse_ref(col)
+        except LayerError as exc:
+            raise HTTPException(400, str(exc)) from None
+        if grain or t not in m.layer.tables or c not in (m.layer.tables[t].get("columns") or {}):
+            raise HTTPException(400, f"{col} is not a column to narrow the brief by")
+        vals = [str(v) for v in (vals if isinstance(vals, list) else [vals]) if str(v).strip()][:50]
+        if vals:
+            scope[col] = vals
+    return pbi_brief.save_prefs(m.folder, who, {"measures": measures, "headline": headline, "scope": scope})
+
+
+@app.post("/api/pbi/{mid}/targets")
+def set_target(mid: str, body: dict = Body(...)):
+    """A plan for a measure's quarter (`value`; null removes it), kept in targets.yaml beside the model."""
+    m = _model(mid)
+    metric, quarter = str(body.get("metric") or ""), str(body.get("quarter") or "")
+    if metric not in m.layer.metrics or not re.fullmatch(r"\d{4}Q[1-4]", quarter):
+        raise HTTPException(400, "a target needs a captured metric and a quarter like 2026Q4")
+    value = body.get("value")
+    try:
+        value = None if value in (None, "") else float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "the target is a number") from None
+    return pbi_brief.set_target(m.folder, metric, quarter, value, str(body.get("who") or "someone")[:60])
+
+
+@app.post("/api/pbi/{mid}/brief/take")
+def brief_take(mid: str, body: dict = Body(...)):
+    """Someone takes a claim from the brief: its finding in the team space (made from the claim when the team
+    space has none yet) is theirs, with the claim's investigation, so the thread and the owner are one."""
+    m = _model(mid)
+    who = str(body.get("who") or "Someone").strip()[:60]
+    out = pbi_brief.brief(m, body.get("as_of"), who)  # the claim as the person saw it, in their slice
+    values = set(body.get("values") or [])
+    c = next((c for c in out.get("claims", []) + out.get("settled", [])
+              if c["metric"] == body.get("metric") and {w["value"] for w in c["where"]} == values), None)
+    if c is None:
+        raise HTTPException(404, "That claim is not in the brief any more: the numbers have changed. Reload the brief.")
+    inv = c["explain"]
+    fid = (c.get("finding") or {}).get("id") or hashlib.sha1(
+        f"{c['metric']}|{'|'.join(sorted(values))}|{inv['now']}|{inv['before']}".encode()).hexdigest()[:10]
+
+    def take(data):
+        f = data.setdefault("findings", {}).setdefault(fid, {
+            "id": fid, "metric": c["metric"], "label": c["label"], "now": inv["now"], "before": inv["before"],
+            "impact": abs(c["excess"]), "explain": inv, "also": c.get("also", []), "source": "brief",
+            "checks": pbi_team.skeptic(m.kit(), inv), "comments": [], "status": "new", "created": time.time()})
+        f["status"], f["owner"] = "claimed", who
+        f.setdefault("comments", []).append({"who": who, "event": "claimed", "at": time.time(), "text": "took it, from the brief"})
+    return _finding(pbi_team.update(m.folder, take), fid)
 
 
 # ------------------------------------------------------------------ agents on call, and each person's dashboard

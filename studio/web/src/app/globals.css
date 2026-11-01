@@ -180,3 +180,13 @@ body { background: var(--color-ground); color: var(--color-ink); }
 }
 /* the ground is plain: white, or black in dark mode; the brand lives in the exhibits, not behind them */
 .desk[class*="theme-"] main, .desk[class*="theme-"] aside.team-list { background: transparent; }
+
+/* The brief's briefing: each beat's bar fills over the beat, and its line arrives out of a soft blur. */
+@keyframes brief-fill { from { width: 0; } to { width: 100%; } }
+.brief-fill { width: 0; animation: brief-fill linear forwards; }
+@keyframes brief-say { from { opacity: 0; filter: blur(6px); transform: translateY(6px); } to { opacity: 1; filter: blur(0); transform: none; } }
+.brief-say { animation: brief-say 700ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .brief-fill { animation: none; width: 100%; }
+  .brief-say { animation: none; }
+}
