@@ -24,6 +24,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 KEEP = 12  # editions kept per brief
+LIMIT = 600  # seconds an edition may take: one stalled past it (a model call left hanging) is stopped, and says so
 _LOCK = threading.Lock()
 _RUNNING: set[str] = set()
 
@@ -185,31 +186,40 @@ PROMPT = ("This is a scheduled brief for {owner}, \"{title}\". They want a brief
           "ordinary, with the numbers, then what is behind it. Compute what you need; keep it to a few sentences.")
 
 
-async def run(m, sid: str, ask_handler) -> dict:
-    """One edition: the agent asked through /ask in a conversation of its own, its answer and results kept."""
+async def run(m, sid: str, ask_handler, limit: float = LIMIT, claimed: bool = False) -> dict:
+    """One edition: the agent asked through /ask in a conversation of its own, its answer and results kept. One that
+    takes longer than `limit` is stopped, so a stalled call never leaves a brief "writing" for good. `claimed`: the
+    caller marked it running already (the loop does, before handing it over)."""
     s = load(m.folder).get(sid)
-    if s is None or sid in _RUNNING:
+    if s is None:  # deleted since
+        if claimed:
+            _RUNNING.discard(sid)
+        return {}
+    if sid in _RUNNING and not claimed:
         return {}
     _RUNNING.add(sid)
     started = time.time()
     chunks, results, final, error = [], [], None, None
     try:
-        resp = await ask_handler(m.id, {"message": PROMPT.format(**s), "who": s["owner"],
-                                        "session_id": f"brief-{sid}-{int(started)}"})
-        async for line in resp.body_iterator:
-            try:
-                ev = json.loads(line)
-            except ValueError:
-                continue
-            d = ev.get("data") or {}
-            if ev.get("type") == "chunk":
-                chunks.append(d.get("text", "") if isinstance(d, dict) else str(d))
-            elif ev.get("type") == "pbi_result":
-                results.append(d)
-            elif ev.get("type") == "result":
-                final = d.get("answer") if isinstance(d, dict) else None
-            elif ev.get("type") == "error":
-                error = d.get("message") if isinstance(d, dict) else str(d)
+        async with asyncio.timeout(limit):
+            resp = await ask_handler(m.id, {"message": PROMPT.format(**s), "who": s["owner"],
+                                            "session_id": f"brief-{sid}-{int(started)}"})
+            async for line in resp.body_iterator:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                d = ev.get("data") or {}
+                if ev.get("type") == "chunk":
+                    chunks.append(d.get("text", "") if isinstance(d, dict) else str(d))
+                elif ev.get("type") == "pbi_result":
+                    results.append(d)
+                elif ev.get("type") == "result":
+                    final = d.get("answer") if isinstance(d, dict) else None
+                elif ev.get("type") == "error":
+                    error = d.get("message") if isinstance(d, dict) else str(d)
+    except TimeoutError:
+        error = f"Stopped after {round(limit / 60)} minutes without an answer; the next edition tries again."
     except Exception as exc:  # no LLM configured, the agent failing: the edition says so
         error = getattr(exc, "detail", None) or str(exc)
     finally:
@@ -237,16 +247,22 @@ def due(s: dict, now: float) -> bool:
 
 
 async def loop(models, ask_handler, every: float = 20):
-    """Every few seconds, each brief whose time has come since it last ran gets one edition."""
+    """Every few seconds, each brief whose time has come since it last ran gets one edition, each written on its own:
+    a slow one never holds up the others."""
+    writing: set[asyncio.Task] = set()  # held, so a task is not collected while it runs
     while True:
         await asyncio.sleep(every)
         try:
             for m in list(models().values()):
                 for s in list(load(m.folder).values()):
                     if due(s, time.time()):
-                        await run(m, s["id"], ask_handler)
-        except Exception as exc:  # a bad file or a failed run must not stop the others
+                        _RUNNING.add(s["id"])  # due() says no to it again until this edition is written
+                        t = asyncio.create_task(run(m, s["id"], ask_handler, claimed=True))
+                        writing.add(t)
+                        t.add_done_callback(writing.discard)
+        except Exception as exc:  # a bad file must not stop the others (a run's own failure is its edition's)
             print(f"scheduled briefs: {exc}")
+
 
 
 def install(app, models, model, ask_handler) -> None:
