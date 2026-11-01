@@ -3,7 +3,7 @@
 // kind, the columns it is drawn by, its width and place; a dashboard is itself a tile of kind "dashboard" holding
 // its name and the filters set on it. Charts kept before dashboards existed belong to the first, "My dashboard".
 
-import type { VisualKind } from "@/components/ask-visuals";
+import { RATE, kindsFor, type VisualKind } from "@/components/ask-visuals";
 import { pbi, type Tile } from "./pbi";
 
 export const MAIN = "main";
@@ -57,6 +57,22 @@ export async function addTo(model: string, owner: string, charts: Chart[], dash:
   return { id, title: dashboardsOf(tiles).find((d) => d.id === id)?.title ?? id, added: fresh.length };
 }
 
+const PERIOD = /:(year|quarter|month|week|day)$/;
+
+/** The form a chart is drawn in: the one it was kept as; or, for a chart kept without one, as bars that would rank
+    months by size or add across a second column, or a rate drawn as parts of a whole, the first the Ask page would
+    offer for its columns (a line over time, a heatmap across two columns). */
+export function formOf(c: Chart, labels: Record<string, string>): { chart: VisualKind; dims: string[] } {
+  const dims = c.dims ?? c.by ?? [];
+  if (c.kind === "explain" || !dims.length) return { chart: c.chart ?? (dims.length ? "leaderboard" : "number"), dims };
+  const m = c.metrics?.[0] ?? "", additive = !RATE.test(labels[m] ?? m);
+  const misdrawn = (c.chart === "leaderboard" && (dims.length > 1 || dims.some((d) => PERIOD.test(d))))
+    || (!additive && ["waterfall", "treemap", "donut", "mix", "sankey"].includes(c.chart ?? ""));  // a rate is not a sum of parts
+  if (c.chart && !misdrawn) return { chart: c.chart, dims };
+  const first = kindsFor(dims, (d) => PERIOD.test(d), additive)[0];
+  return first ? { chart: first.kind, dims: first.dims } : { chart: c.chart ?? "leaderboard", dims };
+}
+
 /** How wide a chart is drawn, of twelve columns, by what it shows: a number narrow, a ranking a third, a line over
     time two thirds, two columns across each other (a heatmap, a flow) or a table the full width. */
 export function widthOf(c: Chart): number {
@@ -73,20 +89,52 @@ export function widthOf(c: Chart): number {
 const RANK: Record<string, number> = { number: 0, versus: 0, trend: 1, seasons: 1, slope: 1, columns: 2, leaderboard: 2, donut: 2,
   waterfall: 3, mix: 3, boxplot: 3, heatmap: 4, treemap: 4, sankey: 4, scatter: 4, calendar: 4, explain: 5, table: 6 };
 
-/** Arrange a dashboard as a reader takes it in: the headline number of each measure first, in a strip; then, measure
-    by measure (the one with most charts first), how it moved, where it is highest, what drove it, and the detail.
-    A measure with no headline number gets one. Widths follow what each chart shows. */
+/** Arrange a dashboard as a reader takes it in, the way a report is read: the headline number of each measure first,
+    in a strip; then how each moved over time, where each is highest, what drove it, and the detail. Within each, the
+    broadest measure leads (a total before its parts), then the one with most charts. A measure with no headline number
+    gets one; a chart kept without a form, or in one that misreads its columns, is drawn as Ask would draw it. The
+    charts fill rows of twelve columns, so the page is a grid. */
+/** Headlines share their row: up to four to a row, each row filled (one 12, two 6, three 4, four 3 of twelve columns). */
+export function headlineWidth(i: number, n: number): number {
+  const rows = Math.ceil(n / 4), per = Math.ceil(n / rows);          // 5 → rows of 3 and 2, never 4 and a lone 1
+  const row = Math.floor(i / per), inRow = Math.min(per, n - row * per);
+  return 12 / inRow;
+}
+
 export function arrange(charts: Chart[], labels: Record<string, string>, room: number): Chart[] {
   const measure = (c: Chart) => (c.kind === "explain" ? c.explain?.metric : c.metrics?.[0]) ?? "";
   const counts = new Map<string, number>();
   charts.forEach((c) => counts.set(measure(c), (counts.get(measure(c)) ?? 0) + 1));
-  const order = [...counts.keys()].sort((a, b) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0));
+  const broad = (m: string) => (/\btotal\b|\boverall\b|\ball\b/i.test(labels[m] ?? m) ? 0 : 1);
+  const order = [...counts.keys()].sort((a, b) => broad(a) - broad(b) || (counts.get(b) ?? 0) - (counts.get(a) ?? 0));
   const headline = (m: string): Chart => ({ id: `kpi-${m}`, title: labels[m] ?? m, kind: "compute", at: Date.now() / 1000, metrics: [m],
     by: [], filters: {}, chart: "number", dims: [], dash: charts[0]?.dash });
   const numbers = order.map((m) => charts.find((c) => measure(c) === m && c.chart === "number")
     ?? (room-- > 0 && m ? headline(m) : null)).filter(Boolean) as Chart[];
-  const rest = order.flatMap((m) => charts.filter((c) => measure(c) === m && !numbers.includes(c))
-    .sort((a, b) => (RANK[a.kind === "explain" ? "explain" : a.chart ?? ""] ?? 4) - (RANK[b.kind === "explain" ? "explain" : b.chart ?? ""] ?? 4)));
-  return [...numbers.map((c) => ({ ...c, section: "Headlines", w: 3 })), ...rest.map((c) => ({ ...c, section: labels[measure(c)] ?? measure(c), w: undefined }))]
+  const role = (c: Chart) => RANK[c.kind === "explain" ? "explain" : c.chart ?? ""] ?? 4;
+  const rest = charts.filter((c) => !numbers.includes(c)).map((c) => ({ ...c, ...formOf(c, labels) }))
+    .sort((a, b) => role(a) - role(b) || order.indexOf(measure(a)) - order.indexOf(measure(b)));
+  return [...numbers.map((c, i) => ({ ...c, section: "Headlines", w: headlineWidth(i, numbers.length) })),
+    ...rows(rest.map((c) => ({ ...c, section: labels[measure(c)] ?? measure(c), w: undefined }))).flat()]
     .map((c, i) => ({ ...c, pos: i + 1 }));
+}
+
+/** Charts in rows that fill the twelve columns, so a dashboard reads as a grid: each shares a row as far as it can
+    shrink (a line over time, a flow or a heatmap to half), then the row's charts widen to fill it. */
+function rows(charts: Chart[]): Chart[][] {
+  const out: Chart[][] = []; let row: Chart[] = [], used = 0;
+  const least = (c: Chart) => Math.min(widthOf(c), 6);
+  for (const c of charts) {
+    if (used + least(c) > 12) { out.push(row); row = []; used = 0; }
+    row.push(c); used += least(c);
+  }
+  if (row.length) out.push(row);
+  return out.map((r) => {
+    const want = r.map(widthOf);
+    const w = r.length === 1 ? [12]
+      : r.length === 2 ? (Math.max(...want) >= 8 && Math.min(...want) <= 4 ? want.map((x) => (x >= 8 ? 8 : 4)) : [6, 6])
+      : r.length === 3 ? (want.filter((x) => x <= 3).length === 2 ? want.map((x) => (x <= 3 ? 3 : 6)) : [4, 4, 4])
+      : r.map(() => 3);
+    return r.map((c, i) => ({ ...c, w: w[i] }));
+  });
 }

@@ -89,6 +89,8 @@ type Props = {
   kind: VisualKind; data: Data[]; metrics: string[]; dims: string[]; labels: Record<string, string>;
   /** a value of a column picked elsewhere (the trail), shown as picked here */
   picked?: Record<string, unknown>; onPick?: (dim: string, value: unknown) => void; height?: number;
+  /** the height is a tile's, to be kept to: no chart grows to fit its rows or nodes */
+  exact?: boolean;
 };
 
 const at = (d: Data, c: string) => d.columns.indexOf(c);
@@ -105,7 +107,7 @@ function totals(d: Data, dim: string, m: string) {
 /** The raw value behind a shown label (a period label back to "2026-09"), for a pick. */
 const raw = (d: Data, dim: string, label: string) => d.rows.map((r) => r[at(d, dim)]).find((v) => text(dim, v) === label || text(dim, v, true) === label) ?? label;
 
-export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick, height = 300 }: Props) {
+export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick, height = 300, exact = false }: Props) {
   const colors = useChartColors();
   const VIS_PALETTE = colors.palette, UP = colors.up, DOWN = colors.down, RAMP = colors.ramp;
   const tint = (alpha: number) => `${UP}${Math.round(alpha * 255).toString(16).padStart(2, "0")}`;  // the lead color, see-through
@@ -119,7 +121,8 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
   const f = (k: string) => (v: unknown) => (ratio(k) ? pctText(v) : num(v));
   const fm = f(m);
   const base = { animationDuration: 500, textStyle: { color: AXIS, fontFamily: "inherit" } };
-  const axisNum = (k = m) => ({ type: "value", axisLabel: { formatter: (v: number) => f(k)(v), fontSize: 11, color: AXIS }, splitLine: { lineStyle: { color: GRID } } });
+  // a short chart gets fewer gridlines, so its values do not crowd each other
+  const axisNum = (k = m) => ({ type: "value", ...(height < 220 ? { splitNumber: 3 } : {}), axisLabel: { formatter: (v: number) => f(k)(v), fontSize: 11, color: AXIS }, splitLine: { lineStyle: { color: GRID } } });
   const catAxis = (dim: string, cats: string[]) => ({ type: "category", data: cats, axisTick: { show: false }, axisLine: { lineStyle: { color: GRID } },
     axisLabel: { color: AXIS, fontSize: 11, hideOverlap: true, ...(PERIOD.test(dim) ? { formatter: (v: string) => v } : {}) } });
   const chart = (option: any, h = height, click?: (e: any) => void) => (
@@ -311,12 +314,15 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
       return chart({
         grid: { left: 8, right: 16, top: 24, bottom: 8, containLabel: true },
         tooltip: { trigger: "axis", confine: true, axisPointer: { type: "shadow" }, formatter: (ps: any) => { const q = ps.find((x: any) => x.seriesIndex === 1); const s = q?.data?.signed; return `${q?.name}<br/><b>${s === undefined ? fm(q?.value) : signed(fm(s), s)}</b>`; } },
-        xAxis: { ...catAxis("", cats), axisLabel: { color: "#5b6472", fontSize: 11, interval: 0, rotate: cats.some((c) => c.length > 9) ? 28 : 0 } },
+        xAxis: { ...catAxis("", cats), axisLabel: { color: "#5b6472", fontSize: 11, ...(height < 260
+          // short of room: level labels, cut short and thinned where they would collide (each whole in its tooltip)
+          ? { width: 64, overflow: "truncate", interval: "auto", hideOverlap: true } : { interval: 0, rotate: cats.some((c) => c.length > 9) ? 28 : 0 }) } },
         yAxis: { ...axisNum(), scale: false },
         series: [
           { type: "bar", stack: "w", silent: true, itemStyle: { color: "transparent" }, data: bases },
           { type: "bar", stack: "w", barMaxWidth: 40, data: bars,
-            label: { show: true, position: "top", color: "#5b6472", fontSize: 11, formatter: (q: any) => (q.data.signed === undefined ? fm(q.value) : signed(fm(q.data.signed), q.data.signed)) } },
+            // short of room (a small tile), only the two totals are labelled; each step's amount stays in its tooltip
+            label: { show: true, position: "top", color: "#5b6472", fontSize: 11, formatter: (q: any) => (q.data.signed === undefined ? fm(q.value) : height < 260 ? "" : signed(fm(q.data.signed), q.data.signed)) } },
         ],
       }, height, (e: any) => e.dataIndex > 0 && e.dataIndex <= steps.length && steps[e.dataIndex - 1][0] !== "Other" && onPick?.(dim, raw(d, dim, steps[e.dataIndex - 1][0])));
     }
@@ -396,16 +402,18 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
       const vals = data.map((q) => q[2]).filter((q): q is number => q !== null);
       if (!vals.length) return <p className="py-6 text-[13px] text-[var(--d-muted)]">Nothing to show.</p>;
       const span = period ? Math.max(0.05, ...vals.map(Math.abs)) : 0;
+      // a small tile keeps its colours but not their key: the cells carry their values, the tooltip the rest
+      const key_ = !(exact && height < 300);
       return chart({
-        grid: { left: 8, right: 8, top: 8, bottom: 44, containLabel: true },
+        grid: { left: 8, right: 8, top: 8, bottom: key_ ? 44 : 4, containLabel: true },
         tooltip: { confine: true, formatter: (q: any) => `${ys[q.value[1]]} · ${period ? periodName(xs[q.value[0]]) : xs[q.value[0]]}<br/><b>${fm(q.value[3])}</b>${period ? ` · ${signed(pctOf(q.value[2]), q.value[2])} on its average` : ""}` },
         xAxis: catAxis(x, xs.map((c) => (period ? periodName(c, true) : c))), yAxis: { ...catAxis(y, ys), inverse: true, axisLabel: { color: "#5b6472", fontSize: 11.5 } },
         visualMap: period
-          ? { min: -span, max: span, orient: "horizontal", left: "center", bottom: 0, itemHeight: 120, itemWidth: 10, inRange: { color: [DOWN, "#eef0f3", UP] }, text: ["above its average", "below"], textStyle: { color: AXIS, fontSize: 11 }, dimension: 2 }
-          : { min: Math.min(...vals), max: Math.max(...vals), orient: "horizontal", left: "center", bottom: 0, itemHeight: 120, itemWidth: 10, inRange: { color: RAMP }, text: ["high", "low"], textStyle: { color: AXIS, fontSize: 11 }, dimension: 2, formatter: (v: number) => fm(v) },
+          ? { show: key_, min: -span, max: span, orient: "horizontal", left: "center", bottom: 0, itemHeight: 120, itemWidth: 10, inRange: { color: [DOWN, "#eef0f3", UP] }, text: ["above its average", "below"], textStyle: { color: AXIS, fontSize: 11 }, dimension: 2 }
+          : { show: key_, min: Math.min(...vals), max: Math.max(...vals), orient: "horizontal", left: "center", bottom: 0, itemHeight: 120, itemWidth: 10, inRange: { color: RAMP }, text: ["high", "low"], textStyle: { color: AXIS, fontSize: 11 }, dimension: 2, formatter: (v: number) => fm(v) },
         series: [{ type: "heatmap", data, itemStyle: { borderColor: sheet, borderWidth: 1.5, borderRadius: 3 },
           label: { show: !period && xs.length <= 8 && ys.length <= 10, color: "#0b2b29", fontSize: 10, formatter: (q: any) => fm(q.value[3]) } }],
-      }, Math.max(220, ys.length * 26 + 90), (e: any) => onPick?.(y, raw(d, y, ys[e.value[1]])));
+      }, exact ? height : Math.max(220, ys.length * 26 + 90), (e: any) => onPick?.(y, raw(d, y, ys[e.value[1]])));
     }
 
     case "sankey": {
@@ -432,7 +440,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
           data: [...names.values()].map((s) => ({ name: s, itemStyle: { color: level.get(s) === levels[0] ? color(s) : "#7d8794", borderWidth: 0 } })),
           links: [...links.entries()].filter(([, v]) => v > 0).map(([k, v]) => { const [source, target] = k.split("\u0000"); return { source, target, value: v }; }),
           lineStyle: { color: "source", opacity: 0.3, curveness: 0.5 }, label: { color: "#3c4654", fontSize: 11.5 } }],
-      }, Math.max(height, 34 * Math.max(...levels.map((l) => Math.min(9, new Set(d.rows.map((r) => r[at(d, l)])).size))) + 40),
+      }, exact ? height : Math.max(height, 34 * Math.max(...levels.map((l) => Math.min(9, new Set(d.rows.map((r) => r[at(d, l)])).size))) + 40),
       (e: any) => e.dataType === "node" && !e.name.startsWith("Other") && onPick?.(level.get(e.name)!, raw(d, level.get(e.name)!, e.name.replace(/ · .*$/, ""))));
     }
 

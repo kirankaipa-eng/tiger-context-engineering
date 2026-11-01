@@ -2,7 +2,8 @@
 
 /* A person's dashboards. Tabs for each, made, renamed and removed in place; the charts of the one open, laid out on a
    twelve-column grid, each re-run against today's numbers. "Arrange for me" lays them out as a reader takes them in:
-   headline numbers first, then each measure's movement, ranking, drivers and detail, under the measure's name. The
+   headline numbers first, then each measure's movement, ranking, drivers and detail, in full rows that share the
+   screen's height, so the whole dashboard is seen at once (it scrolls only when its charts cannot fit). The
    charts are linked: a click on a bar or a cell filters every chart on the dashboard by it (a chart drawn by that
    column keeps every value and marks the picked one), and the filters stay with the dashboard. */
 
@@ -10,11 +11,11 @@ import { ArrowUpRight, GripVertical, LayoutDashboard, Loader2, MoreHorizontal, P
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { KIND_NAME, RATE, Visual, kindsFor, noteOf, type VisualKind } from "@/components/ask-visuals";
+import { KIND_NAME, RATE, Visual, kindsFor, noteOf } from "@/components/ask-visuals";
 import { periodName } from "@/components/auto-chart";
 import { InvestigationExhibit } from "@/components/pbi-investigation";
 import type { ExhibitData } from "@/components/pbi-exhibit";
-import { LIMIT, MAIN, arrange, chartsOf, dashboardsOf, load, newDash, save, widthOf, type Chart, type Dash } from "@/lib/dashboards";
+import { LIMIT, MAIN, arrange, chartsOf, dashboardsOf, formOf, load, newDash, save, widthOf, type Chart, type Dash } from "@/lib/dashboards";
 import { owner as me } from "@/lib/desk";
 import { colLabel, columnTypes, pbi, type Result } from "@/lib/pbi";
 import { useStudio } from "@/lib/studio";
@@ -53,6 +54,17 @@ export function Dashboards() {
   const active = dashes.find((d) => d.id === params.get("d")) ?? dashes[0];
   const charts = useMemo(() => (tiles && active ? chartsOf(tiles, active.id) : []), [tiles, active]);
   const filters = active?.filters ?? {};
+  // an arranged dashboard is a grid that fits the screen: its rows (by the widths, twelve columns to a row) share the
+  // height, a row of headline numbers no taller than it needs, rows of charts the rest, each kept tall enough to read
+  const fit = useMemo(() => {
+    if (!active?.arranged || !charts.length) return "";
+    const rows: boolean[] = []; let used = 12;
+    for (const c of charts) {
+      if (used + widthOf(c) > 12) { rows.push(true); used = 0; }
+      used += widthOf(c); if (c.chart !== "number") rows[rows.length - 1] = false;
+    }
+    return rows.map((number) => (number ? "minmax(158px, 174px)" : "minmax(200px, 1fr)")).join(" ");
+  }, [active?.arranged, charts]);
 
   const commit = useCallback(async (next: Saved[]) => {
     setTiles(next); setError("");
@@ -131,7 +143,7 @@ export function Dashboards() {
       </header>
 
       <main className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[1280px] px-8 py-6">
+        <div className={`mx-auto max-w-[1280px] px-8 py-6 ${fit ? "flex min-h-full flex-col" : ""}`}>
           {error && <p role="alert" className="mb-4 rounded-lg bg-[var(--d-rise-soft)] px-4 py-2 text-[13px] text-[var(--d-rise-ink)]">{error}</p>}
           {!tiles ? (
             <p className="flex items-center gap-2 text-[14px] text-[var(--d-muted)]"><Loader2 size={15} className="animate-spin" />Opening your dashboards…</p>
@@ -186,16 +198,12 @@ export function Dashboards() {
                   <Link href="/pbi/ask" className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-[var(--d-teal)] px-4 py-2 text-[13.5px] font-semibold text-white">Ask a question<ArrowUpRight size={14} /></Link>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-                  {charts.map((c, i) => (
-                    <div key={c.id} className="contents">
-                      {active.arranged && c.section && c.section !== charts[i - 1]?.section && (
-                        <h2 className="cond col-span-full mt-3 text-[13px] font-semibold uppercase tracking-[.08em] text-[var(--d-muted)] first:mt-0">{c.section}</h2>
-                      )}
-                      <Card chart={c} model={pbiModel} labels={labels} dates={dates} filters={filters} stamp={stamp} dashes={dashes} activeId={active.id}
-                        onPick={pick} onChange={(x) => setChart(c.id, x)} onRemove={() => remove(c.id)} onAsk={(q) => router.push(`/pbi/ask?q=${encodeURIComponent(q)}`)}
-                        drag={{ dragging, start: () => setDragging(c.id), end: () => setDragging(null), over: () => dragging && move(dragging, c.id) }} />
-                    </div>
+                <div className={`grid grid-cols-1 gap-4 lg:grid-cols-12 ${fit ? "flex-1 lg:[grid-template-rows:var(--rows)]" : ""}`}
+                  style={fit ? { "--rows": fit } as React.CSSProperties : undefined}>
+                  {charts.map((c) => (
+                    <Card key={c.id} chart={c} model={pbiModel} labels={labels} dates={dates} filters={filters} stamp={stamp} dashes={dashes} activeId={active.id}
+                      fit={!!fit} onPick={pick} onChange={(x) => setChart(c.id, x)} onRemove={() => remove(c.id)} onAsk={(q) => router.push(`/pbi/ask?q=${encodeURIComponent(q)}`)}
+                      drag={{ dragging, start: () => setDragging(c.id), end: () => setDragging(null), over: () => dragging && move(dragging, c.id) }} />
                   ))}
                 </div>
               )}
@@ -210,14 +218,36 @@ export function Dashboards() {
 type Drag = { dragging: string | null; start: () => void; end: () => void; over: () => void };
 
 /** One chart on a dashboard: re-run under the dashboard's filters, its kind switchable, its size and place its own. */
-function Card({ chart: c, model, labels, dates, filters, stamp, dashes, activeId, onPick, onChange, onRemove, onAsk, drag }: {
+function Card({ chart: c, model, labels, dates, filters, stamp, dashes, activeId, fit, onPick, onChange, onRemove, onAsk, drag }: {
   chart: Chart; model: string; labels: Record<string, string>; dates: string[]; filters: Record<string, unknown>; stamp: number; dashes: Dash[]; activeId: string;
+  /** drawn to the height of its place in a fitted grid, not its own */
+  fit: boolean;
   onPick: (dim: string, value: unknown) => void; onChange: (x: Partial<Chart>) => void; onRemove: () => void; onAsk: (q: string) => void; drag: Drag;
 }) {
   const [run, setRun] = useState<{ data?: Result; series?: Result; month?: string; exhibit?: ExhibitData; error?: string; loose?: string[] } | null>(null);
   const [menu, setMenu] = useState(false);
   const menuBox = useRef<HTMLDivElement>(null);
-  const dims = c.dims ?? c.by ?? [];
+  const plot = useRef<HTMLDivElement>(null);
+  const [tall, setTall] = useState(0);
+  const [spill, setSpill] = useState(0);  // what a tile shows beside its chart (a key, a legend, a number), taken off its height
+  useEffect(() => {
+    if (!fit || !plot.current) return;
+    const room = plot.current, box = room.firstElementChild as HTMLElement;
+    // measured, not added up: the tile's content less the chart's own canvas, the same at any height it is drawn; again
+    // whenever the room changes or the chart (loaded after the tile) appears
+    const measure = () => {
+      setTall(Math.floor(room.clientHeight));
+      const canvas = box.querySelector<HTMLElement>("[_echarts_instance_]");
+      if (!canvas) return;
+      const drawn = Math.max(0, ...[...box.children].map((e) => (e as HTMLElement).offsetTop + (e as HTMLElement).offsetHeight));
+      const extra = Math.max(0, drawn - canvas.offsetHeight);
+      setSpill((s) => (Math.abs(extra - s) > 2 && extra < room.clientHeight / 2 ? extra : s));
+    };
+    const ro = new ResizeObserver(measure), mo = new MutationObserver(measure);
+    ro.observe(room); mo.observe(box, { childList: true, subtree: true });
+    return () => { ro.disconnect(); mo.disconnect(); };
+  }, [fit]);
+  const form = formOf(c, labels), dims = form.dims;
   const own = new Set(dims.map((d) => d.split(":")[0]));
   // the dashboard's filters, but for those on a column the chart is drawn by: it keeps every value and marks the pick
   const theirs = Object.fromEntries(Object.entries(filters).filter(([k]) => !own.has(k.split(":")[0])));
@@ -269,10 +299,10 @@ function Card({ chart: c, model, labels, dates, filters, stamp, dashes, activeId
     return () => document.removeEventListener("mousedown", away);
   }, [menu]);
 
-  const kind = (c.chart ?? (dims.length ? "leaderboard" : "number")) as VisualKind;
+  const kind = form.chart;
   const additive = !RATE.test(labels[c.metrics?.[0] ?? ""] ?? c.metrics?.[0] ?? "");
   const kinds = c.kind === "explain" ? [] : kindsFor(dims, (d) => PERIOD.test(d), additive);
-  const w = widthOf(c), span = { 3: "lg:col-span-3", 4: "lg:col-span-4", 6: "lg:col-span-6", 8: "lg:col-span-8", 12: "lg:col-span-12" }[w] ?? "lg:col-span-6";
+  const w = widthOf({ ...c, ...form }), span = { 3: "lg:col-span-3", 4: "lg:col-span-4", 6: "lg:col-span-6", 8: "lg:col-span-8", 12: "lg:col-span-12" }[w] ?? "lg:col-span-6";
   const data = run?.data ? [{ columns: run.data.columns, rows: run.data.rows }, ...(run.series ? [{ columns: run.series.columns, rows: run.series.rows }] : [])] : null;
   const shownDims = run?.series ? [run.series.columns[0]] : dims;
   const note = run?.month ? `Latest month, ${periodName(run.month)}` : data && c.kind !== "explain" ? noteOf(kind, data, c.metrics ?? [], dims, labels) : null;
@@ -313,15 +343,18 @@ function Card({ chart: c, model, labels, dates, filters, stamp, dashes, activeId
           )}
         </div>
       </header>
-      {note && <p className="mt-2 text-[13px] leading-snug text-[var(--d-ink-2)]">{note}</p>}
+      {note && <p className={`mt-2 text-[13px] leading-snug text-[var(--d-ink-2)] ${fit ? "line-clamp-1" : ""}`} title={fit ? note : undefined}>{note}</p>}
       {run?.loose?.length ? <p className="mt-1 text-[12px] text-[var(--d-muted)]">Not filtered by {run.loose.map(said).join(", ")}: this measure does not reach it.</p> : null}
-      <div className="mt-2 min-h-0 flex-1">
+      {/* in a fitted grid the chart is drawn into the room its row leaves, and never pushes the row taller */}
+      <div ref={plot} className={`mt-2 min-h-0 flex-1 ${fit ? "relative" : ""}`}>
+        <div className={fit ? `absolute inset-0 ${run?.exhibit ? "overflow-auto" : "overflow-hidden"}` : ""}>
         {!run ? <div className="h-48 animate-pulse rounded-xl bg-[var(--d-paper)]" />
           : run.error ? <p className="py-6 text-[13px] text-[var(--d-rise-ink)]">Could not run it today: {run.error}</p>
           : run.exhibit ? <InvestigationExhibit e={run.exhibit} n={0} lean actions={{ drill: () => {}, rows: () => {}, ask: onAsk }} />
           : data && !data[0].rows.length ? <p className="py-6 text-[13px] text-[var(--d-muted)]">Nothing here for these filters.</p>
-          : data && <Visual kind={kind} data={data} metrics={c.metrics ?? []} dims={shownDims} labels={labels} picked={picked} height={kind === "number" ? 120 : 260}
+          : data && <Visual kind={kind} data={data} metrics={c.metrics ?? []} dims={shownDims} labels={labels} picked={picked} height={fit && tall > 60 ? tall - spill : kind === "number" ? 120 : 260} exact={fit}
               onPick={onPick} />}
+        </div>
       </div>
     </section>
   );
