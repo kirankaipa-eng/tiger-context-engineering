@@ -4,6 +4,7 @@
 // its name and the filters set on it. Charts kept before dashboards existed belong to the first, "My dashboard".
 
 import { RATE, kindsFor, type VisualKind } from "@/components/ask-visuals";
+import type { Said } from "@/components/chart-thread";
 import { pbi, type Tile } from "./pbi";
 
 export const MAIN = "main";
@@ -14,6 +15,8 @@ export type Chart = Tile & {
   dash?: string; chart?: VisualKind; dims?: string[]; w?: number; pos?: number;
   /** the measure the chart is about, as a heading for its group when arranged */
   section?: string;
+  /** its threads: the conversation on it, and on any chart one of its replies brought (by that chart's id) */
+  threads?: Record<string, Said[]>;
 };
 export type Dash = { id: string; kind: "dashboard"; title: string; at: number; filters?: Record<string, unknown>; arranged?: boolean };
 type Saved = Chart | Dash;

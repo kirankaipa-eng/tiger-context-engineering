@@ -12,6 +12,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { KIND_NAME, RATE, Visual, kindsFor, noteOf } from "@/components/ask-visuals";
+import { ThreadButton, ThreadPanel, openThread, type Anchor, type ThreadStore } from "@/components/chart-thread";
 import { periodName } from "@/components/auto-chart";
 import { InvestigationExhibit } from "@/components/pbi-investigation";
 import type { ExhibitData } from "@/components/pbi-exhibit";
@@ -78,6 +79,17 @@ export function Dashboards() {
     commit(has ? tiles.map((t) => (t.kind === "dashboard" && (t as Dash).id === active.id ? { ...t, ...change } : t)) : [...tiles, { ...active, ...change }]);
   };
   const setChart = (id: string, change: Partial<Chart>) => tiles && commit(tiles.map((t) => (t.id === id ? { ...t, ...change } as Saved : t)));
+  // a chart's threads live on its tile; written to the tiles as they are when a reply lands, not as they were when
+  // the thread opened (the dashboard may have changed since)
+  const latest = useRef(tiles);
+  useEffect(() => { latest.current = tiles; }, [tiles]);
+  const threadsOf = useCallback((chartId: string): ThreadStore => ({
+    get: (id) => (latest.current?.find((t) => t.id === chartId) as Chart | undefined)?.threads?.[id] ?? [],
+    set: (id, said) => {
+      const now = latest.current;
+      if (now) commit(now.map((t) => (t.id === chartId ? { ...t, threads: { ...(t as Chart).threads, [id]: said } } as Saved : t)));
+    },
+  }), [commit]);
   const remove = (id: string) => tiles && commit(tiles.filter((t) => t.id !== id));
   const pick = (dim: string, value: unknown) => setDash({ filters: { ...filters, [dim]: value } });
   const unpick = (dim: string) => { const f = { ...filters }; delete f[dim]; setDash({ filters: f }); };
@@ -202,7 +214,7 @@ export function Dashboards() {
                   style={fit ? { "--rows": fit } as React.CSSProperties : undefined}>
                   {charts.map((c) => (
                     <Card key={c.id} chart={c} model={pbiModel} labels={labels} dates={dates} filters={filters} stamp={stamp} dashes={dashes} activeId={active.id}
-                      fit={!!fit} onPick={pick} onChange={(x) => setChart(c.id, x)} onRemove={() => remove(c.id)} onAsk={(q) => router.push(`/pbi/ask?q=${encodeURIComponent(q)}`)}
+                      fit={!!fit} threads={threadsOf(c.id)} onPick={pick} onChange={(x) => setChart(c.id, x)} onRemove={() => remove(c.id)} onAsk={(q) => router.push(`/pbi/ask?q=${encodeURIComponent(q)}`)}
                       drag={{ dragging, start: () => setDragging(c.id), end: () => setDragging(null), over: () => dragging && move(dragging, c.id) }} />
                   ))}
                 </div>
@@ -211,6 +223,7 @@ export function Dashboards() {
           )}
         </div>
       </main>
+      <ThreadPanel model={pbiModel} labels={labels} />
     </div>
   );
 }
@@ -218,10 +231,11 @@ export function Dashboards() {
 type Drag = { dragging: string | null; start: () => void; end: () => void; over: () => void };
 
 /** One chart on a dashboard: re-run under the dashboard's filters, its kind switchable, its size and place its own. */
-function Card({ chart: c, model, labels, dates, filters, stamp, dashes, activeId, fit, onPick, onChange, onRemove, onAsk, drag }: {
+function Card({ chart: c, model, labels, dates, filters, stamp, dashes, activeId, fit, threads, onPick, onChange, onRemove, onAsk, drag }: {
   chart: Chart; model: string; labels: Record<string, string>; dates: string[]; filters: Record<string, unknown>; stamp: number; dashes: Dash[]; activeId: string;
   /** drawn to the height of its place in a fitted grid, not its own */
   fit: boolean;
+  threads: ThreadStore;
   onPick: (dim: string, value: unknown) => void; onChange: (x: Partial<Chart>) => void; onRemove: () => void; onAsk: (q: string) => void; drag: Drag;
 }) {
   const [run, setRun] = useState<{ data?: Result; series?: Result; month?: string; exhibit?: ExhibitData; error?: string; loose?: string[] } | null>(null);
@@ -300,6 +314,10 @@ function Card({ chart: c, model, labels, dates, filters, stamp, dashes, activeId
   }, [menu]);
 
   const kind = form.chart;
+  // what its thread is about: the chart as drawn now, under the dashboard's filters
+  const anchor = (): Anchor => c.kind === "explain" && c.explain
+    ? { id: c.id, title: c.title, metrics: [c.explain.metric], dims: [], filters: { ...(c.explain.filters ?? {}), ...filters } }
+    : { id: c.id, title: c.title, metrics: c.metrics ?? [], dims, filters: { ...(c.filters ?? {}), ...filters }, kind };
   const additive = !RATE.test(labels[c.metrics?.[0] ?? ""] ?? c.metrics?.[0] ?? "");
   const kinds = c.kind === "explain" ? [] : kindsFor(dims, (d) => PERIOD.test(d), additive);
   const w = widthOf({ ...c, ...form }), span = { 3: "lg:col-span-3", 4: "lg:col-span-4", 6: "lg:col-span-6", 8: "lg:col-span-8", 12: "lg:col-span-12" }[w] ?? "lg:col-span-6";
@@ -321,6 +339,7 @@ function Card({ chart: c, model, labels, dates, filters, stamp, dashes, activeId
             ))}
           </span>
         )}
+        <ThreadButton anchor={anchor} store={threads} />
         <div ref={menuBox} className="relative">
           <button onClick={() => setMenu((m) => !m)} aria-label="Chart options" aria-expanded={menu} className="grid h-7 w-7 place-items-center rounded-lg text-[var(--d-muted)] hover:bg-[var(--d-paper)] hover:text-[var(--d-ink)]"><MoreHorizontal size={16} /></button>
           {menu && (
@@ -337,7 +356,7 @@ function Card({ chart: c, model, labels, dates, filters, stamp, dashes, activeId
                 <button key={d.id} role="menuitem" onClick={() => { onChange({ dash: d.id, pos: 1e6 }); setMenu(false); }} className="block w-full truncate rounded-lg px-2.5 py-1.5 text-left hover:bg-[var(--d-paper)]">{d.title}</button>
               ))}
               <div className="my-1 border-t border-[var(--d-rule)]" />
-              <button role="menuitem" onClick={() => onAsk(`Tell me more about ${c.title}`)} className="block w-full rounded-lg px-2.5 py-1.5 text-left hover:bg-[var(--d-paper)]">Ask about this</button>
+              <button role="menuitem" onClick={() => { openThread(anchor(), threads); setMenu(false); }} className="block w-full rounded-lg px-2.5 py-1.5 text-left hover:bg-[var(--d-paper)]">Open its thread</button>
               <button role="menuitem" onClick={onRemove} className="block w-full rounded-lg px-2.5 py-1.5 text-left text-[var(--d-rise-ink)] hover:bg-[var(--d-rise-soft)]">Remove from dashboard</button>
             </div>
           )}

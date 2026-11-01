@@ -25,6 +25,7 @@ import { colLabel, columnTypes, isDimension, pbi, type PbiMetric, type Result } 
 import { useStudio } from "@/lib/studio";
 import { BUSINESS, PEOPLE, PLACE } from "@/lib/vocab";
 import { SettingsMenu, useLook } from "@/lib/theme";
+import { ThreadButton, ThreadPanel, browserThreads, type Anchor } from "@/components/chart-thread";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -386,6 +387,9 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
     ...tileOf({ kind: "compute", columns: [], rows: [], metrics: picture.metrics, by: picture.dims, filters: picture.filters ?? {}, labels, origin: "agent" }),
     title: pictureTitle(picture, labels), chart: picture.kind, dims: picture.dims }] : [];
   const everything = () => [...pictureChart(), ...(lead ? [lead] : []).concat(supports).map(chartOf)];
+  // a thread on any chart of the answer, kept in this browser with the conversation
+  const threads = useMemo(() => browserThreads(model), [model]);
+  const anchorOf = (v: View): Anchor => ({ id: `${turn.id}:${v.id}`, title: v.title, metrics: v.metrics, dims: v.dims, filters: filtersOf(v, focus), kind: v.kind as VisualKind });
   const picked = Object.fromEntries(focus);
 
   const tile = (v: View, place: "answer" | "support" | "more") => {
@@ -413,6 +417,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
           <h2 className={`cond mr-auto font-semibold text-[var(--d-ink)] ${hero ? "text-[16px]" : "text-[15px]"}`}>{v.title}</h2>
           {mine && <span className="rounded-full bg-[var(--d-teal-soft)] px-2 py-0.5 text-[12px] font-semibold text-[var(--d-teal)]">{shown(mine[0], mine[1])} picked</span>}
           {kinds.length > 1 && toggle(kinds.map((k) => k.kind), v.kind as VisualKind, (k) => switchTo(v, k))}
+          {!v.table && <ThreadButton anchor={() => anchorOf(v)} store={threads} />}
           {!v.table && <AddToDashboard model={model} charts={() => [chartOf(v)]} label="Add this chart to a dashboard" compact />}
           {(!run || run.loading) && <span className="pulse-soft text-[12px] text-[var(--d-muted)]">Computing…</span>}
         </header>
@@ -510,6 +515,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
             <figcaption className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
               <span className="cond mr-auto text-[16px] font-semibold text-[var(--d-ink)]">{pictureTitle(picture, labels)}</span>
               {pictureKinds.length > 1 && toggle(pictureKinds.map((k) => k.kind), picture.kind, (k) => setPicture({ ...picture, kind: k, dims: pictureKinds.find((o) => o.kind === k)!.dims }))}
+              <ThreadButton anchor={() => ({ id: `${turn.id}:picture`, title: pictureTitle(picture, labels), metrics: picture.metrics, dims: picture.dims, filters: picture.filters ?? {}, kind: picture.kind })} store={threads} />
               <AddToDashboard model={model} charts={pictureChart} label="Add this chart to a dashboard" compact />
             </figcaption>
             {picture.scope && <p className="mt-0.5 text-[12.5px] text-[var(--d-muted)]">{picture.scope}</p>}
@@ -791,6 +797,7 @@ export default function AskPage() {
           </div>
         )}
       </main>
+      <ThreadPanel model={pbiModel} labels={labels} />
       {/* the follow-up box floats at the foot of the window with nothing behind it: the answers scroll on under it */}
       {turns.length > 0 && <div className="pointer-events-none absolute inset-x-0 bottom-0 px-8 pb-6"><div className="pointer-events-auto mx-auto max-w-2xl">
         {error && !busy && <p role="alert" className="mb-2 rounded-xl bg-[var(--d-rise-soft)] px-3 py-2 text-[13px] text-[var(--d-rise-ink)]">{error}</p>}
