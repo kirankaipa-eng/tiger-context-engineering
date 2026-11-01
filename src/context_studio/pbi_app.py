@@ -51,6 +51,7 @@ class Loaded:
         if self._kit is None:
             try:
                 self._kit = BIToolkit(self.layer, Warehouse.open(self.folder, self.layer), max_rows=MAX_ROWS)
+                self._kit.analyses, self._kit.folder = self.folder / "analyses", self.folder
                 self.data_error = None
             except Exception as exc:  # noqa: BLE001 - browsing works without data; say why numbers do not
                 self.data_error = str(exc)
@@ -269,9 +270,9 @@ def rows_behind(mid: str, body: dict = Body(...)):
 
 
 SCREEN = """
-On this screen every compute and explore result is drawn under your answer as a chart and a table, with
-its SQL. Do not repeat those tables: give the answer and the few numbers that matter in a sentence or a
-short list, then the definition used, in one line."""
+On this screen every result is drawn beside your answer as an exhibit: the chart, the table, the measure's
+definition and its SQL, and for an analysis its method and checks. Do not repeat any of that: give the
+answer and the few numbers that matter in a sentence or two, for a business reader."""
 
 
 def _orchestrator(m: Loaded):
@@ -299,6 +300,7 @@ async def ask(mid: str, body: dict = Body(...)):
         raise HTTPException(400, "empty message")
     orch = _orchestrator(m)
     kit = m.kit()
+    kit.who = str(body.get("who") or "someone").strip()[:60]
     session = f"{m.id}:{body.get('session_id') or 'default'}"
 
     async def lines():
@@ -313,7 +315,7 @@ async def ask(mid: str, body: dict = Body(...)):
                 continue
             d = ev.get("data") or {}
             if ev.get("type") == "agent_tool_call" and d.get("status") == "completed" and \
-                    d.get("tool") in ("compute", "explore", "explain"):
+                    d.get("tool") in ("compute", "explore", "explain", "analyze"):
                 # parallel calls may finish in any order; another conversation's, running at the same time, are not ours
                 new = [r for r in kit.results if r["seq"] > seen and r.get("asker") == session]
                 seen = max([seen, *[r["seq"] for r in new]])
@@ -324,6 +326,7 @@ async def ask(mid: str, body: dict = Body(...)):
                         "filters": {k: _cell(v) for k, v in (last.get("filters") or {}).items()},
                         "conditions": last.get("conditions") or [],
                         **({"explain": last["explain"]} if last.get("explain") else {}),
+                        **({"analysis": last["analysis"]} if last.get("analysis") else {}),
                         "warehouse": kit.wh.describe(),
                         "labels": {k: m.layer.metrics[k].get("label", k) for k in last["metrics"] if k in m.layer.metrics}}},
                         default=str) + "\n"

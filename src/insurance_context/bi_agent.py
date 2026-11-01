@@ -27,12 +27,16 @@ from __future__ import annotations
 
 from .agent_runtime import RunContext  # tool signatures are resolved against module globals
 
+import json
 import re
+import shutil
 from contextvars import ContextVar
 from decimal import Decimal
+from pathlib import Path
 
 from .agent_tools import _markdown, _match_value
 from .bilayer import BILayer, LayerError, Warehouse, parse_ref
+from .bisandbox import LIBRARIES
 
 # The conversation a tool call runs for: one toolkit serves every conversation on a model, so each
 # result it keeps is tagged with whose question made it (see `results`), and a stream sends only its own.
@@ -218,6 +222,12 @@ class BIToolkit:
         self.on_query = None  # called with {sql, ms} after each warehouse query (`ask --trace`)
         self.results: list[dict] = []  # each compute / explore that ran, with its rows (a screen charts them)
         self._seq = 0
+        # the analysis sandbox: where analyses are kept (None: analyze is not offered), the model folder
+        # (its sandbox.yaml), who is asking
+        self.analyses: Path | None = None
+        self.folder: Path | None = None
+        self.who = "someone"
+        self._snaps: dict[str, tuple[Path, dict]] = {}
 
     def _query(self, sql: str, limit: int) -> tuple[list[str], list[tuple]]:
         import time
@@ -652,6 +662,54 @@ class BIToolkit:
             out += "\nFilters: " + "; ".join(notes) + "."
         return out + f"\n\nSQL ({self.wh.dialect}):\n{sql}"
 
+    def analyze(self, question: str, code: str, columns: list[str], filters: dict | None = None,
+                conditions: list[str] | None = None, table: str | None = None) -> str:
+        """Run `code` in the analysis sandbox on a snapshot of the granular rows (`columns`, `filters`,
+        `conditions`, under the caller's row-level security); keep the analysis in git. See bisandbox."""
+        from insurance_context import bisandbox as sb
+        if self.analyses is None:
+            return "Error: the analysis sandbox is not set up for this model"
+        key = json.dumps([columns, filters, conditions, table], sort_keys=True, default=str)
+        folder = sb.Analyses(self.analyses).start(question)
+        try:
+            if key in self._snaps and (self._snaps[key][0] / "data" / "rows.parquet").exists():
+                old, lock = self._snaps[key]  # the same rows as the last try: move them, do not read them again
+                shutil.move(str(old / "data"), str(folder / "data"))
+            else:
+                lock = sb.snapshot(self, columns, filters, conditions, table, self.folder, folder)
+            self._snaps = {key: (folder, lock)}
+            (folder / "analysis.py").write_text(code, encoding="utf-8")
+            ran = sb.run(folder)
+        except (sb.SandboxError, Exception) as exc:  # noqa: BLE001 - goes back to the agent to fix
+            shutil.rmtree(folder, ignore_errors=True)
+            return f"Error: {exc}"
+        if not ran["ok"]:
+            return (f"Error: the analysis failed; fix the code and call analyze again.\n{ran['stderr'][-2500:]}"
+                    f"\n{ran['stdout'][-500:]}")
+        res = ran["result"]
+        commit = sb.Analyses(self.analyses).keep(folder, question, self.who, lock, ran)
+        self._snaps = {}
+        self.last = {"kind": "analysis", "columns": res.get("columns") or [], "shown": res.get("rows") or [],
+                     "metrics": [], "by": [], "filters": dict(lock["filters"]), "conditions": lock["conditions"],
+                     "sql": lock["sql"], "ms": lock["read_ms"],
+                     "analysis": {"question": question, "answer": res.get("answer", ""), "method": res.get("method") or {},
+                                  "numbers": res.get("numbers") or {}, "checks": res.get("checks") or [], "code": code, "rows": lock["rows"],
+                                  "columns": lock["columns"], "where": ran["where"], "isolated": ran["isolated"],
+                                  "seconds": ran["seconds"], "id": folder.name, "commit": commit,
+                                  "row_security": lock["row_security"]}}
+        self._keep(self.last)
+        # for the agent's reasoning: the page already shows the numbers, the method and the checks
+        out = [f"Answer (from the analysis): {res.get('answer', '')}",
+               "(The page shows the numbers, the method and its checks under this answer: reply with the finding "
+               "in a sentence or two; do not list numbers, definitions or the method again.)"]
+        if res.get("numbers"):
+            out.append("Numbers: " + "; ".join(f"{k} = {v}" for k, v in res["numbers"].items()))
+        if res.get("method"):
+            out.append("Method: " + json.dumps(res["method"], default=str))
+        out.append(f"Ran on {lock['rows']:,} rows in {ran['where']}; kept as analyses/{folder.name}"
+                   + (f" (commit {commit})" if commit else " (git is not installed, so not versioned)"))
+        return "\n".join(out)
+
     def system_prompt(self) -> str:
         return f"""You answer business questions about the Power BI model "{self.layer.model}".
 Numbers come only from the compute tool, which runs the model's captured metrics as SQL on
@@ -693,10 +751,34 @@ How to work:
    the chart and the table, so do not repeat them as a list. Do not show metric keys, definitions, formulas
    or SQL, and do not mention the data source, unless asked.
 7. For "why did X change", "what drove", "what's behind the jump", or a message that names
-   @Investigator, call explain with the two periods
+   @Investigator, call explain (where the change sits; whether it is real or chance is rule 8) with the two periods
    (default: the latest month against the same month a year before, or the month before if the
    question says so). Report the path it found, level by level, with its numbers, and say plainly
    where the change stops being concentrated. Do not add causes the data did not show.
+8. For analysis beyond a number call analyze, not explain: whether a change is real or noise, statistically
+   significant or "could it be chance", a forecast ("what next quarter looks like"), outliers or unusual
+   records, a correlation, a comparison of groups, a regression. It runs your Python in a sandbox, with no network,
+   on a snapshot of the granular rows: `columns` (Table[Column], the raw rows, no :grain), `filters`
+   and `conditions` as for explore. `df = load()` gives one DataFrame column per column asked for, named
+   by the column alone (Table Column when two tables share a name). Use the tested helpers whenever they
+   fit; they check their own inputs (two different periods, both with data, quiet days as 0, a backtest):
+     from sandbox import load, report, unusual, compare_periods, compare_rates, forecast, outliers
+     r = unusual(df, "Date", "Unit", now="2026-09", where=lambda d: d["Status"] == "Returned")  # is it real?
+     r = compare_periods(df, "Date", "Unit", now="2026-09", before="2025-09", where=lambda d: d["Status"] == "Returned")
+     r = compare_rates(df, "Date", now="2026-09", before="2025-09", hit=lambda d: d["Status"] == "Returned", base="Unit")
+     r = forecast(df, "Date", "Amount", periods=6)        # r["table"], r["typical_miss"], r["next_total"]
+     r = outliers(df, "Store", "Amount")                   # r["table"] of the ones far from the rest
+   Each returns a result with "table", "numbers", "method" and "summary" (a plain sentence), plus its own
+   fields (unusual: now_total, usual, z, p_value; compare_rates: rate_now, rate_before, p_value; forecast:
+   next_total, typical_miss); a key it does not have is an error that lists the ones it has. End with
+   report(answer="...", result=r, method={{"caveats": [...]}}): it takes the table, numbers and method from
+   r. The answer is two or three plain sentences for a business reader, starting from r["summary"]: the
+   finding with its numbers, months as "September 2026", no p-values, test names or variable names (the
+   page shows those). Caveats are about the analysis (a short window, few rows), not where the data comes
+   from. Write your own pandas, {LIBRARIES} only for what the helpers do not cover; then pass table=,
+   numbers= (at most four, plain names) and method={{"test": "in plain words", "n": ...}} yourself. If it
+   fails, read the error, fix the code and call analyze again (twice at most). In your reply, say what was
+   found and name the method in one short clause ("a standard test says a gap this size is very unlikely to be chance").{"" if self.analyses else " (Not available here.)"}
 Data is {f"a local stand-in ({self.wh.about}); say so only if the user asks where numbers come from" if self.wh.kind == "local" else "live from Databricks"}."""
 
     def tools(self) -> list:
@@ -750,7 +832,18 @@ Data is {f"a local stand-in ({self.wh.about}); say so only if the user asks wher
             step becomes an exhibit."""
             return kit.explain(metric, period, now, before, filters)
 
-        return [list_metrics, list_columns, column_values, compute, explore, explain]
+        async def analyze(ctx: RunContext, question: str, code: str, columns: list[str],
+                          filters: dict[str, str | int | float | list[str]] | None = None,
+                          conditions: list[str] | None = None, table: str | None = None) -> str:
+            """Analysis on the granular rows in a sandbox (a significance test, a forecast, outliers, a
+            regression): `code` is Python that starts `from sandbox import load, report`, reads `df = load()`
+            (the `columns` asked for, as Table[Column], narrowed by `filters` and `conditions` as for explore)
+            and ends with report(answer=..., table=..., method=..., numbers=...). `question` is what it
+            answers, in the user's words. The analysis is kept, with its code, in the model's git history."""
+            return kit.analyze(question, code, columns, filters, conditions, table)
+
+        tools = [list_metrics, list_columns, column_values, compute, explore, explain]
+        return [*tools, analyze] if self.analyses is not None else tools
 
     def registry(self) -> dict:
         return {fn.__name__: (fn, (fn.__doc__ or "").strip().split("\n")[0]) for fn in self.tools()}

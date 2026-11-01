@@ -12,7 +12,9 @@ import { ResultTable, num } from "./pbi";
 import { colLabel, isDimension, pbi, splitRef, type PbiMetricDetail } from "@/lib/pbi";
 
 export type ExhibitData = {
-  kind: "compute" | "explore" | "explain";
+  kind: "compute" | "explore" | "explain" | "analysis";
+  /** An analysis run in the sandbox (kind analysis), see pbi-analysis. */
+  analysis?: import("./pbi-analysis").Analysis;
   /** An investigation (kind explain): why a measure changed, see pbi-investigation. */
   explain?: import("./pbi-investigation").Investigation; columns: string[]; rows: unknown[][]; metrics: string[]; by: string[];
   filters: Record<string, unknown>; conditions?: string[]; sql?: string; ms?: number; warehouse?: string;

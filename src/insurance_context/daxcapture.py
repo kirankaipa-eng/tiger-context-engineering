@@ -400,8 +400,11 @@ def _measure(ctx: _Ctx, name: str) -> dict:
     if name in ctx.pending:
         raise Unsupported("cycle", f"measures refer to each other in a cycle through {name}")
     ctx.pending.add(name)
-    expr = next(m.expression for _, m in ctx.model.measures if m.name == name)
+    measure = next(m for _, m in ctx.model.measures if m.name == name)
+    expr = measure.expression
     spec = {"label": name, "dax": " ".join(_closed(expr).split())}
+    if measure.format_string:  # how Power BI shows it ($#,0, 0.0%): screens show the number the same way
+        spec["format"] = measure.format_string
     saved, ctx.filter, ctx.iterating = (ctx.filter, ctx.iterating), None, False  # its own context, not its user's
     node = None
     try:

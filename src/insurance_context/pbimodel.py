@@ -137,9 +137,11 @@ def read_pbix(path: str | Path) -> Model:
         expr = calculated.get((t.name, r["ColumnName"]))
         t.columns.append(Column(r["ColumnName"], _data_type(r["PandasDataType"]),
                                 None if expr is not None else r["ColumnName"], expr))
+    formats = _formats(px)
     for r in _records(px.dax_measures):
         t = model.tables.setdefault(r["TableName"], Table(r["TableName"]))
-        t.measures.append(Measure(r["Name"], (r["Expression"] or "").strip(), None, r.get("Description") or None))
+        t.measures.append(Measure(r["Name"], (r["Expression"] or "").strip(), formats.get((r["TableName"], r["Name"])),
+                                  r.get("Description") or None))
     for r in _records(px.power_query):
         if r["TableName"] in model.tables:
             model.tables[r["TableName"]].source, model.tables[r["TableName"]].source_kind = r["Expression"], "m"
@@ -165,6 +167,18 @@ def read_pbix(path: str | Path) -> Model:
             roles.setdefault(r["RoleName"], Role(r["RoleName"])).members.append(str(r["MemberName"]))
     model.roles = list(roles.values())
     return model
+
+
+def _formats(px) -> dict[tuple[str, str], str]:
+    """Each measure's format string ($#,0, 0.0%), which pbixray's measure list leaves out: read from the model's
+    own metadata. Empty when this pbixray keeps its metadata elsewhere; the measures are read either way."""
+    try:
+        rows = px._metadata.source._db.query(
+            "SELECT t.Name AS TableName, m.Name, m.FormatString FROM Measure m JOIN [Table] t ON m.TableID = t.ID")
+    except Exception:  # noqa: BLE001 - a private part of pbixray; formats are a nicety
+        return {}
+    return {(r["TableName"], r["Name"]): str(r["FormatString"]) for r in _records(rows)
+            if isinstance(r.get("FormatString"), str) and r["FormatString"].strip()}
 
 
 def read_pbix_data(path: str | Path, table: str):

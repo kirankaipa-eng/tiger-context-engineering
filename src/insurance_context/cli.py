@@ -402,6 +402,15 @@ def cmd_pbi_metrics(args):
     return 0
 
 
+def cmd_pbi_sandbox(args):
+    from . import bisandbox
+    if args.action == "build":
+        bisandbox.build_image()
+    print(f"sandbox: {bisandbox.mode()}; image {bisandbox.IMAGE} "
+          f"{'ready' if bisandbox.image_ready() else 'not built (ictx pbi sandbox build)'}")
+    return 0
+
+
 def cmd_pbi_coverage(args):
     from .bilayer import BILayer
     from .daxcapture import coverage
@@ -470,6 +479,8 @@ def cmd_pbi_ask(args):
     args.dir = _capture_dir(args.dir)
     layer = BILayer.load(args.dir)
     kit = BIToolkit(layer, Warehouse.open(args.dir, layer, prefer=args.target))
+    kit.analyses, kit.folder = Path(args.dir) / "analyses", Path(args.dir)
+    kit.who = os.environ.get("USERNAME") or os.environ.get("USER") or "someone"
     if args.trace:
         def show_sql(q):
             sql = "\n".join("       " + line for line in q["sql"].strip().splitlines())
@@ -694,6 +705,9 @@ def main(argv: list[str] | None = None) -> int:
     pa.add_argument("--trace", action="store_true", help="print tool calls to stderr")
     pa.add_argument("--target", default="auto", choices=["auto", "databricks", "local"])
     pa.set_defaults(fn=cmd_pbi_ask)
+    pb = psub.add_parser("sandbox", help="the analysis sandbox: build its image, or say whether it is ready")
+    pb.add_argument("action", choices=["build", "status"])
+    pb.set_defaults(fn=cmd_pbi_sandbox)
     pc = psub.add_parser("ci", help="CI: convert, capture, diff and verify every model folder")
     pc.add_argument("models", help="folder of model folders (each a .pbix and/or a .SemanticModel)")
     pc.add_argument("--out", default="public")
