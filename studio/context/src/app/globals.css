@@ -1,0 +1,192 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+
+  --color-ground: #f4f3ef;
+  --color-panel: #ffffff;
+  --color-sunk: #faf9f6;
+  --color-line: #d3d0c7;
+  --color-line-soft: #e6e3db;
+  --color-ink: #1c1c1a;
+  --color-ink-2: #3d3c38;
+  --color-muted: #6b6960;
+  --color-accent: #1f4fbf;
+  --color-accent-ink: #163a8c;
+  --color-accent-soft: #e3e7f3;
+  --color-accent-line: #b8c4e6;
+  --color-ok: #23603a;
+  --color-ok-soft: #eef6f0;
+  --color-ok-line: #9cc3a6;
+  --color-warn: #7a5410;
+  --color-warn-soft: #fcf4e3;
+  --color-warn-line: #e0b25c;
+  --color-bad: #9b2c2c;
+  --color-bad-soft: #fbeaea;
+  --color-bad-line: #e3a6a6;
+}
+
+html, body { height: 100%; }
+body { background: var(--color-ground); color: var(--color-ink); }
+
+.lbl { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--color-muted); font-weight: 600; }
+
+.prose-studio { font-size: 14px; line-height: 1.55; }
+.prose-studio p { margin: 0 0 .6em; }
+.prose-studio ul, .prose-studio ol { margin: .2em 0 .6em 1.2em; }
+.prose-studio ul { list-style: disc; }
+.prose-studio ol { list-style: decimal; }
+.prose-studio li { margin: .15em 0; }
+.prose-studio strong { font-weight: 600; }
+.prose-studio h1, .prose-studio h2, .prose-studio h3 { font-weight: 600; margin: .8em 0 .3em; }
+.prose-studio code { font-family: var(--font-mono); font-size: 12px; background: var(--color-sunk); padding: 1px 4px; border-radius: 4px; }
+.prose-studio table { border-collapse: collapse; margin: .4em 0 .8em; font-size: 13px; }
+.prose-studio th, .prose-studio td { border: 1px solid var(--color-line-soft); padding: 4px 8px; text-align: left; }
+.prose-studio th { background: var(--color-sunk); font-weight: 600; }
+
+@keyframes pulse-soft { 0%, 100% { opacity: 1 } 50% { opacity: .45 } }
+.pulse-soft { animation: pulse-soft 1.4s ease-in-out infinite; }
+
+/* ---------------------------------------------------------------- the desk (business view) */
+.desk {
+  --d-navy: #142338;      /* conversation rail, ink */
+  --d-navy-2: #1d3150;
+  --d-rail-ink: #e6edf5;
+  --d-rail-muted: #92a3bb;
+  --d-ground: #ffffff;    /* the page itself: plain white (black in dark mode) */
+  --d-paper: #edf1f5;     /* a soft fill: insets, chips, hovers */
+  --d-sheet: #ffffff;     /* exhibit */
+  --d-rule: #d4dce6;
+  --d-ink: #142338;
+  --d-ink-2: #3d4d63;
+  --d-muted: #56667c;
+  --d-teal: #0b6d6a;      /* governed, trust */
+  --d-teal-soft: #e2f1f0;
+  --d-rise: #c97c06;      /* cost up */
+  --d-rise-soft: #fbf0dc;
+  --d-rise-ink: #8a5300;
+  --d-fall: #3f6fa3;      /* cost down */
+  --d-slate: #9aabbf;
+  color: var(--d-ink);
+}
+.desk .num { font-family: var(--font-plex-cond), var(--font-plex-sans), sans-serif; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.desk .cond { font-family: var(--font-plex-cond), var(--font-plex-sans), sans-serif; }
+.desk .rail-prose { font-size: 14px; line-height: 1.6; color: var(--d-rail-ink); }
+.desk .rail-prose p { margin: 0 0 .55em; }
+.desk .rail-prose strong { color: #fff; font-weight: 600; }
+.desk .rail-prose ul { list-style: disc; margin: .2em 0 .6em 1.1em; }
+.desk :focus-visible { outline: 2px solid var(--d-teal); outline-offset: 2px; }
+@keyframes exhibit-land { from { box-shadow: 0 0 0 3px rgba(15,123,120,.55); } to { box-shadow: 0 0 0 0 rgba(15,123,120,0); } }
+.desk .landed { animation: exhibit-land 2.4s ease-out 1; }
+@media (prefers-reduced-motion: reduce) { .desk .landed { animation: none; } }
+
+/* the investigation's dive: segments swell and split; each sentence rises in */
+.desk .dive-seg { transition: flex-grow .65s cubic-bezier(.2,.7,.2,1), opacity .4s ease; animation: dive-in .5s cubic-bezier(.2,.7,.2,1) both; }
+.desk .dive-say { animation: dive-say .5s cubic-bezier(.2,.7,.2,1) both; }
+@keyframes dive-in { from { transform: scaleY(.6); opacity: .2; } to { transform: none; opacity: 1; } }
+@keyframes dive-say { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .desk .dive-seg, .desk .dive-say { transition: none; animation: none; } }
+
+/* the dive's own colors, so a theme can make it light */
+.desk { --d-dive: var(--d-navy); --d-dive-ink: #ffffff; --d-dive-muted: var(--d-rail-muted); --d-dive-hit: #4fc2bb;
+  --d-dive-hit-ink: var(--d-navy); --d-dive-seg: #24364f; --d-dive-seg-ink: var(--d-rail-muted); --d-dive-chip: rgba(255,255,255,.1); }
+
+/* Themes for business readers, chosen per person (desk theme switcher) or per install (NEXT_PUBLIC_DESK_THEME).
+   Accent text is always a deeper shade that holds 4.5:1 on white; the bright brand color is a fill. */
+.desk.theme-tiger {  /* Tiger Analytics, as its slides and site: white, ink, Tiger orange #F7901C for marks; Poppins */
+  --d-rail: #141414; --d-rail-hover: #2a2827; --d-rail-ink: #f4f4f4; --d-rail-muted: #a8a29e; --d-rail-accent: #f7901c;  /* the sidebar: ink, the place you are in Tiger orange (orange marks, never fills) */
+  --d-navy: #141414; --d-navy-2: #2a2a2a;
+  --d-paper: #f7f7f9; --d-sheet: #ffffff; --d-rule: #e5e7eb; --d-ink: #141414; --d-ink-2: #374151; --d-muted: #5f6673;
+  --d-teal: #b35a07; --d-teal-soft: #fdeece; --d-rise: #c2410c; --d-rise-soft: #fdf3df; --d-rise-ink: #8a5a00;
+  --d-fall: #0079a3; --d-slate: #c8ced7;
+  --d-dive: #fafafc; --d-dive-ink: #141414; --d-dive-muted: #5f6673; --d-dive-hit: #f7901c; --d-dive-hit-ink: #141414;
+  --d-dive-seg: #e5e7eb; --d-dive-seg-ink: #374151; --d-dive-chip: #ffffff;
+  --d-display: var(--font-poppins), "Segoe UI", system-ui, sans-serif;
+  font-family: var(--font-poppins), "Segoe UI", system-ui, sans-serif;
+  /* charts: Tiger orange then its blue (validated for color blindness; values are labelled on the marks, since the
+     brand orange is light on white), rise and fall, and the slides' arc as the one-hue ramp, cream to red-orange */
+  --d-chart-1: #f7901c; --d-chart-2: #0398c9; --d-chart-3: #03a86a; --d-chart-4: #5468d4; --d-chart-5: #14958e; --d-chart-6: #9a55c9;
+  --d-chart-up: #f7901c; --d-chart-down: #0398c9; --d-ramp-1: #fdeece; --d-ramp-2: #fab66a; --d-ramp-3: #f59425; --d-ramp-4: #f56a14; --d-ramp-5: #c2410c;
+}
+.desk.theme-hcsc {  /* the client's: deep teal ink, sky blue accent, soft grey-greens; Open Sans */
+  --d-rail: #003333; --d-rail-hover: #194747; --d-rail-ink: #eef4f4; --d-rail-muted: #acbbbb; --d-rail-accent: #90cbff;  /* the sidebar: deep teal, sky blue for where you are */
+  --d-navy: #003333; --d-navy-2: #194747;
+  --d-paper: #eff3f3; --d-sheet: #ffffff; --d-rule: #dde2e2; --d-ink: #003333; --d-ink-2: #194747; --d-muted: #4f6b6b;
+  --d-teal: #1f5f99; --d-teal-soft: #e8f3ff; --d-rise: #b4541a; --d-rise-soft: #fbf0e6; --d-rise-ink: #8a3f12;
+  --d-fall: #628181; --d-slate: #c4cece;
+  --d-dive: #003333; --d-dive-ink: #ffffff; --d-dive-muted: #acbbbb; --d-dive-hit: #90cbff; --d-dive-hit-ink: #003333;
+  --d-dive-seg: #194747; --d-dive-seg-ink: #dde2e2; --d-dive-chip: rgba(255,255,255,.12);
+  --d-display: var(--font-open-sans), Arial, Helvetica, sans-serif;
+  font-family: var(--font-open-sans), Arial, Helvetica, sans-serif;
+  /* charts: series led by teal-green, then blue */
+  --d-chart-1: #14958e; --d-chart-2: #3a6fc4; --d-chart-3: #d07d08; --d-chart-4: #cf4a6a; --d-chart-5: #9a55c9; --d-chart-6: #6a8f17;
+  --d-chart-up: #14958e; --d-chart-down: #d07d08; --d-ramp-1: #e3f3f1; --d-ramp-2: #a8dcd6; --d-ramp-3: #5fb8ae; --d-ramp-4: #14958e; --d-ramp-5: #0b5f5a;
+}
+.desk.theme-neutral {  /* no brand: greys and one blue, the system font */
+  --d-rail: #f5f5f7; --d-rail-hover: #e5e5ea; --d-rail-ink: #1d1d1f; --d-rail-muted: #6e6e73; --d-rail-accent: #0a66c2;  /* the sidebar: light, blue for where you are */
+  --d-navy: #1d1d1f; --d-navy-2: #2c2c2e;
+  --d-paper: #f5f5f7; --d-sheet: #ffffff; --d-rule: #e5e5ea; --d-ink: #1d1d1f; --d-ink-2: #3a3a3c; --d-muted: #6e6e73;
+  --d-teal: #0a66c2; --d-teal-soft: #eaf3fc; --d-rise: #c8611f; --d-rise-soft: #fcf1e8; --d-rise-ink: #9c4812;
+  --d-fall: #5b7fa8; --d-slate: #c7c7cc;
+  --d-dive: #f5f5f7; --d-dive-ink: #1d1d1f; --d-dive-muted: #6e6e73; --d-dive-hit: #0a66c2; --d-dive-hit-ink: #ffffff;
+  --d-dive-seg: #e5e5ea; --d-dive-seg-ink: #3a3a3c; --d-dive-chip: #ffffff;
+  --d-display: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  /* charts: series led by blue */
+  --d-chart-1: #3a6fc4; --d-chart-2: #14958e; --d-chart-3: #d07d08; --d-chart-4: #cf4a6a; --d-chart-5: #9a55c9; --d-chart-6: #6a8f17;
+  --d-chart-up: #3a6fc4; --d-chart-down: #d07d08; --d-ramp-1: #eaf1fb; --d-ramp-2: #b3cbef; --d-ramp-3: #7a9fde; --d-ramp-4: #3a6fc4; --d-ramp-5: #22457f;
+}
+.desk[class*="theme-"] .cond { font-family: var(--d-display); letter-spacing: -0.01em; }
+.desk[class*="theme-"] .num { font-variant-numeric: tabular-nums; }
+
+/* dark mode, per theme: a black ground, exhibits lifted off it; brand color kept for fills, lifted for text */
+.desk.theme-tiger.mode-dark {
+  --d-ground: #000000;  /* the sidebar, darker */
+  --d-rail: #0b0b0c; --d-rail-hover: #232326; --d-rail-ink: #f4f4f5; --d-rail-muted: #9a9aa3; --d-rail-accent: #f7901c;
+  --d-chart-1: #d9620f; --d-chart-2: #14958e; --d-chart-3: #5468d4; --d-chart-4: #cf4a6a; --d-chart-5: #9a55c9; --d-chart-6: #6a8f17;
+  --d-chart-up: #f7901c; --d-chart-down: #4cc3ec;
+  --d-navy: #0b0b0c; --d-navy-2: #232326;
+  --d-paper: #111113; --d-sheet: #19191c; --d-rule: #2b2b30; --d-ink: #f4f4f5; --d-ink-2: #d4d4d8; --d-muted: #a1a1aa;
+  --d-teal: #ff9a52; --d-teal-soft: #2b1a0d; --d-rise: #f59e0b; --d-rise-soft: #2a2110; --d-rise-ink: #fbbf54;
+  --d-fall: #4cc3ec; --d-slate: #3f3f46;
+  --d-dive: #141416; --d-dive-ink: #f4f4f5; --d-dive-muted: #a1a1aa; --d-dive-hit: #f7901c; --d-dive-hit-ink: #141414;
+  --d-dive-seg: #2b2b30; --d-dive-seg-ink: #d4d4d8; --d-dive-chip: #232326; color-scheme: dark;
+}
+.desk.theme-hcsc.mode-dark {
+  --d-ground: #000000;  /* the sidebar, darker */
+  --d-rail: #001f1f; --d-rail-hover: #0d3838; --d-rail-ink: #e6f0f0; --d-rail-muted: #8fa6a6; --d-rail-accent: #90cbff;
+  --d-navy: #001f1f; --d-navy-2: #0d3838;
+  --d-paper: #001a1a; --d-sheet: #022626; --d-rule: #123b3b; --d-ink: #e9f3f3; --d-ink-2: #c4d6d6; --d-muted: #93abab;
+  --d-teal: #90cbff; --d-teal-soft: #0d2d40; --d-rise: #f0a35e; --d-rise-soft: #2b2112; --d-rise-ink: #f5c28d;
+  --d-fall: #8fb3b3; --d-slate: #2c5050;
+  --d-dive: #002b2b; --d-dive-ink: #ffffff; --d-dive-muted: #93abab; --d-dive-hit: #90cbff; --d-dive-hit-ink: #003333;
+  --d-dive-seg: #124040; --d-dive-seg-ink: #c4d6d6; --d-dive-chip: rgba(255,255,255,.1); color-scheme: dark;
+}
+.desk.theme-neutral.mode-dark {
+  --d-ground: #000000;  /* the sidebar, darker */
+  --d-rail: #1c1c1e; --d-rail-hover: #2c2c2e; --d-rail-ink: #f5f5f7; --d-rail-muted: #98989d; --d-rail-accent: #4da3ff;
+  --d-navy: #0a0a0a; --d-navy-2: #262628;
+  --d-paper: #0f0f10; --d-sheet: #1c1c1e; --d-rule: #2c2c2e; --d-ink: #f5f5f7; --d-ink-2: #d1d1d6; --d-muted: #98989d;
+  --d-teal: #4da3ff; --d-teal-soft: #0d2440; --d-rise: #ff9f43; --d-rise-soft: #2a1e10; --d-rise-ink: #ffc078;
+  --d-fall: #8eb4e0; --d-slate: #3a3a3c;
+  --d-dive: #161618; --d-dive-ink: #f5f5f7; --d-dive-muted: #98989d; --d-dive-hit: #0a84ff; --d-dive-hit-ink: #ffffff;
+  --d-dive-seg: #2c2c2e; --d-dive-seg-ink: #d1d1d6; --d-dive-chip: #262628; color-scheme: dark;
+}
+/* the Studio's own tokens follow the desk's inside it (tables, panels) */
+.desk[class*="theme-"] {
+  --color-panel: var(--d-sheet); --color-sunk: var(--d-paper); --color-line: var(--d-rule); --color-line-soft: var(--d-rule);
+  --color-ink: var(--d-ink); --color-ink-2: var(--d-ink-2); --color-muted: var(--d-muted); color: var(--d-ink);
+}
+/* the ground is plain: white, or black in dark mode; the brand lives in the exhibits, not behind them */
+.desk[class*="theme-"] main, .desk[class*="theme-"] aside.team-list { background: transparent; }
+
+/* The brief's briefing: each beat's bar fills over the beat, and its line arrives out of a soft blur. */
+@keyframes brief-fill { from { width: 0; } to { width: 100%; } }
+.brief-fill { width: 0; animation: brief-fill linear forwards; }
+@keyframes brief-say { from { opacity: 0; filter: blur(6px); transform: translateY(6px); } to { opacity: 1; filter: blur(0); transform: none; } }
+.brief-say { animation: brief-say 700ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .brief-fill { animation: none; width: 100%; }
+  .brief-say { animation: none; }
+}

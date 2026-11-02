@@ -14,3 +14,8 @@ studio/web/tsconfig.tsbuildinfo
 studio/web/.next-business/
 studio/web/.next-pbi/
 studio/web/.next-build/
+studio/context/node_modules/
+studio/context/.next/
+studio/context/.next-*/
+studio/context/next-env.d.ts
+studio/context/tsconfig.tsbuildinfo

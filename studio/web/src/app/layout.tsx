@@ -8,8 +8,8 @@ const sans = IBM_Plex_Sans({ subsets: ["latin"], weight: ["400", "500", "600"], 
 const mono = IBM_Plex_Mono({ subsets: ["latin"], weight: ["400"], variable: "--font-plex-mono" });
 
 export const metadata: Metadata = {
-  title: "Context Studio",
-  description: "Keep the company's ontology, metrics and mappings correct. Owners approve every change.",
+  title: "Power BI analysis desk",
+  description: "Ask, dashboards and briefs over a Power BI model's measures, computed on the warehouse.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

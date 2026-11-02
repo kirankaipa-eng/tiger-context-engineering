@@ -44,7 +44,10 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     pbi.health().then((h) => {
-      if (h.mode !== "pbi") { setMode("studio"); return; }
+      if (h.mode !== "pbi") {  // the Context Studio's API: that app is ../context
+        setError("This is the Context Studio's API, not a Power BI model's. Start the desk's with: ctx-studio serve --pbi build/pbi/<model>");
+        return;
+      }
       setMode("pbi");
       return pbi.models().then((r) => {
         setPbiModels(r.models); setLlm(r.llm);

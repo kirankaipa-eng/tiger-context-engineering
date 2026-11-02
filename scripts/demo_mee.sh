@@ -31,7 +31,7 @@ if up http://127.0.0.1:3700/; then
   echo "Web app  already running on :3700"
 else
   echo "Web app  starting on :3700"
-  (cd studio/web && { [ -d node_modules ] || npm install --silent; } && nohup npm run dev > "$LOGS/web.log" 2>&1 &)
+  (cd studio/context && { [ -d node_modules ] || npm install --silent; } && nohup npm run dev > "$LOGS/web.log" 2>&1 &)
   for _ in $(seq 60); do up http://127.0.0.1:3700/ && break; sleep 2; done
 fi
 

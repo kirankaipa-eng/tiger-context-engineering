@@ -8,6 +8,15 @@ so the Studio keeps no data of its own. Business users never see git.
 Wireframes and walkthrough: [docs/studio/](../docs/studio/README.md). Spec:
 [docs/CURATOR_SPEC.md](../docs/CURATOR_SPEC.md).
 
+Two web apps, kept apart so a change to one never moves the other:
+
+| App | Folder | Ports (web, API) | Its API |
+| --- | --- | --- | --- |
+| Context Studio: ontology, metrics, mappings, reviews, curator, insights | `studio/context/` | 3700, 8700 | `ctx-studio serve` |
+| Power BI analysis desk: Ask, dashboards, briefs, team | `studio/web/` | 3701, 8701 | `ctx-studio serve --pbi DIR` |
+
+They share no code: each has its own copy of the few helpers both use (`ui.tsx`, `api.ts`, the styles).
+
 ## Run it
 
 ```bash
@@ -16,7 +25,7 @@ uv sync --extra studio --group dev
 uv run ctx-studio init          # content repo + reference warehouses (first run: ~1 min)
 uv run ctx-studio serve         # API on http://127.0.0.1:8700
 
-cd studio/web
+cd studio/context
 npm install
 npm run dev                     # web app on http://localhost:3700
 ```
@@ -35,11 +44,11 @@ in production) and the client in the header. Start in the Inbox and press
 
 ```bash
 uv run ictx pbi import <model>.pbix --out build/pbi/<model>     # or a folder `ictx pbi export` wrote
-uv run ctx-studio serve --pbi build/pbi/<model>                 # API on :8700; repeat --pbi for several
-cd studio/web && npm run dev                                     # web app on http://localhost:3700
+uv run ctx-studio serve --pbi build/pbi/<model>                 # API on :8701; repeat --pbi for several
+cd studio/web && npm run dev                                     # the desk on http://localhost:3701
 ```
 
-This serves only the captured model: no demo clients, no reference data, no proposals. The web app
+This serves only the captured model: no demo clients, no reference data, no proposals. The desk
 opens on the **analysis desk**: ask in plain words on the left (the same agent as `ictx pbi ask`;
 numbers only from the model's captured measures, or rows of its tables when no measure answers), and
 each answer lands on the right as an exhibit with its headline, the chart that fits it (a line for a
@@ -64,7 +73,7 @@ configured, everything but asking still works. Numbers run on Databricks when `D
 | Chat and the docked Curator (LangGraph) | `src/context_studio/chat.py` |
 | Reviews: local records today, GitLab merge requests next | `src/context_studio/review.py` |
 | API | `src/context_studio/app.py` |
-| Web app | `studio/web/` (Next.js) |
+| Web app | `studio/context/` (Next.js); the Power BI desk is `studio/web/` |
 
 Rules the code enforces: the curator never approves or merges; only an owner of a waiting
 area can approve; a proposal merges when every area it touches has approved and checks pass;

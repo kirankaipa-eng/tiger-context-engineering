@@ -1,6 +1,6 @@
 // Context Studio API client. Every call says who is asking (X-Studio-User) and for which client.
 
-export const API_BASE = process.env.NEXT_PUBLIC_STUDIO_API ?? "http://127.0.0.1:8700";
+export const API_BASE = process.env.NEXT_PUBLIC_STUDIO_API ?? "http://127.0.0.1:8701";  // ctx-studio serve --pbi
 
 export type Person = { id: string; name: string; role: string; areas: string[] };
 export type Area = { id: string; title: string; owners: string[]; paths: string[] };

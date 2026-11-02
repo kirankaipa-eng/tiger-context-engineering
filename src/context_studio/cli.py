@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init")
     sv = sub.add_parser("serve")
-    sv.add_argument("--port", type=int, default=8700)
+    sv.add_argument("--port", type=int, help="8700 for the Context Studio, 8701 for a Power BI desk")
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--pbi", action="append", metavar="DIR",
                     help="a captured Power BI model folder; repeat for several")
@@ -54,8 +54,8 @@ def main(argv: list[str] | None = None) -> None:
         os.environ["CTX_STUDIO_PBI"] = os.pathsep.join(str(Path(d).resolve()) for d in args.pbi)
         from insurance_context import llm
         llm.configured()  # loads .env (the LLM and Databricks settings) before the app reads them
-        print(f"Power BI models: {', '.join(args.pbi)}. Web app: cd studio/web && npm run dev", flush=True)
-        uvicorn.run("context_studio.pbi_app:app", host=args.host, port=args.port, log_level="info")
+        print(f"Power BI models: {', '.join(args.pbi)}. The desk: cd studio/web && npm run dev", flush=True)
+        uvicorn.run("context_studio.pbi_app:app", host=args.host, port=args.port or 8701, log_level="info")
         return
 
     from .config import bootstrap, settings
@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Context Studio ready in {s.home}")
     elif args.cmd == "serve":
         import uvicorn
-        uvicorn.run("context_studio.app:app", host=args.host, port=args.port, log_level="info")
+        uvicorn.run("context_studio.app:app", host=args.host, port=args.port or 8700, log_level="info")
     elif args.cmd == "scan":
         from insurance_context import llm
         from . import curator

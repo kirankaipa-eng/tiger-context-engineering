@@ -41,7 +41,7 @@ if up "http://127.0.0.1:$WEB/insights"; then
   echo "Web app    already running on :$WEB"
 else
   echo "Web app    starting on :$WEB"
-  (cd studio/web && { [ -d node_modules ] || npm install --silent; } \
+  (cd studio/context && { [ -d node_modules ] || npm install --silent; } \
     && NEXT_DIST_DIR=.next-business NEXT_PUBLIC_STUDIO_API="http://127.0.0.1:$API" \
        nohup npx next dev -p "$WEB" > "$LOGS/web.log" 2>&1 &)
   for _ in $(seq 90); do up "http://127.0.0.1:$WEB/insights" && break; sleep 2; done

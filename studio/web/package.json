@@ -1,11 +1,11 @@
 {
-  "name": "context-studio-web",
+  "name": "pbi-desk",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3700",
+    "dev": "next dev -p 3701",
     "build": "next build",
-    "start": "next start -p 3700",
+    "start": "next start -p 3701",
     "lint": "eslint"
   },
   "dependencies": {

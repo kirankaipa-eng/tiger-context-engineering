@@ -257,7 +257,8 @@ src/insurance_context/
   bi_agent.py     Power BI: the agent toolkit; bi_mcp.py: the metrics MCP server
   bimetricview.py Power BI: captured metrics as Databricks metric views (+ a context file)
 src/context_studio/               Context Studio API: proposals, owners, curator, chat, insights desk
-studio/web/                       Context Studio web app (Next.js)
+studio/context/                   Context Studio web app (Next.js): ontology, metrics, mappings, reviews
+studio/web/                       Power BI analysis desk (Next.js): Ask, dashboards, briefs, team
 tests/            reconciliation, portability, guardrail, evolution and Power BI tests
 docs/CURATOR_SPEC.md              the build spec for the agentic curator
 docs/powerbi/                     Power BI field guide

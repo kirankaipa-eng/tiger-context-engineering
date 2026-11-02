@@ -4,7 +4,7 @@
 
 Scope: the **Power BI analysis desk**, Context Studio served over a captured Power BI model
 (`ctx-studio serve --pbi DIR`, routes under `studio/web/src/app/pbi`). The Studio review app over
-the content repo and the curator are out of scope here and keep their own context.
+the content repo (its own app, `studio/context`) and the curator are out of scope here and keep their own context.
 
 ## Platform
 
