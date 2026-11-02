@@ -56,6 +56,10 @@ export default function TeamSpace() {
   const rescout = async () => { setBusy(true); try { setTeam(await pbi.scout(pbiModel)); } catch (e: any) { setErr(String(e?.message ?? e)); } finally { setBusy(false); } }; // eslint-disable-line @typescript-eslint/no-explicit-any
 
   const s = team?.scouted;
+  // what each month was compared with, from what the Scout checked (a year before, unless brief.yaml says more)
+  const gap = (c: { now: string; before: string }) => (+c.now.slice(0, 4) - +c.before.slice(0, 4)) * 12 + (+c.now.slice(5, 7) - +c.before.slice(5, 7));
+  const against = [...new Set((s?.checked ?? []).map(gap))].sort((a, b) => a - b)
+    .map((g) => (g === 1 ? "the month before" : g === 12 ? "the same month last year" : `${g} months before`));
 
   return (
     <div className={`desk ${look.look} flex h-screen flex-col bg-[var(--d-ground)] text-[var(--d-ink)]`}>
@@ -83,13 +87,15 @@ export default function TeamSpace() {
             {err && <p className="text-[13px] text-[#9b2c2c]">{err}</p>}
             {team && <>
               <h1 className="cond text-[30px] font-semibold leading-tight text-[var(--d-ink)]">
-                {findings.length ? `${findings.length} thing${findings.length === 1 ? "" : "s"} moved` : "Nothing moved"}
+                {findings.length ? `${findings.length} thing${findings.length === 1 ? "" : "s"} moved` : s ? "Nothing moved" : "Not checked yet"}
               </h1>
               <p className="mt-1.5 text-[13.5px] leading-relaxed text-[var(--d-ink-2)]">
-                {s ? <>We checked {s.measures} numbers from your report for {when(s.checked[0]?.now ?? "")}, against the month before and the same month last year.{findings.length ? " Everything else is normal." : ""}</> : null}
+                {s ? <>We checked {s.measures} numbers from your report for {when(s.checked[0]?.now ?? "")}, against {against.join(" and ") || "the same month last year"}.{findings.length ? " Everything else is normal." : ""}
+                  {s.spent?.partial ? ` It stopped at its limit of ${s.spent.budget.toLocaleString()} warehouse queries, so some numbers were not checked.` : ""}</>
+                  : "The Scout checks the numbers you watch against the same month last year. It runs on the warehouse, so it starts only when you ask."}
               </p>
               <button onClick={rescout} disabled={busy} className="mt-3 flex items-center gap-1.5 text-[12.5px] text-[var(--d-teal)] hover:underline disabled:opacity-50">
-                <RefreshCw size={13} className={busy ? "animate-spin" : ""} />{busy ? "Checking…" : `Check again${s ? ` · last checked ${ago(s.at)}` : ""}`}</button>
+                <RefreshCw size={13} className={busy ? "animate-spin" : ""} />{busy ? "Checking…" : s ? `Check again · last checked ${ago(s.at)}` : "Check now"}</button>
             </>}
           </div>
           <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 pb-6">

@@ -172,12 +172,19 @@ def skeptic(kit, inv: dict) -> list[dict]:
 
 
 def scout(m) -> dict:
-    """Investigate every additive measure, latest month against the month before and a year before; keep what
-    broke from its own pattern, once per place it sits, with the Skeptic's checks. Returns the findings and what
-    was checked."""
-    kit = m.kit()
+    """Investigate the watched measures (pbi_watch: a small model's every one), the latest month against the
+    months before brief.yaml compares it with (a year before, by default); keep what broke from its own pattern,
+    once per place it sits, with the Skeptic's checks. One Scout at a time per model, on a budget of warehouse
+    queries. Returns the findings and what was checked."""
+    from context_studio import pbi_watch
+    return pbi_watch.single(("scout", str(m.folder)), lambda: _scout(m, pbi_watch))
+
+
+def _scout(m, pbi_watch) -> dict:
+    kit = pbi_watch.kit(m)
+    compare = pbi_watch.settings(m.folder)["scout_compare"]
     started, checked, found = time.monotonic(), [], {}
-    for metric in _additive(m.layer):
+    for metric in pbi_watch.watchlist(m):
         period = _period(m.layer, metric)
         if not period:
             continue
@@ -188,7 +195,7 @@ def scout(m) -> dict:
         if len(months) < 14:
             continue
         now = months[-1]
-        for before in (_shift(now, -1), _shift(now, -12)):
+        for before in (_shift(now, -k) for k in compare):
             if before not in months:
                 continue
             out = kit.explain(metric, period, now, before)
@@ -211,7 +218,7 @@ def scout(m) -> dict:
                                            "before": before, "impact": impact, "explain": inv, "also": [],
                                            "source": "scout"}
     for f in found.values():
-        f["checks"] = skeptic(kit, f["explain"])
+        f["checks"] = skeptic(kit, f["explain"])  # its checks report a query past the budget as not run
     ms = int((time.monotonic() - started) * 1000)
 
     def merge(data):
@@ -223,7 +230,7 @@ def scout(m) -> dict:
                              "status": prev.get("status", "new"), "created": prev.get("created", time.time())}
         data["findings"] = keep
         data["scouted"] = {"at": time.time(), "ms": ms, "checked": checked,
-                           "measures": len({c["metric"] for c in checked})}
+                           "measures": len({c["metric"] for c in checked}), "spent": pbi_watch.spent(kit)}
     return update(m.folder, merge)
 
 

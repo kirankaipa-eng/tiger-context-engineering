@@ -490,6 +490,7 @@ export default function BriefPage() {
               )}
 
               <h2 className="cond mt-12 text-[22px] font-semibold">What moved out of its usual pattern</h2>
+              {b.spent?.partial && <p className="mt-1 text-[13px] text-[var(--d-muted)]">This check stopped at its limit of {b.spent.budget.toLocaleString()} warehouse queries, so not every place was looked at. Follow fewer measures, or raise the budget in brief.yaml.</p>}
               {b.claims.length === 0 ? (
                 <p className="mt-3 rounded-2xl border border-[var(--d-rule)] bg-[var(--d-sheet)] p-6 text-[14.5px] text-[var(--d-ink-2)]">
                   Nothing in {month(b.as_of)}. Every place {b.checked} measures add up from was checked against its own last twelve months, and none sits outside them.

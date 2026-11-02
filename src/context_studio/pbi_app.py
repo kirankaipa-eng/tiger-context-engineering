@@ -342,14 +342,10 @@ from context_studio import pbi_team  # noqa: E402
 
 @app.get("/api/pbi/{mid}/team")
 def team(mid: str):
-    """The team's findings, most open and most certain first; the Scout runs the first time."""
+    """The team's findings, most open and most certain first. Opening the page never starts the Scout (it sweeps
+    the warehouse): it runs when someone asks for it (team/scout, @scout), and until then the list is empty."""
     m = _model(mid)
     data = pbi_team.load(m.folder)
-    if not data.get("scouted"):
-        try:
-            data = pbi_team.scout(m)
-        except Exception as exc:  # noqa: BLE001
-            raise _bad(exc) from exc
     return {"model": m.layer.model, "scouted": data.get("scouted"), "findings": pbi_team.ranked(data)}
 
 
@@ -371,13 +367,6 @@ def _finding(data: dict, fid: str) -> dict:
     return f
 
 
-def _ensure(m, fid: str) -> None:
-    """A finding a page still shows but the store lost (cleared, or not yet scouted since a restart): the Scout
-    runs once to find it again; if it is still not there, the numbers changed and _finding says so."""
-    if fid not in pbi_team.load(m.folder).get("findings", {}):
-        pbi_team.scout(m)
-
-
 @app.post("/api/pbi/{mid}/team/{fid}/comment")
 def team_comment(mid: str, fid: str, body: dict = Body(...)):
     """A teammate's comment. `@check` (or `@skeptic`) in it has the fact-checker check the finding again and reply."""
@@ -385,7 +374,6 @@ def team_comment(mid: str, fid: str, body: dict = Body(...)):
     who, text = str(body.get("who") or "Someone").strip()[:60], str(body.get("text") or "").strip()[:2000]
     if not text:
         raise HTTPException(400, "empty comment")
-    _ensure(m, fid)
     said = text.lower()
     recheck = any(x in said for x in ("@skeptic", "@check", "@fact-checker"))
     f0 = _finding(pbi_team.load(m.folder), fid)
@@ -434,7 +422,6 @@ def team_status(mid: str, fid: str, body: dict = Body(...)):
     if status not in ("new", "claimed", "acted", "resolved"):
         raise HTTPException(400, "status is new, claimed, acted or resolved")
     note = str(body.get("note") or "").strip()[:500]
-    _ensure(m, fid)
 
     def set_(data):
         f = _finding(data, fid)

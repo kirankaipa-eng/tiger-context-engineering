@@ -106,7 +106,10 @@ export type Brief = {
   as_of: string; as_of_name: string; data_through: string; complete: string[]; partial: string | null;
   landing: Landing[]; claims: Claim[]; more: number; settled: Claim[]; checked: number; ms: number;
   me: string | null; prefs: BriefPrefs; choices: { metric: string; label: string }[]; slices: string[];
+  spent?: Spent;
 };
+/** What a sweep of the warehouse spent: queries against its budget; partial when it stopped at the budget. */
+export type Spent = { queries: number; budget: number; partial: boolean };
 
 export type Check = { check: string; passed: boolean | null; said: string };
 export type Finding = {
@@ -117,7 +120,9 @@ export type Finding = {
 };
 export type Team = {
   model: string; findings: Finding[];
-  scouted: { at: number; ms: number; measures: number; checked: { metric: string; label: string; now: string; before: string; verdict: string }[] } | null;
+  scouted: { at: number; ms: number; measures: number; checked: { metric: string; label: string; now: string; before: string; verdict: string }[];
+    /** the run's warehouse queries against its budget; partial when it stopped at the budget */
+    spent?: Spent } | null;
 };
 
 /** "'Associated Product'[Product]:month" -> { table, column, grain } */

@@ -40,7 +40,7 @@ def team(tmp_path):
 def test_the_scout_finds_the_spike_and_the_skeptic_checks_it(team):
     data = pbi_team.scout(team)
     found = pbi_team.ranked(data)
-    month = next(f for f in found if f["before"] == "2026-02")
+    month = next(f for f in found if f["before"] == "2025-03")  # against the same month a year before
     assert month["now"] == "2026-03" and "Lakeview" in [s["value"] for s in month["explain"]["steps"]]
     checks = {c["check"]: c for c in month["checks"]}
     assert checks["complete"]["passed"] and checks["many_rows"]["passed"] is not None
@@ -48,10 +48,17 @@ def test_the_scout_finds_the_spike_and_the_skeptic_checks_it(team):
     assert data["scouted"]["measures"] == 1 and all(c["verdict"] for c in data["scouted"]["checked"])
 
 
+def test_opening_the_team_page_does_not_sweep_the_warehouse(team, monkeypatch):
+    monkeypatch.setattr(pbi_app, "_MODELS", {"claims": team})
+    monkeypatch.setattr(pbi_team, "scout", lambda m: pytest.fail("opening the page ran the Scout"))
+    out = TestClient(pbi_app.app).get("/api/pbi/claims/team").json()
+    assert out["scouted"] is None and out["findings"] == []
+
+
 def test_a_thread_and_a_status_are_kept_and_survive_a_new_scout(team, monkeypatch):
     monkeypatch.setattr(pbi_app, "_MODELS", {"claims": team})
     client = TestClient(pbi_app.app)
-    [first, *_] = client.get("/api/pbi/claims/team").json()["findings"]
+    [first, *_] = client.post("/api/pbi/claims/team/scout").json()["findings"]
     out = client.post(f"/api/pbi/claims/team/{first['id']}/comment", json={"who": "Priya", "text": "Real? @skeptic"}).json()
     assert out["comments"][-1]["who"] == "Fact-checker" and out["comments"][-1]["checks"]
     assert client.post(f"/api/pbi/claims/team/{first['id']}/status", json={"status": "claimed", "who": "Priya"}).json()["owner"] == "Priya"
@@ -79,7 +86,7 @@ def test_agents_on_call_and_a_persons_dashboard(team, monkeypatch):
 def test_the_assistants_answer_in_a_thread(team, monkeypatch):
     monkeypatch.setattr(pbi_app, "_MODELS", {"claims": team})
     client = TestClient(pbi_app.app)
-    [first, *_] = client.get("/api/pbi/claims/team").json()["findings"]
+    [first, *_] = client.post("/api/pbi/claims/team/scout").json()["findings"]
     out = client.post(f"/api/pbi/claims/team/{first['id']}/comment", json={"who": "Priya", "text": "@Investigator again?"}).json()
     assert out["comments"][-1]["who"] == "Investigator" and "Same answer" in out["comments"][-1]["text"]
     out = client.post(f"/api/pbi/claims/team/{first['id']}/comment", json={"who": "Priya", "text": "@Scout anything else?"}).json()
@@ -88,12 +95,13 @@ def test_the_assistants_answer_in_a_thread(team, monkeypatch):
     assert out["comments"][-1]["who"] == "Fact-checker"
 
 
-def test_a_finding_the_store_lost_is_found_again(team, monkeypatch):
+def test_a_finding_the_store_lost_says_so_without_a_new_sweep(team, monkeypatch):
     monkeypatch.setattr(pbi_app, "_MODELS", {"claims": team})
     client = TestClient(pbi_app.app)
-    [first, *_] = client.get("/api/pbi/claims/team").json()["findings"]
+    [first, *_] = client.post("/api/pbi/claims/team/scout").json()["findings"]
     (team.folder / "team.json").unlink()  # cleared while a page still shows the finding
+    monkeypatch.setattr(pbi_team, "scout", lambda m: pytest.fail("a lost finding ran the Scout"))
     out = client.post(f"/api/pbi/claims/team/{first['id']}/comment", json={"who": "Priya", "text": "still there?"})
-    assert out.status_code == 200 and out.json()["comments"][-1]["text"] == "still there?"
+    assert out.status_code == 404 and "no longer here" in out.json()["detail"]
     gone = client.post("/api/pbi/claims/team/nope123/comment", json={"who": "Priya", "text": "hi"})
     assert gone.status_code == 404 and "no longer here" in gone.json()["detail"]

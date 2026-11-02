@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
@@ -30,7 +31,7 @@ import json
 
 import yaml
 
-from context_studio import pbi_team
+from context_studio import pbi_team, pbi_watch
 from insurance_context.bistats import smooth, standing, surprise
 
 Z = 3.0          # how far outside its own history a month must sit to be a claim
@@ -175,7 +176,11 @@ def brief(m, as_of: str | None = None, me: str | None = None) -> dict:
     key = (str(m.folder), as_of, json.dumps(pr, sort_keys=True))
     hit = _CACHE.get(key)
     if not hit or time.time() - hit["_at"] > 600:
-        hit = _CACHE[key] = {**_brief(m, as_of, pr), "_at": time.time()}
+        # one run at a time for the same brief: whoever opens it meanwhile waits for that run's answer
+        def run() -> dict:
+            _CACHE[key] = {**_brief(m, as_of, pr), "_at": time.time()}
+            return _CACHE[key]
+        hit = pbi_watch.single(("brief", *key), run)
     team = pbi_team.load(m.folder).get("findings", {})
     out = {k: v for k, v in hit.items() if k != "_at"}
     for c in out.get("claims", []) + out.get("settled", []):
@@ -194,11 +199,12 @@ def brief(m, as_of: str | None = None, me: str | None = None) -> dict:
 
 def _brief(m, as_of: str | None = None, pr: dict | None = None) -> dict:
     started = time.monotonic()
-    kit = m.kit()
+    kit = pbi_watch.kit(m)  # its own budget of warehouse queries (pbi_watch)
     pr = pr or {}
     scope = {k: v for k, v in (pr.get("scope") or {}).items() if v}
     every = [k for k in pbi_team._additive(m.layer) if pbi_team._period(m.layer, k)]
-    metrics = [k for k in (pr.get("measures") or []) if k in every] or every
+    metrics = pbi_watch.watchlist(m, pr.get("measures"), _headline(m, pr.get("headline")))
+    compare = pbi_watch.settings(m.folder)["compare"]
     if not metrics:
         return {"error": "no measure here adds up by month, so there is nothing to brief"}
     first = metrics[0]
@@ -213,21 +219,30 @@ def _brief(m, as_of: str | None = None, pr: dict | None = None) -> dict:
     for metric in _headline(m, pr.get("headline")):
         p = pbi_team._period(m.layer, metric)
         if p:
-            landing.append(_landing(m, kit, metric, p, months, as_of, scope))
+            try:
+                landing.append(_landing(m, kit, metric, p, months, as_of, scope))
+            except pbi_watch.OverBudget:
+                break
 
-    # places that moved: what the investigation finds this month and last, each against a month and a year before
+    # places that moved: what the investigation finds this month and last, each against the months before
+    # brief.yaml compares it with (a year before, by default)
+    steps = [(metric, pbi_team._period(m.layer, metric), now, before) for metric in metrics for now in (as_of, prev)
+             for before in (pbi_team._shift(now, -k) for k in compare) if before in months]
+
+    def investigate(step):  # its own toolkit, on the run's budget: steps run side by side
+        metric, p, now, before = step
+        if not kit.wh.searching():
+            return None
+        own = pbi_watch.kit(m, wh=kit.wh)
+        if own.explain(metric, p, now, before, scope or None).startswith("Error"):
+            return None
+        inv = own.results[-1].get("explain") if own.results else None
+        return inv if inv and inv.get("verdict") == "path" else None
+
     places: dict[tuple, dict] = {}
-    for metric in metrics:
-        p = pbi_team._period(m.layer, metric)
-        for now in (as_of, prev):
-            for before in (pbi_team._shift(now, -1), pbi_team._shift(now, -12)):
-                if before not in months:
-                    continue
-                if kit.explain(metric, p, now, before, scope or None).startswith("Error"):
-                    continue
-                inv = kit.results[-1].get("explain") if kit.results else None
-                if not inv or inv.get("verdict") != "path":
-                    continue
+    with ThreadPoolExecutor(pbi_watch.PARALLEL) as pool:
+        for (metric, p, _, _), inv in zip(steps, pool.map(investigate, steps)):  # in order, whatever finishes first
+            if inv:
                 path = tuple((s["by"], s["value"]) for s in inv["steps"])
                 places.setdefault((metric, path), {"metric": metric, "period": p, "path": path, "explain": inv})
 
@@ -235,8 +250,12 @@ def _brief(m, as_of: str | None = None, pr: dict | None = None) -> dict:
     totals: dict[str, dict[str, float]] = {}
     for (metric, path), c in places.items():
         p = c["period"]
-        totals.setdefault(metric, _series(kit, metric, p, scope))
-        s = _series(kit, metric, p, {**scope, **dict(path)})
+        try:
+            if metric not in totals:
+                totals[metric] = _series(kit, metric, p, scope)
+            s = _series(kit, metric, p, {**scope, **dict(path)})
+        except pbi_watch.OverBudget:
+            break
         now, then = _standing(s, months, as_of), _standing(s, months, prev)
         out_now, out_then = _out(now, totals[metric].get(as_of, 0)), _out(then, totals[metric].get(prev, 0))
         if not (out_now or out_then):
@@ -277,7 +296,7 @@ def _brief(m, as_of: str | None = None, pr: dict | None = None) -> dict:
     return {"as_of": as_of, "as_of_name": _month_name(as_of), "data_through": last, "complete": complete[-24:],
             "partial": months[-1] if months[-1] not in complete else None, "landing": landing,
             "claims": claims[:TOP], "more": max(0, len(claims) - TOP), "settled": settled[:3],
-            "checked": len(metrics), "ms": int((time.monotonic() - started) * 1000),
+            "checked": len(metrics), "ms": int((time.monotonic() - started) * 1000), "spent": pbi_watch.spent(kit),
             "prefs": {"measures": metrics if pr.get("measures") else [], "headline": [x["metric"] for x in landing],
                       "scope": scope},
             "choices": [{"metric": k, "label": m.layer.metrics[k].get("label", k)} for k in every],
@@ -328,7 +347,7 @@ def pattern(m, metric: str | None = None, as_of: str | None = None, me: str | No
     key = (str(m.folder), metric, as_of, json.dumps(scope, sort_keys=True))
     if key in _MAP and time.time() - _MAP[key]["_at"] < 600:
         return {k: v for k, v in _MAP[key].items() if k != "_at"}
-    kit = m.kit()
+    kit = pbi_watch.kit(m)
     period = pbi_team._period(m.layer, metric)
     if claim and claim["metric"] != metric:
         claim = next((c for c in b["claims"] if c["metric"] == metric), None)
@@ -379,8 +398,8 @@ def pattern(m, metric: str | None = None, as_of: str | None = None, me: str | No
            "disturbed": [sum(1 for g in groups.values() for t in g if t["out"][i]) for i in range(len(shown))],
            "alpha": alpha, "places": len(grouped),
            "claim": [w["value"] for w in claim["where"] if w["by"] in levels] if claim else None,
-           "choices": [{"metric": x["metric"], "label": x["label"]} for x in b["landing"]]
-           + [{"metric": c["metric"], "label": c["label"]} for c in b["claims"] if c["metric"] not in
-              {x["metric"] for x in b["landing"]}]}
+           # each measure once: two claims on one measure (Admits in two places) are one choice
+           "choices": list({x["metric"]: {"metric": x["metric"], "label": x["label"]}
+                            for x in [*b["landing"], *b["claims"]]}.values())}
     _MAP[key] = {**out, "_at": time.time()}
     return out
