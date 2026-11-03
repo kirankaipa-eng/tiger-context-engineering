@@ -1,20 +1,22 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { colLabel, isDimension, splitRef } from "@/lib/pbi";
+import { colLabel, isDimension, readable, splitRef } from "@/lib/pbi";
 import { fmtValue } from "./ui";
 
 export function num(v: unknown) {
   return typeof v === "number" ? fmtValue(v) : v === null || v === undefined ? "—" : String(v);
 }
 
-export function ResultTable({ columns, rows, numeric, labels }: { columns: string[]; rows: unknown[][]; numeric?: string[]; labels?: Record<string, string> }) {
+export function ResultTable({ columns, rows, numeric, labels, maxHeight }: { columns: string[]; rows: unknown[][]; numeric?: string[]; labels?: Record<string, string>; maxHeight?: number }) {
   const isNum = (c: string, j: number) => numeric ? numeric.includes(c) : rows.some((r) => typeof r[j] === "number");
+  const head = (c: string) => labels?.[c] ?? (c.includes("[") ? colLabel(c) : readable(c));
   return (
-    <div className="max-h-[28rem] overflow-auto rounded-lg border border-line bg-panel">
+    <div className="max-h-[28rem] overflow-auto rounded-lg border border-line bg-panel" style={maxHeight ? { maxHeight } : undefined}>
       <table className="w-full text-[13px]">
         <thead className="sticky top-0 bg-sunk">
-          <tr>{columns.map((c, j) => <th key={c} className={`whitespace-nowrap px-3 py-2 font-semibold ${isNum(c, j) ? "text-right" : "text-left"}`}>{labels?.[c] ?? (c.includes("[") ? colLabel(c) : c)}</th>)}</tr>
+          <tr>{columns.map((c, j) => <th key={c} title={head(c)} className={`px-3 py-2 align-bottom font-semibold ${isNum(c, j) ? "text-right" : "text-left"}`}>
+            <span className={`line-clamp-2 min-w-[6rem] max-w-[14rem] break-words leading-snug ${isNum(c, j) ? "ml-auto" : ""}`}>{head(c)}</span></th>)}</tr>
         </thead>
         <tbody>
           {rows.map((r, i) => (

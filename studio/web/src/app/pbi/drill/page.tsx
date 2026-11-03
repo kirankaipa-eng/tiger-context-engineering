@@ -12,7 +12,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { AutoChart, blank, type ChartKind } from "@/components/auto-chart";
 import { ColumnSelect, ResultTable, SqlBlock } from "@/components/pbi";
 import { Box, ErrorNote, Loading, Pill } from "@/components/ui";
-import { colLabel, columnTypes, isDimension, pbi, type PbiMetric, type PbiMetricDetail, type Result } from "@/lib/pbi";
+import { colLabel, columnTypes, readable, isDimension, pbi, type PbiMetric, type PbiMetricDetail, type Result } from "@/lib/pbi";
 import { useStudio } from "@/lib/studio";
 
 type Step = { by: string; pick?: unknown; picked?: boolean };
@@ -81,7 +81,7 @@ function Drill() {
   const menu = menuAt && menuAt.key === key ? menuAt : null;
 
   const columns = detail?.columns ?? [];
-  const labels = Object.fromEntries((metrics ?? []).map((m) => [m.key, m.label]));
+  const labels = Object.fromEntries((metrics ?? []).map((m) => [m.key, readable(m.label)]));
   const used = steps.map((s) => s.by.replace(/:[a-z]+$/, ""));
   const next = columns.filter((c) => isDimension(c, types[c]) && !used.includes(c) && c !== split && !(dates ?? []).includes(c)).slice(0, 10);
   const trends = (dates ?? []).filter((d) => columns.includes(d) && !used.includes(d)).slice(0, 2);

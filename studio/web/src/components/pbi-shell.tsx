@@ -45,8 +45,10 @@ function Sidebar() {
     try { if (localStorage.getItem("pbi-sidebar") === "0") setOpen(false); } catch { /* private window */ }  // eslint-disable-line react-hooks/set-state-in-effect
     setMe(owner());
     const on = (e: Event) => setActive((e as CustomEvent).detail ?? null);
+    const named = (e: Event) => setMe((e as CustomEvent).detail || owner());  // said on My briefs: the rail shows it at once
     window.addEventListener("ask:showing", on);
-    return () => window.removeEventListener("ask:showing", on);
+    window.addEventListener("desk:name", named);
+    return () => { window.removeEventListener("ask:showing", on); window.removeEventListener("desk:name", named); };
   }, []);
   useEffect(() => {
     if (!pbiModel) return;

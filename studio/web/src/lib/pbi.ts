@@ -135,9 +135,18 @@ export function splitRef(ref: string) {
   return { table, column: base.slice(i + 1, -1), grain };
 }
 
+/** A name written as an identifier (Current_AllowedAmount_Pharmacy, MemberAgeBand), as words, so it can wrap:
+    "Current Allowed Amount Pharmacy". A name that already has spaces is left as its owner wrote it. Display only. */
+export function readable(name: string) {
+  if (!name || /\s/.test(name) || !/[_a-z][A-Z]|_/.test(name)) return name;
+  return name.replace(/_+/g, " ").replace(/([a-z\d])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").trim();
+}
+
 export function colLabel(ref: string) {
   const { table, column, grain } = splitRef(ref);
-  return `${column}${grain ? ` (${grain})` : ""}`.trim() + (table && column.toLowerCase() === table.toLowerCase() ? "" : ` · ${table}`);
+  // the table only where it tells two columns apart, without its Dim_/Fact_ prefix
+  const t = readable(table.replace(/^(dim|fact)_?/i, ""));
+  return `${readable(column)}${grain ? ` (${grain})` : ""}`.trim() + (!table || column.toLowerCase().includes(t.replace(/\s/g, "").toLowerCase()) ? "" : ` · ${t}`);
 }
 
 /** Columns worth breaking a number down by: no images, sort keys, colors, links or keys, and no

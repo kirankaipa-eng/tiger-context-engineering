@@ -122,7 +122,10 @@ export function MyBoard({ show }: { show: "dashboard" | "briefs" }) {
         <div className="mx-auto max-w-[1180px] px-8 py-8">
           {note && <p className="mb-4 rounded-lg bg-[var(--d-rise-soft)] px-4 py-2 text-[13px] text-[var(--d-rise-ink)]">{note}</p>}
           {show === "briefs" ? (
-            <ScheduledBriefs model={pbiModel} owner={owner} actions={(id) => actionsFor(id, 0)} below={below} dates={cols.dates} types={cols.types} />
+            <ScheduledBriefs model={pbiModel} owner={owner} onName={(n) => {
+              try { localStorage.setItem("desk-name", n); } catch { /* private window: kept for this visit */ }
+              setOwner(n); window.dispatchEvent(new CustomEvent("desk:name", { detail: n }));
+            }} actions={(id) => actionsFor(id, 0)} below={below} dates={cols.dates} types={cols.types} />
           ) : <>
           <p className="mb-5 text-[14px] text-[var(--d-muted)]">The charts you kept from your questions, worked out again each time you open this page.</p>
           {!live && <p className="flex items-center gap-2 text-[14px] text-[var(--d-muted)]"><Loader2 size={15} className="animate-spin" />Running your questions against today&rsquo;s numbers…</p>}

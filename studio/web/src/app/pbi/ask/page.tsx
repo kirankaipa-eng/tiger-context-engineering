@@ -21,7 +21,7 @@ import { ResultTable, SqlBlock, num } from "@/components/pbi";
 import { streamNdjson } from "@/lib/api";
 import type { Chart } from "@/lib/dashboards";
 import { readAsked, tileOf, writeAsked } from "@/lib/desk";
-import { colLabel, columnTypes, isDimension, pbi, type PbiMetric, type Result } from "@/lib/pbi";
+import { colLabel, columnTypes, readable, isDimension, pbi, type PbiMetric, type Result } from "@/lib/pbi";
 import { useStudio } from "@/lib/studio";
 import { BUSINESS, PEOPLE, PLACE } from "@/lib/vocab";
 import { SettingsMenu, useLook } from "@/lib/theme";
@@ -618,7 +618,7 @@ export default function AskPage() {
       setCols(columnTypes(t.tables));
     }).catch(() => {});
   }, [pbiModel]);
-  const labels = useMemo(() => Object.fromEntries(metrics.map((m) => [m.key, m.label])), [metrics]);
+  const labels = useMemo(() => Object.fromEntries(metrics.map((m) => [m.key, readable(m.label)])), [metrics]);
   const starters = useMemo(() => {
     // a rate or a per-member figure reads as the business's pulse; a raw count (member months) seldom does
     const pulse = (m: { label: string }) => (/pmpm|per |ratio|rate/i.test(m.label) ? 0 : 1);

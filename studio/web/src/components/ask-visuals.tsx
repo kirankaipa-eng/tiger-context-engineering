@@ -107,6 +107,9 @@ function totals(d: Data, dim: string, m: string) {
 /** The raw value behind a shown label (a period label back to "2026-09"), for a pick. */
 const raw = (d: Data, dim: string, label: string) => d.rows.map((r) => r[at(d, dim)]).find((v) => text(dim, v) === label || text(dim, v, true) === label) ?? label;
 
+// a category's name (a long measure or member) is cut at a width, never wider than the chart it labels; whole in its tooltip
+const CLIP = { width: 140, overflow: "truncate" } as const;
+
 export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick, height = 300, exact = false }: Props) {
   const colors = useChartColors();
   const VIS_PALETTE = colors.palette, UP = colors.up, DOWN = colors.down, RAMP = colors.ramp;
@@ -124,7 +127,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
   // a short chart gets fewer gridlines, so its values do not crowd each other
   const axisNum = (k = m) => ({ type: "value", ...(height < 220 ? { splitNumber: 3 } : {}), axisLabel: { formatter: (v: number) => f(k)(v), fontSize: 11, color: AXIS }, splitLine: { lineStyle: { color: GRID } } });
   const catAxis = (dim: string, cats: string[]) => ({ type: "category", data: cats, axisTick: { show: false }, axisLine: { lineStyle: { color: GRID } },
-    axisLabel: { color: AXIS, fontSize: 11, hideOverlap: true, ...(PERIOD.test(dim) ? { formatter: (v: string) => v } : {}) } });
+    axisLabel: { color: AXIS, fontSize: 11, hideOverlap: true, ...CLIP, ...(PERIOD.test(dim) ? { formatter: (v: string) => v } : {}) } });
   const chart = (option: any, h = height, click?: (e: any) => void) => (
     <ECharts option={{ ...base, ...option }} style={{ width: "100%", height: h }} notMerge
       onEvents={click && onPick ? { click } : undefined} />
@@ -178,7 +181,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
       return chart({
         grid: { left: 8, right: 110, top: 8, bottom: 8, containLabel: true },
         tooltip: { trigger: "item", confine: true, formatter: (p: any) => `${p.name}<br/><b>${fm(p.value)}</b>${whole_(m) ? ` · ${pctOf(p.value / whole)} of all` : ""}` },
-        xAxis: { type: "value", show: false }, yAxis: { ...catAxis(dim, items.map(([k]) => k)), inverse: true, axisLabel: { color: "#5b6472", fontSize: 12 } },
+        xAxis: { type: "value", show: false }, yAxis: { ...catAxis(dim, items.map(([k]) => k)), inverse: true, axisLabel: { color: "#5b6472", fontSize: 12, ...CLIP } },
         series: [{ type: "bar", barMaxWidth: 22, data: items.map(([k, v], i) => ({ value: v, itemStyle: {
           color: k === "Other" ? OTHER : (pick ? pick.has(k) : i === 0) ? UP : tint(.42), borderRadius: [0, 4, 4, 0] } })),
           label: { show: true, position: "right", color: "#5b6472", fontSize: 11.5, formatter: (p: any) => `${fm(p.value)}${whole_(m) ? `  ${pctOf(p.value / whole)}` : ""}` } }],
@@ -287,7 +290,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
         grid: { left: 8, right: 16, top: 16, bottom: 8, containLabel: true },
         tooltip: { trigger: "axis", confine: true, valueFormatter: (q: number) => signed(fm(q), q) },
         xAxis: period ? catAxis(x, cats.map((c) => c.replace(/ (\d{2})(\d{2})$/, " ’$2"))) : { type: "value", axisLabel: { color: AXIS, fontSize: 11, formatter: (q: number) => fm(q) }, splitLine: { lineStyle: { color: GRID } } },
-        yAxis: period ? axisNum() : { ...catAxis(x, cats), inverse: true, axisLabel: { color: "#5b6472", fontSize: 12 } },
+        yAxis: period ? axisNum() : { ...catAxis(x, cats), inverse: true, axisLabel: { color: "#5b6472", fontSize: 12, ...CLIP } },
         series: [{ type: "bar", name: `${values[0]} − ${values[1]}`, barMaxWidth: period ? 14 : 20,
           data: cats.map((c) => ({ value: diff(c), itemStyle: { color: diff(c) >= 0 ? UP : DOWN, borderRadius: period ? (diff(c) >= 0 ? [3, 3, 0, 0] : [0, 0, 3, 3]) : (diff(c) >= 0 ? [0, 4, 4, 0] : [4, 0, 0, 4]) } })),
           markLine: { silent: true, symbol: "none", lineStyle: { color: AXIS, type: "solid", width: 1 }, label: { show: false }, data: [period ? { yAxis: 0 } : { xAxis: 0 }] } }],
@@ -316,12 +319,13 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
         tooltip: { trigger: "axis", confine: true, axisPointer: { type: "shadow" }, formatter: (ps: any) => { const q = ps.find((x: any) => x.seriesIndex === 1); const s = q?.data?.signed; return `${q?.name}<br/><b>${s === undefined ? fm(q?.value) : signed(fm(s), s)}</b>`; } },
         xAxis: { ...catAxis("", cats), axisLabel: { color: "#5b6472", fontSize: 11, ...(height < 260
           // short of room: level labels, cut short and thinned where they would collide (each whole in its tooltip)
-          ? { width: 64, overflow: "truncate", interval: "auto", hideOverlap: true } : { interval: 0, rotate: cats.some((c) => c.length > 9) ? 28 : 0 }) } },
+          ? { width: 64, overflow: "truncate", interval: "auto", hideOverlap: true } : { interval: 0, rotate: cats.some((c) => c.length > 9) ? 28 : 0, width: 110, overflow: "truncate" }) } },
         yAxis: { ...axisNum(), scale: false },
         series: [
           { type: "bar", stack: "w", silent: true, itemStyle: { color: "transparent" }, data: bases },
           { type: "bar", stack: "w", barMaxWidth: 40, data: bars,
             // short of room (a small tile), only the two totals are labelled; each step's amount stays in its tooltip
+            labelLayout: { hideOverlap: true },  // big amounts side by side: one drawn, the rest in their tooltips
             label: { show: true, position: "top", color: "#5b6472", fontSize: 11, formatter: (q: any) => (q.data.signed === undefined ? fm(q.value) : height < 260 ? "" : signed(fm(q.data.signed), q.data.signed)) } },
         ],
       }, height, (e: any) => e.dataIndex > 0 && e.dataIndex <= steps.length && steps[e.dataIndex - 1][0] !== "Other" && onPick?.(dim, raw(d, dim, steps[e.dataIndex - 1][0])));
@@ -407,7 +411,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
       return chart({
         grid: { left: 8, right: 8, top: 8, bottom: key_ ? 44 : 4, containLabel: true },
         tooltip: { confine: true, formatter: (q: any) => `${ys[q.value[1]]} · ${period ? periodName(xs[q.value[0]]) : xs[q.value[0]]}<br/><b>${fm(q.value[3])}</b>${period ? ` · ${signed(pctOf(q.value[2]), q.value[2])} on its average` : ""}` },
-        xAxis: catAxis(x, xs.map((c) => (period ? periodName(c, true) : c))), yAxis: { ...catAxis(y, ys), inverse: true, axisLabel: { color: "#5b6472", fontSize: 11.5 } },
+        xAxis: catAxis(x, xs.map((c) => (period ? periodName(c, true) : c))), yAxis: { ...catAxis(y, ys), inverse: true, axisLabel: { color: "#5b6472", fontSize: 11.5, ...CLIP } },
         visualMap: period
           ? { show: key_, min: -span, max: span, orient: "horizontal", left: "center", bottom: 0, itemHeight: 120, itemWidth: 10, inRange: { color: [DOWN, "#eef0f3", UP] }, text: ["above its average", "below"], textStyle: { color: AXIS, fontSize: 11 }, dimension: 2 }
           : { show: key_, min: Math.min(...vals), max: Math.max(...vals), orient: "horizontal", left: "center", bottom: 0, itemHeight: 120, itemWidth: 10, inRange: { color: RAMP }, text: ["high", "low"], textStyle: { color: AXIS, fontSize: 11 }, dimension: 2, formatter: (v: number) => fm(v) },
@@ -468,7 +472,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
       return chart({
         grid: { left: 8, right: 24, top: 12, bottom: 8, containLabel: true },
         tooltip: { trigger: "item", confine: true, formatter: (x: any) => `${x.name} · each ${p.match(PERIOD)?.[1] ?? "period"}<br/>median <b>${fm(x.value[3])}</b><br/>middle half ${fm(x.value[2])} – ${fm(x.value[4])}<br/>range ${fm(x.value[1])} – ${fm(x.value[5])}` },
-        xAxis: axisNum(), yAxis: { ...catAxis(dim, names), inverse: true, axisLabel: { color: "#5b6472", fontSize: 12 } },
+        xAxis: axisNum(), yAxis: { ...catAxis(dim, names), inverse: true, axisLabel: { color: "#5b6472", fontSize: 12, ...CLIP } },
         series: [{ type: "boxplot", data: stats, boxWidth: [8, 18], itemStyle: { color: tint(.18), borderColor: UP, borderWidth: 1.5 } }],
       }, Math.max(200, names.length * 30 + 40), (e: any) => onPick?.(dim, raw(d, dim, names[e.dataIndex])));
     }
@@ -500,7 +504,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
       return chart({
         grid: { left: 150, right: 90, top: 8, bottom: 8 },
         xAxis: { type: "value", show: false },
-        yAxis: { type: "category", inverse: true, data: metrics.map(label), axisTick: { show: false }, axisLine: { show: false }, axisLabel: { color: AXIS, fontSize: 12.5 } },
+        yAxis: { type: "category", inverse: true, data: metrics.map(label), axisTick: { show: false }, axisLine: { show: false }, axisLabel: { color: AXIS, fontSize: 12.5, ...CLIP } },
         series: [{ type: "bar", barWidth: 18, data: vals.map((x, j) => ({ value: x, itemStyle: { color: VIS_PALETTE[j % VIS_PALETTE.length], borderRadius: [0, 4, 4, 0] } })),
           label: { show: true, position: "right", color: AXIS, fontSize: 12.5, formatter: (q: any) => f(metrics[q.dataIndex])(q.value) } }],
       }, Math.max(140, metrics.length * 44 + 20));
@@ -521,7 +525,7 @@ export function Visual({ kind, data, metrics, dims, labels, picked = {}, onPick,
     }
 
     case "table":
-      return <div className="max-h-80 overflow-auto"><ResultTable columns={d.columns} rows={d.rows} labels={labels} /></div>;
+      return <ResultTable columns={d.columns} rows={d.rows} labels={labels} maxHeight={height} />;
 
     case "calendar": {
       // the last year of days, a cell each, darker for more

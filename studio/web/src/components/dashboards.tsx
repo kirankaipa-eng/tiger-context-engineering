@@ -18,7 +18,7 @@ import { InvestigationExhibit } from "@/components/pbi-investigation";
 import type { ExhibitData } from "@/components/pbi-exhibit";
 import { LIMIT, MAIN, arrange, chartsOf, dashboardsOf, formOf, load, newDash, save, widthOf, type Chart, type Dash } from "@/lib/dashboards";
 import { owner as me } from "@/lib/desk";
-import { colLabel, columnTypes, pbi, type Result } from "@/lib/pbi";
+import { colLabel, columnTypes, readable, pbi, type Result } from "@/lib/pbi";
 import { useStudio } from "@/lib/studio";
 import { SettingsMenu, useLook } from "@/lib/theme";
 
@@ -47,7 +47,7 @@ export function Dashboards() {
   useEffect(() => {
     if (!pbiModel || who === "me") return;
     load(pbiModel, who).then(setTiles).catch((e) => setError(String(e?.message ?? e)));
-    pbi.metrics(pbiModel).then((r) => setLabels(Object.fromEntries(r.metrics.map((m) => [m.key, m.label])))).catch(() => {});
+    pbi.metrics(pbiModel).then((r) => setLabels(Object.fromEntries(r.metrics.map((m) => [m.key, readable(m.label)])))).catch(() => {});
     pbi.tables(pbiModel).then((t) => setDates(columnTypes(t.tables).dates)).catch(() => {});
   }, [pbiModel, who]);
 

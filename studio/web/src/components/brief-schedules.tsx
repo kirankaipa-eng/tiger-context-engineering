@@ -19,14 +19,17 @@ const when = (t: string | number) => new Date(typeof t === "number" ? t * 1000 :
 
 type Draft = { id?: string; ask: string; title: string; cron: string };
 
-export function ScheduledBriefs({ model, owner, actions, below, dates, types }: {
+export function ScheduledBriefs({ model, owner, onName, actions, below, dates, types }: {
   model: string; owner: string; actions: (key: string) => DeskActions; dates: string[]; types: Record<string, string>;
+  /** Who this desk is for, said here (a brief is kept under a name), so no one is sent elsewhere first. */
+  onName: (name: string) => void;
   /** What was drilled into from an exhibit, shown under it (the page keeps the trail). */
   below: (key: string) => React.ReactNode;
 }) {
   const [list, setList] = useState<Schedule[] | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState("");
   const named = owner && owner !== "me";
   // the example is the model's own: one of its measures, a rate or per-member one when it has one
   const [example, setExample] = useState<{ ask: string; title: string }>({ ask: "What changed in our main numbers this month, and what is behind it?", title: "Monthly numbers" });
@@ -74,7 +77,15 @@ export function ScheduledBriefs({ model, owner, actions, below, dates, types }: 
             className="ml-auto flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--d-navy)] px-3.5 py-2 text-[14px] font-medium text-white"><Plus size={15} />New brief</button>
         )}
       </div>
-      {!named && <p className="mt-4 text-[14px] text-[var(--d-muted)]">A scheduled brief is written for someone: <Link href="/pbi/team" className="font-medium text-[var(--d-teal)]">say who you are on the Team page</Link> first.</p>}
+      {!named && (
+        <form onSubmit={(e) => { e.preventDefault(); if (name.trim()) onName(name.trim()); }} className="mt-4 flex flex-wrap items-center gap-2">
+          <label htmlFor="brief-owner" className="text-[14px] text-[var(--d-ink-2)]">A brief is written for someone. Your name:</label>
+          <input id="brief-owner" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Priya" autoComplete="name"
+            className="w-48 rounded-lg border border-[var(--d-rule)] bg-[var(--d-paper)] px-3 py-1.5 text-[14px] outline-none focus:border-[var(--d-teal)]" />
+          <button type="submit" disabled={!name.trim()} className="rounded-lg bg-[var(--d-navy)] px-3.5 py-1.5 text-[14px] font-medium text-white disabled:opacity-40">Continue</button>
+          <span className="text-[13px] text-[var(--d-muted)]">Kept in this browser; the <Link href="/pbi/team" className="text-[var(--d-teal)]">Team page</Link> changes it.</span>
+        </form>
+      )}
       {error && <p className="mt-4 rounded-lg bg-[var(--d-rise-soft)] px-4 py-2 text-[13px] text-[var(--d-rise-ink)]">{error}</p>}
       {draft && <Editor model={model} example={example} draft={draft} onCancel={() => setDraft(null)} onSave={save} />}
       <div className="mt-5 space-y-5">

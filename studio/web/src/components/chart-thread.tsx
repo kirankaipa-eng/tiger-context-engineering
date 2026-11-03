@@ -189,7 +189,7 @@ export function ThreadPanel({ model, labels }: { model: string; labels: Record<s
         )}
         <h2 className="cond mt-1 text-[17px] font-semibold leading-snug">{a.title}</h2>
         {Object.keys(a.filters).length > 0 && <p className="mt-0.5 text-[12.5px] text-[var(--d-muted)]">{scopeOf(a.filters)}</p>}
-        <div className="mt-2 h-[150px]">
+        <div className="mt-2 h-[150px] overflow-hidden">
           {chart ? <Visual kind={a.kind ?? formFor(a.metrics, a.dims, labels)} data={[{ columns: chart.columns, rows: chart.rows }]} metrics={a.metrics} dims={a.dims} labels={labels} height={150} exact />
             : <div className="h-full animate-pulse rounded-xl bg-[var(--d-paper)]" />}
         </div>
