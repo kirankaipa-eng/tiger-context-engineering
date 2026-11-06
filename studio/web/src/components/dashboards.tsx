@@ -13,6 +13,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { KIND_NAME, RATE, Visual, kindsFor, noteOf } from "@/components/ask-visuals";
 import { ThreadButton, ThreadPanel, openThread, type Anchor, type ThreadStore } from "@/components/chart-thread";
+import { ExportData } from "@/components/export-data";
 import { periodName } from "@/components/auto-chart";
 import { InvestigationExhibit } from "@/components/pbi-investigation";
 import type { ExhibitData } from "@/components/pbi-exhibit";
@@ -339,6 +340,7 @@ function Card({ chart: c, model, labels, dates, filters, stamp, dashes, activeId
             ))}
           </span>
         )}
+        <ExportData title={c.title} tables={data} labels={labels} />
         <ThreadButton anchor={anchor} store={threads} />
         <div ref={menuBox} className="relative">
           <button onClick={() => setMenu((m) => !m)} aria-label="Chart options" aria-expanded={menu} className="grid h-7 w-7 place-items-center rounded-lg text-[var(--d-muted)] hover:bg-[var(--d-paper)] hover:text-[var(--d-ink)]"><MoreHorizontal size={16} /></button>

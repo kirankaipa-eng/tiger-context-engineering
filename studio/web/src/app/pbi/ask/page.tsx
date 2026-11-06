@@ -14,6 +14,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { pctText, periodName } from "@/components/auto-chart";
 import { AddToDashboard } from "@/components/add-to-dashboard";
+import { ExportData } from "@/components/export-data";
 import { DrillTree, PickMenu, type DrillStart } from "@/components/ask-drill";
 import { EXPORT_GAPS, KIND_NAME, RATE, Visual, kindsFor, noteOf, type Data, type VisualKind } from "@/components/ask-visuals";
 import type { ExhibitData } from "@/components/pbi-exhibit";
@@ -151,7 +152,9 @@ function offersOf(answer: string): { body: string; offers: string[] } {
   const paras = answer.trim().split(/\n+/), last = paras.at(-1)?.trim() ?? "", m = last.match(OFFER);
   if (!m || paras.length < 2) return { body: answer, offers: [] };
   const offers = m[1].split(/,\s*(?:or\s+)?|\s+or\s+/).map((x) => x.replace(/^(a|an|the)\s+/i, "").replace(/[.?]$/, "").trim()).filter((x) => x.length > 3);
-  return offers.length ? { body: paras.slice(0, -1).join("\n\n"), offers: offers.slice(0, 3) } : { body: answer, offers: [] };
+  // what comes before the offer stays exactly as written: a table in it is lines that belong together
+  const text = answer.trimEnd();
+  return offers.length ? { body: text.slice(0, text.lastIndexOf("\n")).trimEnd(), offers: offers.slice(0, 3) } : { body: answer, offers: [] };
 }
 
 /** What a chart is computed under: the trail's focus, but for a pick on its own columns (it keeps showing every
@@ -418,6 +421,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
           {mine && <span className="rounded-full bg-[var(--d-teal-soft)] px-2 py-0.5 text-[12px] font-semibold text-[var(--d-teal)]">{shown(mine[0], mine[1])} picked</span>}
           {kinds.length > 1 && toggle(kinds.map((k) => k.kind), v.kind as VisualKind, (k) => switchTo(v, k))}
           {!v.table && <ThreadButton anchor={() => anchorOf(v)} store={threads} />}
+          <ExportData title={v.title} tables={ready ? rs : null} labels={labels} />
           {!v.table && <AddToDashboard model={model} charts={() => [chartOf(v)]} label="Add this chart to a dashboard" compact />}
           {(!run || run.loading) && <span className="pulse-soft text-[12px] text-[var(--d-muted)]">Computing…</span>}
         </header>
@@ -495,7 +499,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
       <div className={`mt-4 overflow-hidden rounded-2xl border border-[var(--d-rule)] bg-[var(--d-sheet)] shadow-[0_1px_2px_rgba(0,0,0,.04)] ${picture || lead ? "grid lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]" : "max-w-4xl"}`}>
         <div className="flex flex-col px-7 py-6">
           <p className="mb-2 text-[12px] font-semibold uppercase tracking-[.08em] text-[var(--d-teal)]">{live && !answer ? "Working on it" : "The answer"}</p>
-          <div className="text-[17px] leading-relaxed text-[var(--d-ink-2)] [&_p]:mb-3 [&_p:last-child]:mb-0 [&>p:first-child]:text-[21px] [&>p:first-child]:font-medium [&>p:first-child]:leading-snug [&>p:first-child]:text-[var(--d-ink)] [&_strong]:font-semibold [&_strong]:text-[var(--d-ink)] [&_ul]:ml-5 [&_ul]:list-disc">
+          <div className="text-[17px] leading-relaxed text-[var(--d-ink-2)] [&_table]:mb-4 [&_table]:w-full [&_table]:text-[15px] [&_td]:border-t [&_td]:border-[var(--d-rule)] [&_td]:py-1.5 [&_td]:pr-3 [&_td:last-child]:pr-0 [&_td:first-child]:text-[var(--d-ink)] [&_th]:pb-1.5 [&_th]:pr-3 [&_th:last-child]:pr-0 [&_th]:text-[12.5px] [&_th]:font-semibold [&_th]:text-[var(--d-muted)] [&_p]:mb-3 [&_p:last-child]:mb-0 [&>p:first-child]:text-[21px] [&>p:first-child]:font-medium [&>p:first-child]:leading-snug [&>p:first-child]:text-[var(--d-ink)] [&_strong]:font-semibold [&_strong]:text-[var(--d-ink)] [&_ul]:ml-5 [&_ul]:list-disc">
             {body ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown> : live ? <p className="pulse-soft text-[var(--d-muted)]">{step}…</p> : null}
           </div>
           {live && answer && step && <p className="pulse-soft mt-2 text-[13px] text-[var(--d-muted)]">{step}…</p>}
@@ -516,6 +520,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
               <span className="cond mr-auto text-[16px] font-semibold text-[var(--d-ink)]">{pictureTitle(picture, labels)}</span>
               {pictureKinds.length > 1 && toggle(pictureKinds.map((k) => k.kind), picture.kind, (k) => setPicture({ ...picture, kind: k, dims: pictureKinds.find((o) => o.kind === k)!.dims }))}
               <ThreadButton anchor={() => ({ id: `${turn.id}:picture`, title: pictureTitle(picture, labels), metrics: picture.metrics, dims: picture.dims, filters: picture.filters ?? {}, kind: picture.kind })} store={threads} />
+              <ExportData title={pictureTitle(picture, labels)} tables={picture.data} labels={labels} />
               <AddToDashboard model={model} charts={pictureChart} label="Add this chart to a dashboard" compact />
             </figcaption>
             {picture.scope && <p className="mt-0.5 text-[12.5px] text-[var(--d-muted)]">{picture.scope}</p>}
@@ -639,31 +644,18 @@ export default function AskPage() {
     // the new question goes to the top of the window, as in a chat; what came before stays above it
     setTimeout(() => document.getElementById(`turn-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
     const results: ExhibitData[] = [];
-    let answer = "";
-    const ctrl = new AbortController();
-    abort.current = ctrl;
-    try {
-      await streamNdjson(pbi.askPath(pbiModel), { message, session_id: session }, (e) => {
-        if (e.type === "chunk") { answer += e.data.text ?? ""; update(id, (t) => ({ answer: t.answer + (e.data.text ?? "") })); }
-        else if (e.type === "agent_tool_call" && e.data.status === "started") { answer = ""; update(id, () => ({ answer: "" })); if (STEP[e.data.tool]) setStep(STEP[e.data.tool]); }
-        else if (e.type === "pbi_result") {
-          const d = e.data as any, r: ExhibitData = { ...d, filters: d.filters ?? {}, origin: "agent" };
-          results.push(r);
-          // the agent's own total stands in for the same computation, so it need not run twice (not its
-          // breakdowns: it may have kept only the top rows it showed)
-          if (r.kind === "compute" && !r.by.length) cache.current.set(key(r.metrics, r.by, r.filters), { columns: r.columns, rows: r.rows, sql: r.sql ?? "", ms: r.ms, warehouse: r.warehouse ?? "", truncated: false, notes: [] });
-        } else if (e.type === "error") update(id, () => ({ error: e.data.message }));
-        else if (e.type === "result") { answer = answer || e.data.answer || ""; update(id, (t) => ({ answer: t.answer || e.data.answer || "" })); }
-      }, ctrl.signal);
+    /** The pictures for what has come back. Choosing them is the slow part, so it starts with the first rows and is
+        not done again unless more arrive. */
+    const choose = async (rs: ExhibitData[], quiet: boolean) => {
       // the measure it settled on (a "why" answer's too, with the columns it walked down)
-      const last = [...results].reverse().find((r) => (r.kind === "compute" || r.kind === "explain") && r.metrics.length);
+      const last = [...rs].reverse().find((r) => (r.kind === "compute" || r.kind === "explain") && r.metrics.length);
       const lead = last?.explain ? { ...last, by: [...last.explain.steps.map((s) => s.by), last.explain.period] } : last;
       // what the answer narrowed to (Product = Excel) becomes the focus, not a fixed filter: the trail says so,
       // and one click on "Everything" widens it
       const focus: Focus = lead ? Object.entries(lead.filters) : [];
       const views: View[] = [], brought: View[] = [];
       // rows it brought itself (a listing, an analysis), as they are, after the pictures
-      results.filter((r) => r.kind !== "compute" && r.kind !== "explain" && r.columns.length && r.rows.length).forEach((r, i) => brought.push({
+      rs.filter((r) => r.kind !== "compute" && r.kind !== "explain" && r.columns.length && r.rows.length).forEach((r, i) => brought.push({
         id: `rows${i}`, kind: "rows", title: r.kind === "explore" ? "The rows behind the answer" : "What the analysis found", metrics: [], queries: [], dims: [], own: [], filters: {},
         table: { columns: r.columns, rows: r.rows.slice(0, 200) }, ran: (r as any).analysis }));
       // no computation of a measure (it ran an analysis, or computed nothing): the measures the question names,
@@ -676,7 +668,7 @@ export default function AskPage() {
       const basis = lead ? { ...lead, metrics: [...new Set([...lead.metrics, ...named])] }
         : own.length ? { kind: "compute", columns: [], rows: [], metrics: own, by: [], filters: {}, labels, origin: "agent" } as ExhibitData : undefined;
       if (basis) {
-        setStep("Choosing the pictures");
+        if (!quiet) setStep("Choosing the pictures");
         // a follow-up on "it" after a "why" keeps explaining the change ("break it down by age")
         const prior = turns.at(-1)?.views.find((v) => !v.table)?.kind;
         const carry = prior === "waterfall" && /\b(it|this|that|them)\b/i.test(message) ? "drivers" : undefined;
@@ -687,17 +679,57 @@ export default function AskPage() {
       // on a follow-up, a picture the conversation already shows is not drawn again
       const above = new Set(turns.flatMap((t) => t.views.map(sig)));
       const unique = views.filter((v) => v.table || !above.has(sig(v)));
+      return { lead, focus, own, brought, views, unique, basis };
+    };
+    /** What the answer's words settle: its own picture and the month it is about. Cheap, so it is redone at the end. */
+    const settle = (chosen: Awaited<ReturnType<typeof choose>>, rs: ExhibitData[], said_: string): Partial<Turn> => {
+      const { lead, focus, own, brought, views, unique, basis } = chosen;
       // an answer about one month ("highest in Illinois, $952 in September 2026"): a chart not over time is of that
       // month too, so its numbers are the answer's, not an average of every month
-      const picture = pictureOf(results, answer), month = monthIn(answer);
-      const per = [...(picture?.dims ?? []), ...results.flatMap((r) => [...r.by, ...Object.keys(r.filters)])].find((d) => /:month$/.test(d));
+      const picture = pictureOf(rs, said_), month = monthIn(said_);
+      const per = [...(picture?.dims ?? []), ...rs.flatMap((r) => [...r.by, ...Object.keys(r.filters)])].find((d) => /:month$/.test(d));
       const fresh = per && month ? unique.map((v) => v.table || [...v.dims, ...Object.keys(v.filters)].some((d) => PERIOD.test(d)) ? v
         : { ...v, filters: { ...v.filters, [per]: month }, title: `${v.title}, ${periodName(month)}` }) : unique;
       const drawn = own.map((k) => labels[k] ?? k).join(" and ");
       const note = lead || !fresh.some((v) => !v.table) ? undefined : brought.length
         ? `Beside the agent's analysis, these pictures are drawn straight from ${drawn} in the model.`
         : `The agent did not compute this, so these are drawn straight from ${drawn} in the model.`;
-      update(id, () => ({ views: fresh, focus, note, measure: basis?.metrics.slice(0, 1), repeat: !fresh.length && views.length > 0, picture }));
+      return { views: fresh, focus, note, measure: basis?.metrics.slice(0, 1), repeat: !fresh.length && views.length > 0, picture };
+    };
+    let answer = "", ended = false;
+    let early = null as Promise<{ chosen: Awaited<ReturnType<typeof choose>>; n: number } | null> | null;
+    let soon: ReturnType<typeof setTimeout> | undefined;
+    const ctrl = new AbortController();
+    abort.current = ctrl;
+    try {
+      await streamNdjson(pbi.askPath(pbiModel), { message, session_id: session }, (e) => {
+        if (e.type === "chunk") { answer += e.data.text ?? ""; update(id, (t) => ({ answer: t.answer + (e.data.text ?? "") })); }
+        else if (e.type === "agent_tool_call" && e.data.status === "started") { answer = ""; update(id, () => ({ answer: "" })); if (STEP[e.data.tool]) setStep(STEP[e.data.tool]); }
+        else if (e.type === "pbi_result") {
+          const d = e.data as any, r: ExhibitData = { ...d, filters: d.filters ?? {}, origin: "agent" };
+          results.push(r);
+          // the charts start now, while the words are still being written; results arriving together are drawn together
+          if (!early && (r.kind === "compute" || r.kind === "explain") && r.metrics.length) {
+            clearTimeout(soon);
+            soon = setTimeout(() => {
+              const rs = [...results], said_ = answer;
+              early = choose(rs, true).then((chosen) => {
+                if (!ended) update(id, () => settle(chosen, rs, said_));
+                return { chosen, n: rs.length };
+              }).catch(() => null);
+            }, 120);
+          }
+          // the agent's own total stands in for the same computation, so it need not run twice (not its
+          // breakdowns: it may have kept only the top rows it showed)
+          if (r.kind === "compute" && !r.by.length) cache.current.set(key(r.metrics, r.by, r.filters), { columns: r.columns, rows: r.rows, sql: r.sql ?? "", ms: r.ms, warehouse: r.warehouse ?? "", truncated: false, notes: [] });
+        } else if (e.type === "error") update(id, () => ({ error: e.data.message }));
+        else if (e.type === "result") { answer = answer || e.data.answer || ""; update(id, (t) => ({ answer: t.answer || e.data.answer || "" })); }
+      }, ctrl.signal);
+      clearTimeout(soon);
+      ended = true;
+      const got = early ? await early : null;
+      const chosen = got && got.n === results.length ? got.chosen : await choose(results, false);
+      update(id, () => settle(chosen, results, answer));
     } catch (err: any) {
       if (err?.name !== "AbortError") update(id, () => ({ error: String(err?.message ?? err) }));
     } finally { setStep(""); setBusy(false); abort.current = null; }

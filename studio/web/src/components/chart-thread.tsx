@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AddToDashboard } from "@/components/add-to-dashboard";
+import { ExportData } from "@/components/export-data";
 import { RATE, Visual, kindsFor, type VisualKind } from "@/components/ask-visuals";
 import { periodName } from "@/components/auto-chart";
 import { streamNdjson } from "@/lib/api";
@@ -221,6 +222,7 @@ export function ThreadPanel({ model, labels }: { model: string; labels: Record<s
                     <button onClick={() => deeper(r, i, s.at)} title="Follow this chart in a thread of its own"
                       className="flex h-7 items-center gap-1 rounded-lg px-2 text-[12px] font-medium text-[var(--d-teal)] ring-1 ring-[var(--d-rule)] hover:ring-[var(--d-teal)]">
                       <MessagesSquare size={13} />Follow</button>
+                    <ExportData title={titleOf(r, labels)} tables={[{ columns: r.columns, rows: r.rows }]} labels={labels} />
                     <AddToDashboard model={model} charts={() => [tileOf(r, s.at, i)]} label="Add this chart to a dashboard" compact />
                   </figcaption>
                   {/* its scope, which may be narrower than the chart the thread is on (one month of it) */}
