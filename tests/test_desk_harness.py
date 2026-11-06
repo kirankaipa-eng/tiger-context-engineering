@@ -141,6 +141,88 @@ def test_an_internal_helper_is_refused_not_a_crash(kit):
     assert kit.compute(["total_pmpm__3"]).startswith("Error") and not kit.calls
 
 
+def test_this_month_is_the_datas_latest_and_last_month_the_one_before(kit):
+    ask("What is this month's PMPM?")
+    kit.compute(["total_pmpm"], None, {MONTH: "2026-11"})  # the calendar's month, which has nothing in it yet
+    assert kit.calls[-1][2] == {MONTH: "2026-09"}
+    ask("What was last month's PMPM?", "other")
+    kit.compute(["total_pmpm"])
+    assert kit.calls[-1][2] == {MONTH: "2026-08"}
+
+
+def test_a_metric_is_found_by_what_it_is_made_of(kit):
+    METRICS["rx_pmpm"] = m("Rx PMPM", "DIVIDE([Pharmacy Paid], [Member Months])")
+    METRICS["pharmacy_paid"] = m("Pharmacy Paid", "SUM(x)")
+    METRICS["member_months"] = m("Member Months", "SUM(y)")
+    try:
+        k = Kit()
+        dh.install(k, kit.folder)
+        assert found(k, "what is this month's PMPM for pharmacy?")[0] == "rx_pmpm"
+    finally:
+        for key in ("rx_pmpm", "pharmacy_paid", "member_months"):
+            del METRICS[key]
+
+
+class Slow:
+    dialect = "duckdb"
+
+    def __init__(self):
+        self.ran = 0
+
+    def query(self, sql, limit=None):
+        self.ran += 1
+        return [], []
+
+
+def looked(monkeypatch):
+    seen = {}
+
+    def endless(self, metric, period, now, before, filters=None, depth=3):
+        def split():
+            try:
+                return bool(self.wh.query("select 1"))
+            except TimeoutError:  # as the investigation treats a split it cannot make
+                return False
+
+        seen.update(depth=depth, cols=self._splits(metric, period))
+        return f"found {sum(split() for _ in range(500))}"
+
+    monkeypatch.setattr(dh.bi.BIToolkit, "explain", endless)
+    return seen
+
+
+@pytest.fixture
+def investigating(kit):
+    kit.wh, kit._seq, kit.row_filters = Slow(), 0, None
+    kit._splits = lambda *_: ["Member[Member ID]", "Member[Plan]", "Claims[Setting]", "Claims[Service Date]"]
+    kit.resolve = lambda f: (f, [])
+    kit.layer.compile = lambda m, by, f, **k: f"sql {by}"
+    yield kit
+    del kit.layer.compile
+
+
+def test_a_first_look_is_one_level_of_columns_that_can_drive_it_and_offers_more(investigating, monkeypatch):
+    seen = looked(monkeypatch)
+    ask("What are the drivers of medical cost?")
+    out = investigating.compute.__self__.explain("total_pmpm", MONTH, "2026-09", "2025-09")
+    assert seen == {"depth": 1, "cols": ["Member[Plan]", "Claims[Setting]"]}
+    assert "first look" in out or "partial" in out
+
+
+def test_the_deep_search_runs_only_when_asked(investigating, monkeypatch):
+    seen = looked(monkeypatch)
+    ask("Dig deeper into inpatient")
+    investigating.compute.__self__.explain("total_pmpm", MONTH, "2026-09", "2025-09")
+    assert seen["depth"] == 3 and len(seen["cols"]) == 4
+
+
+def test_an_investigation_stops_at_its_limit_and_says_it_is_partial(investigating, monkeypatch):
+    looked(monkeypatch)
+    ask("Dig deeper")
+    out = investigating.compute.__self__.explain("total_pmpm", MONTH, "2026-09", "2025-09")
+    assert investigating.wh.ran == dh.EXPLAIN_QUERIES and "partial" in out
+
+
 def test_a_dashboard_on_the_same_toolkit_is_untouched(kit):
     assert kit.compute(["total_pmpm_final"]) == "Data: x"
     assert kit.calls[-1] == (["total_pmpm_final"], None, None)

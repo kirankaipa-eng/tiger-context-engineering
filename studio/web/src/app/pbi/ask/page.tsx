@@ -315,7 +315,7 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
 }) {
   const { question, answer, views, focus, error, picture } = turn;
   // the answer's picture is the agent's own result; without one, the first chart drawn for it stands in. Beside it,
-  // up to two charts of the same measures support it; the rest wait under "More views" and run only when opened
+  // the answer's own chart stands alone: every other view waits under "More views" and runs only when opened
   const lead = picture ? undefined : views.find((v) => !v.table);
   const linked = new Set(picture?.metrics ?? lead?.metrics ?? []);
   const rest = views.filter((v) => v !== lead && !v.table);
@@ -324,8 +324,8 @@ function Answer({ turn, model, labels, cache, live, step, first, setFocus, setVi
   const top = picture ?? lead;
   const overTime = (dims: string[]) => dims.length === 1 && PERIOD.test(dims[0]);  // a line of the measure alone, at any grain
   const again = (v: View) => !!top && linked.has(v.metrics[0]) && (shape(v.dims) === shape(top.dims) || (overTime(v.dims) && overTime(top.dims)));
-  const supports = rest.filter((v) => !again(v) && v.metrics.some((m) => linked.has(m))).slice(0, 2);
-  const more = rest.filter((v) => !again(v) && !supports.includes(v));
+  const supports: View[] = [];
+  const more = rest.filter((v) => !again(v));
   const tables = views.filter((v) => v.table);
   const [openMore, setOpenMore] = useState(false);
   const shownIds = [lead, ...supports, ...(openMore ? more : [])].filter(Boolean).map((v) => v!.id).join(",");
