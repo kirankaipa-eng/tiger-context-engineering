@@ -280,10 +280,14 @@ def _orchestrator(m: Loaded):
     if m._orch is None:
         from insurance_context.agent_runtime import Orchestrator
         kit = m.kit()
-        m._orch = Orchestrator(
+        tools, prompt, wrap = kit.tools(), kit.system_prompt(), lambda o: o
+        if os.environ.get("DESK_HARNESS") == "on":
+            from insurance_context.desk_harness import install
+            tools, prompt, wrap = install(kit, m.folder)
+        m._orch = wrap(Orchestrator(
             api_key=os.environ["API_KEY"], base_url=os.environ["API_BASE_URL"],
-            model_name=os.environ.get("CHAT_MODEL", "gpt-4o"), system_prompt=kit.system_prompt() + SCREEN,
-            tools=kit.tools(), agent_name=f"{m.layer.model} analyst")
+            model_name=os.environ.get("CHAT_MODEL", "gpt-4o"), system_prompt=prompt + SCREEN,
+            tools=tools, agent_name=f"{m.layer.model} analyst"))
     return m._orch
 
 
