@@ -295,7 +295,7 @@ def test_peeling_goes_inside_what_led_on_the_columns_not_yet_looked_at(kit, monk
     h.ledger["s"] = {"peel": {"total_pmpm": {"metric": "total_pmpm", "period": MONTH, "now": "2026-09", "before": "2025-09",
                                              "filters": {}, "used": ["Member[Age]"], "lead": ("Member[Age]", "65+")}}}
     ran = []
-    monkeypatch.setattr(h, "explain", lambda m, p, n, b, f, used: ran.append((f, used)) or "found")
+    monkeypatch.setattr(h, "explain", lambda m, p, n, b, f, used, pinned=False: ran.append((f, used)) or "found")
     assert h.next_layer("what's the weather") is None
     ask("Dig deeper")
     form = h.next_layer("Dig deeper")
@@ -858,6 +858,7 @@ def test_the_same_refusal_twice_ends_the_trying(tmp_path, monkeypatch):
         def tools(self):
             return [*super().tools(), column_values]
 
+    monkeypatch.setattr(dh, "REFUSALS", 2)  # the mechanism, whatever the number
     k = Refusing()
     k.folder = tmp_path
     tool = next(t for t in dh.install(k, tmp_path)[0] if t.__name__ == "column_values")
@@ -1564,3 +1565,102 @@ def test_every_measure_a_question_names_is_looked_into(kit):
     h.idx.update({k: h.idx["total_pmpm"] for k in keys})
     h._why({"metrics": keys}, "q")
     assert sorted(seen) == keys
+
+
+def test_an_empty_latest_period_is_read_at_the_latest_one_with_a_number_and_says_so(keyed, monkeypatch):
+    ask("what is driving Total PMPM")
+    t = {"n": 0, "secs": 0.0, "slowest": 0.0, "calls": 0, "start": dh.time.monotonic()}
+    dh.TRACE.set(t)
+    have = {37468: 410.0, 37437: 400.0, 37103: 380.0}  # nothing after 37468: its claims are not in yet
+    keyed._under = lambda col: [37103, 37134, *MONTH_ENDS]
+    keyed._values = lambda pairs, period, filters: {p: have.get(int(p[1])) for p in pairs}
+    seen = []
+
+    def trend(metric, period, now, before, filters):
+        seen.append((str(now), str(before)))
+        return (f"Total PMPM at {now}.", True) if int(now) in have else ("", False)
+
+    keyed._trend = trend
+    keyed.explain = lambda metric, period, now, before, filters=None, used=(), pinned=False: f"explained {now} against {before}, {pinned}"
+    out = keyed._why_one("total_pmpm", {"metrics": ["total_pmpm"]}, "what is driving Total PMPM")
+    assert seen == [("37529", "37164"), ("37468", "37103")]
+    assert "no number yet for the latest reporting period" in out and "about 2 months earlier" in out
+    assert out.endswith("explained 37468 against 37103, True")
+
+
+def test_a_measure_with_no_number_in_any_period_says_so(keyed):
+    ask("what is driving Total PMPM")
+    dh.TRACE.set({"n": 0, "secs": 0.0, "slowest": 0.0, "calls": 0, "start": dh.time.monotonic()})
+    keyed._values = lambda pairs, period, filters: dict.fromkeys(pairs)
+    keyed._trend = lambda *a: ("", False)
+    keyed.explain = lambda *a, **k: pytest.fail("nothing to explain")
+    assert keyed._why_one("total_pmpm", {}, "q").endswith("no number in any reporting period of this scope.")
+
+
+def test_a_latest_number_with_no_year_before_it_is_said_alone(keyed):
+    ask("what is driving Total PMPM")
+    dh.TRACE.set({"n": 0, "secs": 0.0, "slowest": 0.0, "calls": 0, "start": dh.time.monotonic()})
+    keyed._values = lambda pairs, period, filters: {p: 410.0 if int(p[1]) == 37468 else None for p in pairs}
+    keyed._trend = lambda metric, period, now, before, filters: ("", int(now) == 37468)
+    keyed.explain = lambda *a, **k: pytest.fail("there is no year before to compare with")
+    keyed._alone = lambda metric, filters, period: f"alone at {period}"
+    out = keyed._why_one("total_pmpm", {}, "q")
+    assert out.endswith("alone at {'Period[AsOf]': '37468'}")
+
+
+def test_every_query_is_written_whole_with_what_came_back_when_an_audit_file_is_named(tmp_path, monkeypatch):
+    target = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("DESK_AUDIT", str(target))
+    dh.QUESTION.set("what is Dental PMPM")
+    dh._audit("SELECT 1", 0.5, rows=[(None,)])
+    dh._audit("SELECT 2", 0.1, error="no such table")
+    first, second = (json.loads(x) for x in target.read_text().splitlines())
+    assert first["sql"] == "SELECT 1" and first["rows"] == 1 and first["first"] == [[None]] and first["question"] == "what is Dental PMPM"
+    assert second["error"] == "no such table" and second["rows"] is None
+
+
+def test_no_audit_file_is_written_unless_one_is_named(tmp_path, monkeypatch):
+    monkeypatch.delenv("DESK_AUDIT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    dh._audit("SELECT 1", 0.5, rows=[])
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_empty_number_is_asked_again_without_each_scope_filter_in_turn(keyed):
+    t = {"n": 0, "secs": 0.0, "slowest": 0.0, "calls": 0, "start": dh.time.monotonic()}
+    dh.TRACE.set(t)
+    keyed._control("total_pmpm", {"Period[Range]": "Rolling 12 months", "Period[AsOf]": 37529})
+    said = {given: got for _, node, given, got in t["steps"] if node == "control"}
+    assert set(said) == {"total_pmpm without Period[Range]", "total_pmpm without Period[AsOf]"}
+
+
+GRID = {"version": "x", "slices": {"S1": ["Member[Plan]", "Member[Member ID]"]},
+        "metrics": {"total_pmpm": {"label": "Total PMPM", "formula": "total_paid / member_months", "slices": "S1",
+                                   "refused": {"Claims is not related to Member Months": ["Claims[Setting]"]}}}}
+
+
+def test_the_catalog_shows_what_each_measure_can_be_cut_by_from_the_grid(kit):
+    h = kit.compute.__self__
+    assert h.cut_by() == ""  # no grid, no section
+    h.grid = GRID
+    said = h.cut_by()
+    assert "S1: Member[Plan]" in said and "Member ID" not in said and "measures: total_pmpm" in said
+
+
+def test_get_measure_says_why_a_column_will_not_cut_a_measure_and_runs_nothing(kit):
+    h = kit.compute.__self__
+    h.grid = GRID
+    kit.wh = None  # nothing may reach a warehouse
+    out = h.measure("total_pmpm", "Claims[Setting]")
+    assert out.startswith("total_pmpm cannot be cut by Claims[Setting]: Claims is not related to Member Months")
+    assert "is: total_paid / member_months" in h.measure("total_pmpm")
+
+
+def test_a_why_that_finds_no_number_anywhere_is_handed_to_the_agent_with_what_was_tried(keyed):
+    ask("what is driving Total PMPM")
+    t = {"n": 0, "secs": 0.0, "slowest": 0.0, "calls": 0, "start": dh.time.monotonic(),
+         "steps": [(0.1, "control", "total_pmpm without Period[Range]", 412.0)]}
+    dh.TRACE.set(t)
+    keyed._why_one = lambda k, steps, q: "Total PMPM: no data in this scope."
+    assert keyed._why({"metrics": ["total_pmpm"]}, "q") == ""
+    assert "no data in this scope" in t["tried"] and "without Period[Range]: 412.0" in t["tried"]

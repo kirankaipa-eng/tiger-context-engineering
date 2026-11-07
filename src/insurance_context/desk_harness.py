@@ -72,12 +72,14 @@ from typing import TypedDict
 import yaml
 
 from . import bi_agent as bi
-from . import findable
+from . import findable, insurance
+from . import grid as grids
 from .bilayer import GRAINS, ref
 
 QUESTION = contextvars.ContextVar("desk_question", default="")
 SESSION = contextvars.ContextVar("desk_session", default="")
-TRACE = contextvars.ContextVar("desk_trace", default=None)  # this turn's warehouse time, for the line in the log
+TRACE = contextvars.ContextVar("desk_trace", default=None)
+JOB = contextvars.ContextVar("desk_job", default=None)  # the question at work, whose steps the page follows as they happen  # this turn's warehouse time, for the line in the log
 
 _ALIAS = re.compile(r"^\s*\[([^\]]+)\]\s*$")
 _BASE = re.compile(r"^\s*(?:CALCULATE|TOTALYTD)\(\s*\[([^\]]+)\]", re.IGNORECASE)
@@ -126,13 +128,16 @@ Leave out what the question does not ask for: a question with no period gets no 
 Dates: {"DATE:year": 2025}, {"DATE:quarter": "2026-Q1"}, {"DATE:month": "2026-09"}; several periods compared are a list of values with
 the same column in `by`. "Highest" or "top 3" is `by` with `top` (1 or 3); lowest adds ascending true.
 A follow-up ("what about X", "and by plan", "that one") starts from the previous form and changes only what it says. A question complete in
-itself starts from nothing: no metric, column or filter of the previous form comes with it."""
+itself starts from nothing: no metric, column or filter of the previous form comes with it.
+
+""" + insurance.PRIMER
 _SAY = """Write the answer to the question from the results, for a business reader. The number is already on screen above your words, so
 add what it means: one or two plain sentences, at most three numbers, all taken from the results. Say the period, with months as
 people say them (September 2026). A ratio or rate reads as a percent. Say which metric a result is if the question was loose.
 With several measures, say what stands out most. "Already known" is what this conversation found earlier: use it to connect or compare, and
 say which period a number from it is for.
-Plain sentences only: no headings, lists or bold. No metric keys, formulas, SQL or data source. Add no cause the results do not show."""
+Plain sentences only: no headings, lists or bold. No metric keys, formulas, SQL or data source. Add no cause the results do not show.
+""" + insurance.SAY
 EXPLAIN_SECONDS = 60   # one layer of "why": what it has found by then is the answer, and the next layer is the user's to ask for
 EXPLAIN_QUERIES = 12   # queries a layer may run after the ones it fetches together, to test what it found
 TRACE_CHARS = 240      # of one input or output, in the trace of a question
@@ -141,10 +146,10 @@ MAP_TABLES = 40        # the tables one conversation keeps, newest first
 MAP_CHARS = 1800       # what of it the model reads
 LOOKED = ("Error: this metric has had its layer for this question. Do not look again. Answer from what it found and offer to dig "
           "into what leads.")
-TURN_SECONDS = 75      # past this a turn's tools stop and it answers from what it has
-TURN_CALLS = 8         # or past this many tool calls, so a question cannot go round and round
-LOOKUPS = 3            # calls that only look things up, before the agent is told to compute with what it has
-REFUSALS = 2           # the same refusal this often and asking again will not help: the turn answers from what it has
+TURN_SECONDS = 180     # past this a turn's tools stop and it answers from what it has
+TURN_CALLS = 16        # or past this many tool calls, so a question cannot go round and round
+LOOKUPS = 6            # calls that only look things up, before the agent is told to compute with what it has
+REFUSALS = 3           # the same refusal this often and asking again will not help: the turn answers from what it has
 WHY_METRICS = 6        # the measures one "what is driving" question looks into: as many as a plan, so none it names is dropped
 PLAN_STEPS = 6         # what one plan may ask for; more than this is more than one question
 PLAN_SECONDS = 5       # a plan late in its turn still gets this long
@@ -173,7 +178,8 @@ _LOOSE = {"primary", "main", "key", "top", "biggest", "major", "drivers", "drive
 # a measure that holds a period, an id or a caption for other measures to read: never what a business question means
 _PLUMBING = re.compile(r"(^|_)(id|key|flag|sort|index|title|caption|tooltip|header)(_|$)|(day|month|period|year|date)_?id|"
                        r"(start|end|max|min|last|latest|current|first)_?(date|month|period|day)|selected|slicer", re.IGNORECASE)
-_LOOKING = ("find_metrics", "about_metric", "metric_needs", "column_values", "list_columns")
+_EMPTY = re.compile(r": no data in this scope\.$|: no number in any reporting period of this scope\.$")
+_LOOKING = ("find_metrics", "about_metric", "metric_needs", "get_measure", "column_values", "list_columns")
 _LEANS = re.compile(r"\b(what about|how about|and|that|those|these|this one|it|same|instead|also|only|just|now|then|them|there|their)\b", re.IGNORECASE)
 _GRAIN_SAID = {"monthly": "month", "mon": "month", "yearly": "year", "annual": "year", "yr": "year", "quarterly": "quarter", "qtr": "quarter",
                "weekly": "week", "daily": "day", "date": "day"}
@@ -361,6 +367,7 @@ class Job:
 
     def __init__(self):
         self.id, self.lines, self.kept, self.done, self.at, self.task = uuid.uuid4().hex, [], [], False, time.monotonic(), None
+        self.trace: dict | None = None  # its steps, streamed to the page while it works
 
 
 def _scope(filters: dict) -> str:
@@ -445,10 +452,43 @@ def _why(t: dict, said: str) -> None:
         t["why"] = f"{t['why']}; {said}" if t.get("why") else said
 
 
-def _step(node: str, given="", got="") -> None:
-    """One step of a question, what went in and what came out, for the trace the log prints when it ends."""
+def _step(node: str, given="", got="", detail: str | None = None) -> None:
+    """One step of a question, what went in and what came out, for the trace the log prints when it ends and the page shows
+    as it happens. `detail` is what a reader may open: the whole SQL of a query."""
     if (t := TRACE.get()) is not None:
-        t.setdefault("steps", []).append((time.monotonic() - t["start"], node, given, got))
+        steps = t.setdefault("steps", [])
+        if detail:
+            t.setdefault("detail", {})[len(steps)] = detail
+        steps.append((time.monotonic() - t["start"], node, given, got))
+
+
+STEP_CHARS = 400  # of one input or output, as the page shows a step
+
+
+def step_event(t: dict, i: int) -> str:
+    """Step i of a question as a line of the stream: the page shows it while the answer is being written."""
+    at, node, given, got = t["steps"][i]
+    return json.dumps({"type": "desk_step", "data": {"i": i, "at": round(at, 1), "node": node, "in": _brief(given, STEP_CHARS),
+                                                     "out": _brief(got, STEP_CHARS), "sql": (t.get("detail") or {}).get(i)}}, default=str) + "\n"
+
+
+def _audit(sql: str, secs: float, rows=None, error: str | None = None) -> None:
+    """One line per query to DESK_AUDIT, when it names a file: the whole SQL, as it ran, and what came back, so anyone can run
+    it again on the warehouse and see the same. On the machine that runs the desk only; nothing here leaves it."""
+    target = os.environ.get("DESK_AUDIT")
+    if not target:
+        return
+    line = {"at": datetime.datetime.now().isoformat(timespec="seconds"), "question": QUESTION.get(), "session": SESSION.get(),
+            "secs": round(secs, 2), "sql": sql, "rows": None if rows is None else len(rows),
+            "first": None if rows is None else [[None if v is None else str(v) for v in r] for r in rows[:5]], "error": error}
+    try:
+        with _AUDIT_LOCK, open(target, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line) + "\n")
+    except OSError as exc:
+        print(f"[desk] audit not written: {exc}", file=sys.stderr, flush=True)
+
+
+_AUDIT_LOCK = threading.Lock()
 
 
 def _brief(value, size: int = TRACE_CHARS) -> str:
@@ -532,6 +572,10 @@ class Harness:
         labels = {m["label"].lower() for m in self.layer.captured().values()}
         made_of = lambda m: " ".join(r for r in re.findall(r"\[([^\]]+)\]", str(m.get("dax") or "")) if r.lower() in labels)
         self.catalog = findable.load(folder or kit.folder, self.layer.captured())
+        self.grid = grids.load(folder or kit.folder)
+        g = _beside(folder or kit.folder, grids.NAME)
+        print(f"[desk] grid: {g if self.grid else (f'{g} is of another capture, not read: build it again' if g.exists() else 'none')}",
+              file=sys.stderr, flush=True)
         self.docs = {k: Counter([*_words(f"{m['label']} {m.get('description') or ''} {made_of(m)}"), *self.catalog.metrics[k]["words"]])
                      for k, m in self.layer.captured().items()}
         self.df = Counter(w for d in self.docs.values() for w in d)
@@ -731,14 +775,14 @@ class Harness:
         rounds = [t[i] for i in range(max(map(len, tables.values()), default=0)) for t in tables.values() if i < len(t)]
         return rounds
 
-    def explain(self, metric, period, now, before, filters=None, used=()) -> str:
+    def explain(self, metric, period, now, before, filters=None, used=(), pinned: bool = False) -> str:
         """One layer of why a metric changed: the columns that can drive it, a few at a time, fetched together, one level
         down. What leads is kept, and the next layer starts from it when the user asks: never before. Within its limits,
         on a copy of the toolkit so nothing else meets the limited warehouse."""
         metric = _root(self.idx, metric)
         t = TRACE.get()
         if asof := self._asof():
-            period, now, before = asof
+            period, now, before = (asof[0], str(now), str(before)) if pinned else asof
         else:
             period = self._column(period, [metric])
             period = period if ":" in period else f"{period}:month"
@@ -818,7 +862,7 @@ class Harness:
 
     def peel(self, form: dict) -> str:
         """The next layer of each: inside what led the last, across the columns not looked at yet."""
-        one = lambda p: self.explain(p["metric"], p["period"], p["now"], p["before"], {**p["filters"], p["lead"][0]: p["lead"][1]}, p["used"])
+        one = lambda p: self.explain(p["metric"], p["period"], p["now"], p["before"], {**p["filters"], p["lead"][0]: p["lead"][1]}, p["used"], pinned=True)
         found = self._together([functools.partial(one, p) for p in form["peel"]])
         return "\n\n".join(x for x in found if not x.startswith("Error"))
 
@@ -925,9 +969,13 @@ class Harness:
                         t.setdefault("since", t0) if t["live"] > 1 else t.update(since=t0)
                 try:
                     out = inner(sql, limit=limit)
-                    _step("query", f"{sql[:60]} ... {sql[-170:]}", f"{len(out[1])} rows in {time.monotonic() - t0:.1f}s")
+                    rows = out[1]
+                    _step("query", f"{sql[:60]} ... {sql[-170:]}", f"{len(rows)} rows in {time.monotonic() - t0:.1f}s"
+                          + (f": {_brief([list(r) for r in rows[:3]], 160)}" if len(rows) <= 3 else ""), detail=sql)
+                    _audit(sql, time.monotonic() - t0, rows=rows)
                 except Exception as exc:
-                    _step("query", f"{sql[:60]} ... {sql[-170:]}", f"failed in {time.monotonic() - t0:.1f}s: {exc}")
+                    _step("query", f"{sql[:60]} ... {sql[-170:]}", f"failed in {time.monotonic() - t0:.1f}s: {exc}", detail=sql)
+                    _audit(sql, time.monotonic() - t0, error=str(exc))
                     raise
                 finally:
                     if t is not None:
@@ -1567,6 +1615,47 @@ class Harness:
         """"What is driving medical and pharmacy cost": read in code, with no model to wait for."""
         return self.guess(question, every_word=True) if _DRIVES.search(question) else None
 
+    def cut_by(self) -> str:
+        """The grid as the catalog shows it: each set of columns once, with the measures it cuts. Empty without a grid."""
+        if not self.grid:
+            return ""
+        sets: dict[str, list[str]] = {}
+        for k, e in (self.grid.get("metrics") or {}).items():
+            if k in self.catalog.metrics and self.catalog.metrics[k]["role"] != "helper" and e.get("slices") and not e.get("part"):
+                sets.setdefault(e["slices"], []).append(k)
+        lines = [f"{s}: {', '.join(c for c in self.grid['slices'][s] if self._driver(c)) or 'nothing but its period'}\n  measures: {', '.join(ks)}"
+                 for s, ks in sets.items()]
+        head = ("\n\nCut by (the columns each measure can be cut by as it is; a ratio's parts often reach further, down to the rows: "
+                "get_measure shows them, and the rows behind any number can be read):\n")
+        return head + "\n".join(lines) if lines else ""
+
+    def measure(self, metric: str, dim: str | None = None) -> str:
+        """One measure from the grid: what it is made of, what it can be cut by, and, for a column, whether that works and
+        the SQL it would run under the owner's scope. Nothing is run."""
+        key = _root(self.idx, metric) if metric in self.idx else metric
+        if not self.grid:
+            return "There is no grid for this capture. " + self.needs_text(key)
+        said = grids.show(self.grid, key)
+        if not dim:
+            _step("grid", key, said.split("\n")[1] if "\n" in said else said)
+            return said
+        col = self._column(dim, [key])
+        cut = grids.slices(self.grid, key)
+        if col not in cut:
+            why = next((r for r, cols in ((self.grid["metrics"].get(key) or {}).get("refused") or {}).items() if col in cols), None)
+            out = f"{key} cannot be cut by {col}" + (f": {why}" if why else ": it is not a column its rows reach") + f".\n{said}"
+            _step("grid", f"{key} by {col}", "no")
+            return out
+        given = list(((self.grid["metrics"][key].get("needs") or {}).get("by")) or [])
+        try:
+            where = self.kit.resolve(self._scope_for([key], [col, *given], {}))[0]
+            sql = self.layer.compile([key], [col, *given], where, dialect=self.kit.wh.dialect, row_filters=self.kit.row_filters)
+        except Exception as exc:  # noqa: BLE001 - the refusal is the answer
+            _step("grid", f"{key} by {col}", f"refused now: {exc}")
+            return f"{key} by {col} is in the grid but is refused under this scope now: {exc}\n{said}"
+        _step("grid", f"{key} by {col}", "yes")
+        return f"{key} can be cut by {col}. Run it with compute; the SQL it runs:\n{sql[:3000]}\n\n{said}"
+
     def form_for(self, question: str, session: str) -> list:
         """What one small call is given: the shortlist, what it can be cut by, the last form, and nothing else."""
         led = self.ledger.get(session, {})
@@ -1576,6 +1665,7 @@ class Harness:
         if not keys and not whole:
             return []
         measures = whole if len(whole) <= CATALOG_CHARS else "\n".join(f"- {k}: {self.layer.metrics[k]['label']}{bi.needs(self.layer, k)}" for k in keys)
+        measures += self.cut_by()
         _step("catalog", question, f"{'every measure' if measures is whole else f'{len(keys)} measures'}, {len(measures):,} characters")
         cols = [c for c in self.values if self.kit._type(c) != "dateTime" and self._driver(c)]
         date = ((self._date(keys[0]) if keys else None) or "Calendar[Date]:month").rsplit(":", 1)[0]
@@ -1670,6 +1760,11 @@ class Harness:
         self.ledger.setdefault(SESSION.get(), {})["peel"] = {}  # a new question starts from the top
         found = dict(zip(keys, self._together([functools.partial(self._why_one, k, steps, question) for k in keys])))
         said = [out for out in found.values() if out]
+        if said and all(_EMPTY.search(x) for x in said) and (t := TRACE.get()) is not None:
+            # no number at all is no answer: the agent takes the question, told what was tried and what the checks showed
+            checks = [f"{given}: {got}" for _, node, given, got in t.get("steps", []) if node == "control"]
+            t["tried"] = "\n".join(said + checks)
+            return ""
         missed = [self.layer.metrics[k]["label"] for k, out in found.items() if not out and k in self.layer.metrics]
         return "\n\n".join(said + [f"Could not be looked into: {', '.join(missed)}."] * bool(said and missed))
 
@@ -1686,12 +1781,81 @@ class Harness:
         y, mo = (0, 1) if asof else (int(latest[:4]), int(latest[5:7]))
         before = asof[2] if asof else f"{y - (mo == 1)}-{(mo - 2) % 12 + 1:02d}" if _MONTHS.search(question) else f"{y - 1}-{mo:02d}"
         filters = {c: v for c, v in (steps.get("filters") or {}).items() if self._kind(c) != "dateTime"}
-        out = self.explain(metric, col, latest, before, filters)
+        trend, have = self._trend(metric, col, latest, before, filters)
+        moved = ""
+        if asof and have is False:  # nothing in the latest reporting period: its claims may not be in yet
+            found = self._with_data(metric, col, latest, filters)
+            if not found:
+                return f"{_nice(self.layer.metrics[metric]['label'])}: no number in any reporting period of this scope."
+            months = 1 if _MONTHS.search(question) else 12
+            moved = (f"{_nice(self.layer.metrics[metric]['label'])} has no number yet for the latest reporting period, so this reads the "
+                     f"latest that has one{self._lag(latest, found)}: its claims may not be complete yet.\n")
+            latest, before = found, _back(found, self._under(col), months)
+            if before is None:  # nothing to compare it with: what stands is said
+                return moved + self._alone(metric, filters, {col: latest})
+            before = str(before)
+            trend, have = self._trend(metric, col, latest, before, filters)
+        out = self.explain(metric, col, latest, before, filters, pinned=bool(asof))
         if "Nothing changed" in out and re.match(r"[^\n]*: 0 in \S+, 0 in \S+,", out):
-            return self._alone(metric, filters, {} if asof else {col: latest})
+            return moved + trend if trend else self._alone(metric, filters, {} if asof else {col: latest})
         if out.startswith("Error") and (t := TRACE.get()) is not None:
             _why(t, f"{metric}: {out[:140]}")
-        return "" if out.startswith("Error") else out
+        out = "" if out.startswith("Error") else out
+        if trend:  # no slice broke its pattern, but the categories still say what moved the total
+            out = re.sub(r"There is no driver to find; say\s+so rather than offering one\.",
+                         "The service categories above are what moved it: say those.", out)
+        return "\n\n".join(x for x in (moved + trend, out) if x.strip())
+
+    def _values(self, pairs: list[tuple[str, str]], period: str, filters: dict) -> dict:
+        """(metric, period value) to its number, each asked alone so one the warehouse refuses costs the others nothing."""
+        def one(pair):
+            k, v = pair
+            try:
+                where = self.kit.resolve({**self._scope_for([k], None, {**filters, period: v}), **filters})[0]
+                rows = self.kit.wh.query(self.layer.compile([k], [], {**where, period: v}, dialect=self.kit.wh.dialect,
+                                                             row_filters=self.kit.row_filters), limit=5)[1]
+                return _number(rows[0][-1]) if rows else None
+            except Exception as exc:  # noqa: BLE001 - said in the trace; a missing number is said as missing
+                _step("value", f"{k} at {v}", f"failed: {str(exc)[:200]}")
+                return None
+        with ThreadPoolExecutor(self.at_once) as pool:
+            got = list(pool.map(lambda x: contextvars.copy_context().run(one, x), pairs))
+        return dict(zip(pairs, got))
+
+    def _trend(self, metric: str, period: str, now, before, filters: dict) -> tuple[str, bool | None]:
+        """What a payer reads first about a PMPM: which categories moved it, and by utilization or unit cost. ("", None) when
+        the catalog has no breakdown for it; have is whether the PMPM itself has a number in the period asked."""
+        p = insurance.plan(self.catalog, metric)
+        if not p:
+            return "", None
+        keys = insurance.keys(p)
+        got = self._values([(k, v) for v in (now, before) for k in keys], period, filters)
+        a = {k: got[(k, now)] for k in keys}
+        b = {k: got[(k, before)] for k in keys}
+        label = lambda k: _nice(self.layer.metrics[k]["label"])
+        when = self._against(now, before) if _is_id(now) else f"{_period(now)} against {_period(before)}"
+        said = insurance.read(p, a, b, label, self._show, when)
+        _step("trend", f"{metric}: {now} against {before}, {len(keys)} measures", said or f"no number for {metric} at {now}")
+        return said, a.get(metric) not in (None, 0)
+
+    def _with_data(self, metric: str, period: str, now, filters: dict) -> str | None:
+        """The latest reporting period at or before now in which the measure has a number, a few periods at a time."""
+        held = sorted((v for v in self._under(period) if _order(v) < _order(now)), key=_order, reverse=True)[:HISTORY]
+        for i in range(0, len(held), self.at_once):
+            batch = held[i:i + self.at_once]
+            got = self._values([(metric, v) for v in batch], period, filters)
+            if (hit := next((v for v in batch if got[(metric, v)] not in (None, 0)), None)) is not None:
+                _step("latest", metric, f"{hit}, the latest with a number")
+                return str(hit)
+        _step("latest", metric, f"no period of {len(held)} has a number")
+        return None
+
+    def _lag(self, now, found) -> str:
+        """How far back the latest number is, as a reader can take it."""
+        if _is_id(now) and _number(found) is not None:
+            days = _number(now) - _number(found)
+            return f", about {round(days / 30.4)} months earlier" if days > 40 else ""
+        return f", {_period(found)}"
 
     def _alone(self, metric: str, filters: dict, period: dict) -> str:
         """Nothing in either period, asked together. That is no finding, nor "no movement": a measure of the current period may
@@ -1706,10 +1870,29 @@ class Harness:
             _step("alone", metric, f"failed: {exc}")
             value = None
         _step("alone", metric, value)
+        if value is None:
+            self._control(metric, {**self._scope_for([metric], [], given), **given})
         if (t := TRACE.get()) is not None:
             _why(t, f"{metric}: nothing for two periods together, {value} alone")
         return (f"{label}: {self._show(metric, value)} for the period. Its change could not be worked out." if value
                 else f"{label}: no data in this scope.")
+
+    def _control(self, metric: str, where: dict) -> None:
+        """An empty number, proven: the same measure asked again without each filter of its scope in turn, so the trace shows
+        which one empties it, or that it is empty whatever is taken away."""
+        def without(c):
+            rest = {k: v for k, v in where.items() if k != c}
+            try:
+                sql = self.layer.compile([metric], [], self.kit.resolve(rest)[0], dialect=self.kit.wh.dialect, row_filters=self.kit.row_filters)
+                rows = self.kit.wh.query(sql, limit=5)[1]
+                return rows[0][-1] if rows else None
+            except Exception as exc:  # noqa: BLE001 - a refusal is a finding too
+                return f"refused: {str(exc)[:120]}"
+        cols = list(where)[:6]
+        with ThreadPoolExecutor(self.at_once) as pool:
+            got = list(pool.map(lambda c: contextvars.copy_context().run(without, c), cols))
+        for c, v in zip(cols, got):
+            _step("control", f"{metric} without {c}", v)
 
     def _show(self, key: str, value) -> str:
         """A number the way the report shows it, from the measure's Power BI format."""
@@ -1750,7 +1933,9 @@ def prompt(kit) -> str:
 How a question runs: find_metrics, then one call to compute with the whole plan. Every number the answer needs is a step
 in that call, and each step takes the arguments these rules give compute (metrics, by, filters, top, order_by, ascending,
 params). If it says the plan was not run, nothing ran: fix what it names and send the whole plan again. Once a plan has run,
-answer from it."""
+answer from it.
+
+""" + insurance.PRIMER
 
 
 def install(kit, folder=None):
@@ -1767,6 +1952,13 @@ def install(kit, folder=None):
         already gives, and what the question must still say. Pass the `by` and `filters` you mean to use. Call it when a metric
         is refused for missing context, instead of guessing at filters."""
         return await asyncio.to_thread(h.needs_text, metric, by, filters)
+
+    async def get_measure(ctx: bi.RunContext, metric: str, dim: str | None = None) -> str:
+        """One measure from the grid worked out at capture: what it is made of (its formula, and the column each part adds
+        up), what it needs, and the columns it can be cut by. With `dim`, whether it can be cut by that column, why not if
+        not, and the SQL it would run. Nothing runs: numbers come only from compute. Call it before cutting a measure by a
+        column you are not sure of, or to break a measure into its parts."""
+        return await asyncio.to_thread(h.measure, metric, dim)
 
     async def about_metric(ctx: bi.RunContext, metric: str) -> str:
         """All of one metric, from the model and the tables: what it is made of, what it needs, the period it has data for
@@ -1793,7 +1985,7 @@ def install(kit, folder=None):
         except TimeoutError:
             return "Error: the warehouse did not answer within the time limit. Say so, and offer a narrower question."
 
-    for fn in (find_metrics, about_metric, metric_needs, compute, explain):
+    for fn in (find_metrics, about_metric, metric_needs, get_measure, compute, explain):
         fn.__annotations__["ctx"] = bi.RunContext
 
     def within_turn(fn):
@@ -1822,7 +2014,7 @@ def install(kit, folder=None):
             return out
         return run
 
-    tools = [within_turn(t) for t in [find_metrics, about_metric, metric_needs, compute, explain, *[t for t in kit.tools() if t.__name__ not in ("list_metrics", "compute", "explain")]]]
+    tools = [within_turn(t) for t in [find_metrics, about_metric, metric_needs, get_measure, compute, explain, *[t for t in kit.tools() if t.__name__ not in ("list_metrics", "compute", "explain")]]]
 
     def wrap(orch):
         inner = orch.stream
@@ -1967,6 +2159,8 @@ def install(kit, folder=None):
             t0 = time.monotonic()
             t = {"n": 0, "secs": 0.0, "slowest": 0.0, "calls": 0, "start": t0, "read": "agent"}
             TRACE.set(t)
+            if (job := JOB.get()) is not None:
+                job.trace = t
             try:
                 if said := h.hello(message):
                     t["read"] = "code"
@@ -1985,6 +2179,10 @@ def install(kit, folder=None):
                 led = h.ledger.setdefault(session_id, {})
                 told = "".join(f"Q: {q}\nA: {a}\n" for q, a in led.pop("unseen", []))  # the agent did not see those turns
                 said = f"Answered earlier in this conversation:\n{told}\nNow: {message}" if told else message
+                if t.get("tried"):
+                    said = (f"A first try at this question computed no number:\n{t['tried']}\nFind the number another way before you "
+                            "answer: the measure's parts (get_measure), another period, or the rows behind it. Say in one line what you "
+                            f"assumed or changed to get it.\n\n{said}")
                 if known := h.known():
                     said = f"Already found in this conversation, with no need to ask again:\n{known}\n\n{said}"
                 seen = h.kit._seq
@@ -2021,6 +2219,7 @@ def install(kit, folder=None):
         async def work(job, message, session_id, kw):
             """The question, whoever is watching. Its results are its own until a chat following it takes them."""
             bi.ASKER.set(job.id)
+            JOB.set(job)
             try:
                 async for line in turn(message, session_id, **kw):
                     job.lines.append(line)
@@ -2049,8 +2248,12 @@ def install(kit, folder=None):
             if job is None:
                 job = h.jobs[key] = Job()
                 job.task = asyncio.create_task(work(job, message, session_id, kw))
-            at, given = 0, 0
+            at, given, shown = 0, 0, 0
             while True:
+                steps = ((job.trace or {}).get("steps") or []) if os.environ.get("DESK_STEPS") == "on" else []
+                while shown < len(steps):  # what it is doing and has found, before the words that say it
+                    yield step_event(job.trace, shown)
+                    shown += 1
                 while at < len(job.lines):
                     line, at = job.lines[at], at + 1
                     handed = []
