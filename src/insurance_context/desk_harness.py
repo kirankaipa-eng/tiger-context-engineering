@@ -17,9 +17,10 @@
     map               what a conversation has found is kept as a structure, not as chat: every table, every layer of why. A
                       question it covers is answered from there with no query, a value of a table it has is that row, and
                       the model reads it, so an answer can stand on all of what is known
-    jobs              a question is a job of its own, not tied to the connection that asked it: the chat follows it for a few
-                      seconds, then lets go and is free. Asked again, or reopened, it picks the job up where it is. A model that
-                      stalls costs the words, never the answer: the question is read in code and the numbers still come
+    jobs              a question is a job of its own, not tied to the connection that asked it: its chat follows it to the end,
+                      and if the chat goes away the job does not. Reopened, it is picked up where it is. A model that stalls
+                      costs the words, never the answer: the question is read in code and the numbers still come
+    hello             "what can you help me with" is answered at once, from the model's own measures: no model call, no query
     query             every query of a turn shares one limit (`parallel`, 3 to 5 at a time), and asks nothing twice
     direct            a question takes four steps and only the first may need a model: what it asks for (`read`, in
                       code when every word of it is accounted for, else one small call, `ask_form`), what that reaches
@@ -31,7 +32,6 @@ precedents.yaml beside capture.yaml (optional) holds what owners have decided:
     terms: {pmpm: total_pmpm}   this word means this metric
     period: latest_month        what a question with no period means (the default), or `all`
     explain_seconds: 25         how long one layer of "why did it change" may run; past it, what was found so far is the answer
-    hold_seconds: 3             how long the chat waits for an answer before the work carries on in the background
     parallel: 5                 how many queries run on the warehouse at once, 3 to 5
     turn_seconds: 75            how long one question may keep calling tools before it answers from what it has
     drivers: [Member[Plan], ...]  the columns a layer of "why" splits by, five at a time (default: the model's, without ids)
@@ -92,10 +92,8 @@ SHOWN = 6
 SLICES = 30            # the columns whose values are read ahead, once
 SHORTLIST = 20         # the metrics one small call chooses from
 READ_SECONDS = 20      # past this the question is read in code
-HOLD_SECONDS = 3       # past this the chat lets go and the work carries on in the background
 RUN_SECONDS = 60       # what a settled question may take before the agent is asked instead
 JOB_SECONDS = 300      # what the agent may take in the background before the answer is what there is
-HELD = "Working on that in the background. You can keep asking, or go to another chat: this will be here when it is ready."
 GAVE_UP = "I could not finish that one. Name a measure and a period, and I will answer it straight away."
 SAY_SECONDS = 30       # past this the number stands without its sentence
 HEADLINES = 4          # the measures an open question shows, when no owner has said which
@@ -131,7 +129,8 @@ MAP_CHARS = 1800       # what of it the model reads
 LOOKED = ("Error: this metric has had its layer for this question. Do not look again. Answer from what it found and offer to dig "
           "into what leads.")
 TURN_SECONDS = 75      # past this a turn's tools stop and it answers from what it has
-TURN_CALLS = 12        # or past this many tool calls, so a question cannot go round and round
+TURN_CALLS = 8         # or past this many tool calls, so a question cannot go round and round
+LOOKUPS = 3            # calls that only look things up, before the agent is told to compute with what it has
 REFUSALS = 2           # the same refusal this often and asking again will not help: the turn answers from what it has
 WHY_METRICS = 3        # the measures one "what is driving" question looks into
 PLAN_STEPS = 6         # what one plan may ask for; more than this is more than one question
@@ -140,6 +139,8 @@ PLAN_RAN = ("Error: this question's plan has run. Do not call compute again. Ans
             "what they do not cover.")
 OUT_OF_TURN = ("Error: this question has had its time. Do not call another tool. Answer now, in two or three plain sentences, "
                "from what you already have, and say in one line what you could not finish.")
+ENOUGH = ("You have looked up enough. Do not look anything else up. Call compute now with what you have: filters are repaired against "
+          "the data, so write them as they come. Then answer.")
 SAME_REFUSAL = ("That is the same refusal again, so another try will not help. Do not call another tool. Answer now from what "
                 "you have, and say in one plain line which number could not be got and why.")
 SPLITS = 12            # the columns a first look splits by, unless brief says which (`drivers` in precedents.yaml)
@@ -148,6 +149,10 @@ LAYER_COLUMNS = 5      # what one layer of "why" splits by; the next layer takes
 QUERY_MEMORY = 300     # seconds a turn may reuse the answer to a query it has asked before
 _DEEPER = re.compile(r"\b(deeper|dig|drill|further|underneath|behind (that|this|it)|break (that|this|it) down|root cause)\b", re.IGNORECASE)
 _PEEL = re.compile(r"\b(what is driving|what s driving|whats driving|what drove|why)\b", re.IGNORECASE)
+_HELLO = re.compile(r"(hi|hello|hey|hi there|hello there|good (morning|afternoon|evening)|help|help me|who are you|what are you|"
+                    r"what can (you|i) (do|ask|ask you|help( me)?( with)?)|how can you help( me)?|what do you do|how does this work|"
+                    r"what (questions|data|metrics|measures) (can i ask( about)?|do you have)|what do you (know|know about|have))")
+_THANKS = re.compile(r"(thanks|thank you|thanks a lot|thank you very much|ok thanks|great thanks|cheers)")
 _DRIVES = re.compile(r"\b(drivers?|driving|drove|drive|why|behind|caus\w+)\b", re.IGNORECASE)
 _LOOSE = {"primary", "main", "key", "top", "biggest", "major", "drivers", "driver", "driving", "drove", "drive", "why", "behind", "trends", "trend", "cost",
           "costs", "spend", "spending", "increase", "increases", "increased", "rise", "rising", "rose", "change", "changes", "changed", "caused", "causing",
@@ -343,6 +348,11 @@ class Known:
         return said.strip()
 
 
+def _why(t: dict, said: str) -> None:
+    """Why a turn went the way it did, for the log: each reason, in the order they came."""
+    t["why"] = f"{t['why']}; {said}" if t.get("why") else said
+
+
 def _quarter(text: str) -> str | None:
     """2026-Q3, however it is written."""
     if m := re.fullmatch(r"(\d{4})[-\s]?Q([1-4])", text.strip(), re.IGNORECASE):
@@ -398,7 +408,6 @@ class Harness:
         self.turn_seconds = float(conf.get("turn_seconds") or TURN_SECONDS)
         self.at_once = min(5, max(3, int(conf.get("parallel") or AT_ONCE)))
         self._gate, self._lock, self._memo = threading.BoundedSemaphore(self.at_once), threading.Lock(), {}
-        self.hold = float(conf.get("hold_seconds") or HOLD_SECONDS)
         self.jobs: dict[tuple, Job] = {}
         # what a metric is made of counts too: Rx PMPM is found by "pharmacy" through [Pharmacy Paid]
         labels = {m["label"].lower() for m in self.layer.captured().values()}
@@ -695,6 +704,9 @@ class Harness:
                 self._latest_month(k, col)
                 break
         self._slices()
+        dates = {c for k in self.headline for c in self.layer.columns_for([k]) if self._kind(c) == "dateTime"}
+        with ThreadPoolExecutor(self.at_once) as pool:  # the first filter on a date must not wait for this
+            list(pool.map(self._known, sorted(dates)))
 
     def _slices(self) -> None:
         """What a question may name: the values of the columns it slices by. A few small queries, once, ahead of it."""
@@ -1200,6 +1212,26 @@ class Harness:
         filters = {c: v for c, v in filters.items() if c.split(":")[0] in reach or self._kind(c) == "dateTime"}
         return {"route": "explain" if _DRIVES.search(question) else "compute", "metrics": metrics, "by": [], "filters": filters}
 
+    def hello(self, question: str) -> str | None:
+        """Talk about the desk itself, answered at once from what the model holds. None for a real question."""
+        said = " ".join(_words(question))
+        said = re.sub(r"\b(please|today|for me)\b", " ", " ".join(re.findall(r"[a-z0-9]+", question.lower()))).strip()
+        said = " ".join(said.split())
+        if _THANKS.fullmatch(said):
+            return "You are welcome. Ask me anything else about the numbers."
+        if not _HELLO.fullmatch(said):
+            return None
+        names = [self.layer.metrics[k]["label"] for k in self.headline if k in self.layer.metrics]
+        cuts = [c.split("[")[-1].rstrip("]") for c, v in self.values.items() if 2 <= len(v) <= 12 and not _NOT_DRIVER.search(c)]
+        lines = ["I answer questions from your governed Power BI measures, with the numbers straight from the warehouse. Ask for a number, a "
+                 "comparison, a breakdown, or what is driving a change, and I go one layer deeper each time you ask."]
+        if names:
+            lines.append(f"**Good places to start:** {', '.join(names)}")
+        if cuts:
+            lines.append(f"**Ways to cut them:** {', '.join(dict.fromkeys(cuts[:6]))}")
+        asks = ["how is the business doing", *([f"what is driving {names[0]}"] if names else [])]
+        return "\n\n".join(lines) + f"\n\nWould you like {' or '.join(asks)}?"
+
     def read_why(self, question: str) -> dict | None:
         """"What is driving medical and pharmacy cost": read in code, with no model to wait for."""
         return self.guess(question, every_word=True) if _DRIVES.search(question) else None
@@ -1233,7 +1265,10 @@ class Harness:
         if form.get("route") == "layer":
             return self.peel(form), "explain"
         if form.get("route") == "explain":
-            return self._why(steps, question), "explain"
+            if out := self._why(steps, question):
+                return out, "explain"
+            # a measure a layer cannot split (one that sets its own period): the number still stands
+            steps = {"metrics": steps.get("metrics") or [], "filters": steps.get("filters") or {}}
         out = self.plan([steps])
         return ("" if out.startswith("Error") or "\nStep 1: Error" in out or "No data matches" in out or "Step 1: failed" in out
                 or "Step 1: did not finish" in out else out), "compute"
@@ -1307,7 +1342,7 @@ class Harness:
         filters = {c: v for c, v in (steps.get("filters") or {}).items() if self._kind(c) != "dateTime"}
         out = self.explain(metric, col, latest, before, filters)
         if out.startswith("Error") and (t := TRACE.get()) is not None:
-            t["why"] = f"{metric}: {out[:140]}"
+            _why(t, f"{metric}: {out[:140]}")
         return "" if out.startswith("Error") else out
 
     def _show(self, key: str, value) -> str:
@@ -1396,6 +1431,9 @@ def install(kit, folder=None):
             if t is not None:
                 t["calls"] += 1
                 t.setdefault("tools", Counter())[fn.__name__] += 1
+                if fn.__name__ in ("find_metrics", "about_metric", "column_values", "list_columns") and \
+                        sum(t["tools"][k] for k in ("find_metrics", "about_metric", "column_values", "list_columns")) > LOOKUPS:
+                    return ENOUGH
                 # a slow model must not cost the question its answer: a plan yet to run still runs, within its own limits
                 unplanned = fn.__name__ == "compute" and (not t.get("plans") or t.get("failed"))
                 if t["calls"] > TURN_CALLS or (time.monotonic() - t["start"] > h.turn_seconds and not unplanned):
@@ -1543,12 +1581,18 @@ def install(kit, folder=None):
             t = {"n": 0, "secs": 0.0, "slowest": 0.0, "calls": 0, "start": t0, "read": "agent"}
             TRACE.set(t)
             try:
+                if said := h.hello(message):
+                    t["read"] = "code"
+                    yield json.dumps({"type": "chunk", "data": {"text": said}}) + "\n"
+                    yield json.dumps({"type": "result", "data": {"type": "chat", "answer": said}}) + "\n"
+                    return
                 if h.direct and can_talk:
                     try:
                         async for line in direct(message, session_id, t):
                             yield line
                     except Exception as exc:  # noqa: BLE001 - whatever went wrong, the agent can still answer
-                        t.update(read="agent", plans=0, failed=False, why=f"{type(exc).__name__}: {str(exc)[:140]}")
+                        t.update(read="agent", plans=0, failed=False)
+                        _why(t, f"{type(exc).__name__}: {str(exc)[:140]}")
                     if t.get("answered"):
                         return
                 led = h.ledger.setdefault(session_id, {})
@@ -1565,12 +1609,12 @@ def install(kit, folder=None):
                         break
                     except Exception as exc:  # noqa: BLE001 - however the agent fails, the question still gets its answer
                         print(f"[desk] the agent stopped ({type(exc).__name__}): answering from what there is", file=sys.stderr, flush=True)
-                        t["why"] = f"agent: {type(exc).__name__}"
+                        _why(t, f"agent stopped: {type(exc).__name__}")
                         async for out in rescue(message, seen):
                             yield out
                         break
                     if '"type": "error"' in line[:40] or '"type":"error"' in line[:40]:
-                        t["why"] = "agent: it reported an error"
+                        _why(t, f"agent error: {str((json.loads(line).get('data') or {}).get('message'))[:160]}")
                         async for out in rescue(message, seen):
                             yield out
                         break
@@ -1607,17 +1651,15 @@ def install(kit, folder=None):
             return h.kit.results[len(h.kit.results) - len(fresh):] if fresh else [], len(job.kept)
 
         async def stream(message, session_id="default", **kw):
-            """Follow the job for this question, starting it if it is new. A new one is followed for a few seconds, then the
-            chat is let go; the job goes on, and asking again picks it up at the start, or gets what it found."""
+            """Follow the job for this question to its end, starting it if it is new. A chat that goes away leaves the job
+            running; asking again, or reopening the chat, picks it up at the start, or gets what it found."""
             key = (session_id, " ".join(_words(message)))
             for k in [k for k, j in h.jobs.items() if j.done and time.monotonic() - j.at > MAP_SECONDS]:
                 del h.jobs[k]
             job = h.jobs.get(key)
-            new = job is None
-            if new:
+            if job is None:
                 job = h.jobs[key] = Job()
                 job.task = asyncio.create_task(work(job, message, session_id, kw))
-            ends = time.monotonic() + h.hold if new else None
             at, given = 0, 0
             while True:
                 while at < len(job.lines):
@@ -1629,10 +1671,6 @@ def install(kit, folder=None):
                     for r in handed:  # read by this chat: another following this conversation must not draw it
                         r["asker"] = None
                 if job.done:
-                    return
-                if ends and time.monotonic() > ends:
-                    yield json.dumps({"type": "held", "data": {"message": HELD}}) + "\n"
-                    yield json.dumps({"type": "result", "data": {"type": "analysis", "answer": HELD}}) + "\n"
                     return
                 await asyncio.sleep(0.05)
 

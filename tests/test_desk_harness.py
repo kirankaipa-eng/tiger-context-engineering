@@ -364,33 +364,28 @@ def test_a_turn_that_goes_round_and_round_is_told_to_answer(kit):
         calls.append(1)
         return "ok"
 
-    fake.__name__ = "column_values"
+    fake.__name__ = "explore"
     kit.tools = lambda: [fake]
     tools, _, _ = dh.install(kit, kit.folder)
-    tool = next(t for t in tools if t.__name__ == "column_values")
+    tool = next(t for t in tools if t.__name__ == "explore")
     dh.TRACE.set({"n": 0, "secs": 0.0, "slowest": 0.0, "calls": 0, "start": dh.time.monotonic()})
     got = [asyncio.run(tool()) for _ in range(dh.TURN_CALLS + 1)]
     assert got[-2] == "ok" and got[-1] == dh.OUT_OF_TURN and len(calls) == dh.TURN_CALLS
 
 
-def test_a_question_that_takes_time_lets_the_chat_go_and_keeps_working(kit):
+def test_a_question_is_followed_to_its_answer_however_long_it_takes(kit):
     class Slow:
         async def stream(self, message, session_id="default"):
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
             yield json.dumps({"type": "result", "data": {"answer": "done"}}) + "\n"
 
     _, _, wrap = dh.install(kit, kit.folder)
-    kit.compute.__self__.hold = 0.02
     orch = wrap(Slow())
 
     async def run():
-        first = [json.loads(x) async for x in orch.stream("why?")]
-        again = [json.loads(x) async for x in orch.stream("why?")]  # the page following it, or the chat reopened
-        return first, again
+        return [json.loads(x) async for x in orch.stream("why?")]
 
-    first, again = asyncio.run(asyncio.wait_for(run(), 5))
-    assert [x["type"] for x in first] == ["held", "result"] and first[0]["data"]["message"] == dh.HELD
-    assert again[-1]["data"]["answer"] == "done"
+    assert [x["data"]["answer"] for x in asyncio.run(asyncio.wait_for(run(), 5))] == ["done"]
 
 
 def test_a_job_outlives_the_chat_that_started_it(kit):
@@ -1110,3 +1105,56 @@ def test_two_questions_at_once_keep_to_their_own_results(kit):
     token = dh.bi.ASKER.set("a")
     assert [r["metrics"] for r in h._mine(0)] == [["x"]]
     dh.bi.ASKER.reset(token)
+
+
+@pytest.mark.parametrize("said", ["what can you help me with", "What can you help me with?", "hi", "Hello!", "help", "what can I ask?", "what do you do",
+                                  "what metrics do you have", "how can you help me?"])
+def test_talk_about_the_desk_is_answered_at_once(kit, said):
+    model = Model()
+    lines, orch = told(kit, model, said)
+    assert model.asked == 0 and orch.seen == [] and kit.calls == []
+    assert lines[-1]["data"]["type"] == "chat" and "Total PMPM" not in said and "governed" in lines[-1]["data"]["answer"]
+
+
+@pytest.mark.parametrize("said", ["help me understand Total PMPM", "what can you tell me about Medicaid", "hi what was Total PMPM in 2025", "what drove cost"])
+def test_a_real_question_is_not_small_talk(kit, said):
+    assert kit.compute.__self__.hello(said) is None
+
+
+def test_the_agent_is_sent_to_compute_after_a_few_lookups(tmp_path, monkeypatch):
+    monkeypatch.setattr(dh.bi, "describe", lambda layer, k: "formula")
+    monkeypatch.setattr(dh.bi, "needs", lambda layer, k: "")
+    calls = []
+
+    async def column_values(ctx):
+        calls.append(1)
+        return "values"
+
+    class Looks(Kit):
+        def tools(self):
+            return [*super().tools(), column_values]
+
+    k = Looks()
+    k.folder = tmp_path
+    tool = next(t for t in dh.install(k, tmp_path)[0] if t.__name__ == "column_values")
+    dh.TRACE.set({"calls": 0, "start": dh.time.monotonic(), "n": 0, "secs": 0.0, "slowest": 0.0})
+    said = [asyncio.run(tool(None)) for _ in range(dh.LOOKUPS + 1)]
+    assert said[:-1] == ["values"] * dh.LOOKUPS and said[-1] == dh.ENOUGH and len(calls) == dh.LOOKUPS
+    dh.TRACE.set(None)
+
+
+def test_a_measure_a_layer_cannot_split_still_shows_its_number(kit, monkeypatch):
+    h = kit.compute.__self__
+    monkeypatch.setattr(h, "_why", lambda steps, q: "")
+    ask("what is driving total pmpm")
+    dh.TRACE.set({"calls": 0, "start": dh.time.monotonic(), "n": 0, "secs": 0.0, "slowest": 0.0})
+    out, tool = h.run({"route": "explain", "metrics": ["total_pmpm"]}, "what is driving total pmpm")
+    dh.TRACE.set(None)
+    assert tool == "compute" and "Data: x" in out and kit.calls
+
+
+def test_every_reason_a_turn_went_to_the_agent_is_kept():
+    t = {}
+    dh._why(t, "the reading found no form for it")
+    dh._why(t, "agent error: GraphRecursionError")
+    assert t["why"] == "the reading found no form for it; agent error: GraphRecursionError"
