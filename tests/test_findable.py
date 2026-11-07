@@ -67,3 +67,29 @@ def test_a_price_is_not_a_count():
     c = f.Catalog({"cost_per_visit": {"label": "CostPerVisit", "dax": "x"}, "visits": {"label": "Visits", "dax": "x"}})
     assert "unitcost" in c.metrics["cost_per_visit"]["words"] and "utilization" not in c.metrics["cost_per_visit"]["words"]
     assert "utilization" in c.metrics["visits"]["words"]
+
+
+CHAIN = {
+    "effect": {"label": "Current_VisitEffect_Dental", "status": "captured", "dax": "[Visits%Change_Dental] * [Base]"},
+    "pct": {"label": "Visits%Change_Dental", "status": "not_captured", "dax": "[Rate]", "why": "built on [Rate], which is not captured: x"},
+    "rate": {"label": "Rate", "status": "not_captured", "dax": "x", "why": "uses PATHITEM, which is not captured yet"},
+    "base": {"label": "Base", "status": "captured", "dax": "SUM(T[A])"},
+}
+
+
+def test_why_goes_down_to_what_could_not_be_translated_and_shows_no_formula():
+    got = f.blocked(CHAIN, "current_visiteffect_dental") or f.blocked(CHAIN, "effect")
+    assert got[0].startswith("Current_VisitEffect_Dental [captured]")
+    assert got[1].startswith("  Visits%Change_Dental [not_captured]: built on [Rate]")
+    assert got[2] == "    Rate [not_captured]: uses PATHITEM, which is not captured yet"
+    assert not any("SUM" in x or "Base" in x for x in got)
+
+
+def test_why_is_quiet_when_nothing_is_in_the_way():
+    assert f.blocked(CHAIN, "base") == [] and f.blocked(CHAIN, "nothing") == ["no metric 'nothing'"]
+
+
+def test_a_model_reads_every_measure_with_its_versions_and_no_helpers():
+    text = f.Catalog(METRICS).context()
+    assert "current:current_billedpmpm_dental prior:prior_billedpmpm_dental change_percent:billedpmpm_pct_change_dental" in text
+    assert "lastdayid" not in text and "Business words: unitcost = unit cost" in text

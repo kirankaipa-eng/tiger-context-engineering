@@ -2,6 +2,7 @@
 
     python -m insurance_context.findable <model folder>            write findable.yaml beside the capture, and report
     python -m insurance_context.findable <model folder> --ask "how much of the change in pmpm is utilization"
+    python -m insurance_context.findable <model folder> --why <metric>      what stands between a metric and SQL
 
 Business names are kept as code as often as words: a search on words cannot see "pmpm" in BilledPMPM. And one measure is
 often four: current, prior, a change and a percent change, which read alike and mean different things. So each metric gets
@@ -9,6 +10,8 @@ often four: current, prior, a change and a percent change, which read alike and 
     words    its name split as a reader would say it, with what its formula reads
     family   the measure it is a version of ("billed pmpm"), whatever the version
     role     current, prior, change_percent, change_amount, helper, or base
+
+`context` is all of it as text, for a model to read and choose from: choosing is its work, and word matching is only the fallback.
 
 and terms carry the business's own language: "utilization" finds units, "price" finds unit cost.
 
@@ -109,6 +112,15 @@ class Catalog:
         """The business words a question names, in the order the terms know them."""
         return heard(split(text), self.terms)
 
+    def context(self) -> str:
+        """Every measure a question may use, a line to a measure with its versions, and what the business's words mean."""
+        lines: dict[str, list[str]] = {}
+        for k, e in self.metrics.items():
+            if e["role"] != "helper":
+                lines.setdefault(e["family"] or k, []).append(f"{e['role']}:{k}")
+        said = "; ".join(f"{t} = {', '.join(ps)}" for t, ps in self.terms.items())
+        return "\n".join(f"{f} | {' '.join(ks)}" for f, ks in lines.items()) + f"\nBusiness words: {said}"
+
     def query(self, text: str) -> list[str]:
         """What a question asks for, in the catalog's words."""
         words = split(text)
@@ -137,20 +149,51 @@ def load(folder, metrics: dict) -> Catalog:
     return Catalog(metrics, (yaml.safe_load(p.read_text(encoding="utf-8")) or {}) if p else {})
 
 
+def blocked(metrics: dict, name: str) -> list[str]:
+    """Down a metric's formula to what could not be translated: each measure in the way, and why, with what it is built on.
+    Names and reasons only, never a formula. [] when every measure under it is captured."""
+    by_label = {str(m.get("label") or k).lower(): k for k, m in metrics.items()}
+    start = name if name in metrics else by_label.get(name.lower())
+    if start is None:
+        return [f"no metric {name!r}"]
+
+    def walk(key: str, depth: int, seen: tuple) -> list[str]:
+        m = metrics[key]
+        text = f"{m.get('dax') or ''} {m.get('why') or ''}"
+        under = [by_label[r.lower()] for r in dict.fromkeys(re.findall(r"\[([^\]]+)\]", text)) if r.lower() in by_label]
+        below = [x for k in under if k not in seen and k != key for x in walk(k, depth + 1, (*seen, key))]
+        stuck = m.get("status") not in ("captured", None) or m.get("why")
+        if not stuck and not below:
+            return []
+        said = f": {m.get('why')}" if m.get("why") else ""
+        return [f"{'  ' * depth}{m.get('label') or key} [{m.get('status') or 'part'}]{said}", *below]
+
+    return walk(start, 0, ())
+
+
 def main(argv=None) -> None:
     from .bilayer import BILayer
 
     ap = argparse.ArgumentParser(description="Make a captured model's metrics findable.")
     ap.add_argument("folder")
     ap.add_argument("--ask", help="show what a question finds, and write nothing")
+    ap.add_argument("--why", help="show what stands between a metric and SQL, and write nothing")
+    ap.add_argument("--top", type=int, default=10, help="how many measures --ask lists")
     a = ap.parse_args(argv)
-    metrics = BILayer.load(a.folder).captured()
+    layer = BILayer.load(a.folder)
+    if a.why:
+        print("\n".join(blocked(layer.metrics, a.why)) or f"{a.why}: every measure under it is captured")
+        return
+    metrics = layer.captured()
     cat = load(a.folder, metrics)
     if a.ask:
-        asked = set(cat.query(a.ask)) - {"the", "of", "in", "is", "by", "how", "much", "what", "change", "versu", "v"}
-        hits = sorted(((len(asked & set(e["words"])), k) for k, e in cat.metrics.items() if e["role"] != "helper"), key=lambda x: (-x[0], x[1]))
+        quiet = {"the", "of", "in", "is", "by", "how", "much", "what", "change", "versu", "v", "drive", "driven", "driving", "cost", "unit"}
+        asked = set(cat.query(a.ask)) - quiet
+        wants_change = bool(re.search(r"%|\bpercent\b|\bpct\b", a.ask))
         print("reads as:", ", ".join(sorted(asked)))
-        for n, k in [h for h in hits if h[0]][:10]:
+        hits = sorted(((len(asked & set(e["words"])), k) for k, e in cat.metrics.items()
+                       if e["role"] != "helper" and (wants_change or not cat.is_change(k))), key=lambda x: (-x[0], x[1]))
+        for n, k in [h for h in hits if h[0]][:a.top]:
             print(f"  {n}  {k}  [{cat.metrics[k]['role']}]  family: {cat.metrics[k]['family']}")
         return
     out = Path(a.folder) / NAME
@@ -159,6 +202,7 @@ def main(argv=None) -> None:
     whole = sum(1 for f in cat.families.values() if len(f) > 1)
     print(f"{out}: {len(cat.metrics)} metrics, {len(cat.families)} families, {whole} with more than one version")
     print("roles: " + ", ".join(f"{r} {n}" for r, n in roles.most_common()))
+    print(f"read whole by a model: {len(cat.context()):,} characters, about {len(cat.context()) // 4:,} tokens")
 
 
 if __name__ == "__main__":

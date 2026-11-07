@@ -1493,3 +1493,25 @@ def test_a_trace_says_each_step_in_and_out():
     out = dh._trace("what is it", t).splitlines()
     assert out[0] == "[trace] what is it" and "settle" in out[1] and "total_pmpm" in out[1] and out[2].strip() == "out: filters {}"
     assert len(out) == 4 and out[3].endswith("...") and len(out[3]) < dh.TRACE_CHARS + 40
+
+
+def test_a_question_reads_the_whole_catalog_and_the_scope_it_must_not_add(scoped):
+    ask("how much of the change in pmpm is utilization versus unit cost")
+    system, human = scoped.form_for(dh.QUESTION.get(), dh.SESSION.get())
+    assert all(k in human[1] for k in scoped.catalog.metrics if scoped.catalog.metrics[k]["role"] != "helper")
+    assert "never add these: Period[Range]" in human[1] and "not by matching words" in system[1]
+    assert human[1].startswith("Measures:")
+
+
+def test_a_word_of_a_measure_is_not_a_slice(kit):
+    h = kit.compute.__self__
+    h.values = {"Member[Kind]": ["Cost"]}
+    form = h.guess("what are the drivers of total pmpm cost trends")
+    assert "Member[Kind]" not in (form or {}).get("filters", {})
+
+
+def test_nothing_in_either_period_is_a_failed_read_not_a_finding(kit):
+    h = kit.compute.__self__
+    ask("what is driving total pmpm")
+    h.explain = lambda *a, **k: "Total PMPM: 0 in 2025-09, 0 in 2026-09, a change of +0.\nNothing changed."
+    assert h._why_one("total_pmpm", {}, "q") == ""

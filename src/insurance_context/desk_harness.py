@@ -96,8 +96,9 @@ _QUIET = {"what", "is", "are", "was", "were", "the", "our", "my", "we", "for", "
           "many", "s", "did", "do", "doe", "me", "show", "give", "it", "that"}
 SHOWN = 6
 SLICES = 30            # the columns whose values are read ahead, once
+CATALOG_CHARS = 200_000  # the catalog a question reads whole; past this it gets the shortlist
 SHORTLIST = 20         # the metrics one small call chooses from
-READ_SECONDS = 20      # past this the question is read in code
+READ_SECONDS = 30      # past this the question is read in code
 HISTORY = 26           # the periods an investigation reads under the owner's as-of
 RUN_SECONDS = 150      # what a settled question may take before the agent is asked instead: it runs behind a free chat, and the agent would only ask the same warehouse again
 JOB_SECONDS = 300      # what the agent may take in the background before the answer is what there is
@@ -116,7 +117,11 @@ route "overview" for an open question that names no one measure ("how's the busi
 "overview", "metrics": []}. If a broad word fits several measures and nothing favours one ("how are we on cost?"), list those: 2 to 4 keys.
 route "known" when every number the answer needs is already under "Already known": {"route": "known"}.
 route "agent" for anything else: rows or lists of things, forecasts, whether a change is real or chance, or nothing listed fits.
-Use only the keys, columns and values listed. Metrics are best first: take the first that fits unless the question says otherwise.
+Use only the keys, columns and values listed. Each line of Measures is one measure with its versions, role:key. Choose by what the
+question means, not by matching words. Why something moved, or its trend, takes the current or base version, never a change version:
+the change is worked out for you. Take a change version only to read that number itself. A measure named as an effect says how much one
+driver contributed: read it with route compute. Cost trend means the per-member measure if there is one. A filter is only a value the
+question names as a slice: a word that is part of a measure's name is not a filter.
 Leave out what the question does not ask for: a question with no period gets no date filter, and one is applied for you.
 Dates: {"DATE:year": 2025}, {"DATE:quarter": "2026-Q1"}, {"DATE:month": "2026-09"}; several periods compared are a list of values with
 the same column in `by`. "Highest" or "top 3" is `by` with `top` (1 or 3); lowest adds ascending true.
@@ -454,8 +459,8 @@ def _trace(question: str, t: dict) -> str:
     lines = [f"[trace] {_brief(question)}"]
     for at, node, given, got in t.get("steps", []):
         lines.append(f"  {at:6.1f}s  {node:<10} in:  {_brief(given)}")
-        if got != "":
-            lines.append(f"  {'':7}  {'':<10} out: {_brief(got)}")
+        if got != "":  # a refusal whole: its reason comes last
+            lines.append(f"  {'':7}  {'':<10} out: {_brief(got, TRACE_CHARS * 4 if str(got).startswith('Error') else TRACE_CHARS)}")
     return "\n".join(lines)
 
 
@@ -1504,7 +1509,7 @@ class Harness:
         said = " ".join(_words(question))
         names = {" ".join(_words(v)): (c, v) for c, vals in self.values.items() for v in vals if len(v) > 2}
         for phrase in sorted(names, key=len, reverse=True):
-            if phrase and re.search(rf"\b{re.escape(phrase)}\b", said):
+            if phrase and phrase not in _LOOSE and re.search(rf"\b{re.escape(phrase)}\b", said):
                 c, v = names[phrase]
                 filters.setdefault(c, v)
                 said = re.sub(rf"\b{re.escape(phrase)}\b", " ", said)
@@ -1557,15 +1562,18 @@ class Harness:
         """What one small call is given: the shortlist, what it can be cut by, the last form, and nothing else."""
         led = self.ledger.get(session, {})
         last = led.get("form") or {}
+        whole = self.catalog.context()
         keys = list(dict.fromkeys([*(last.get("metrics") or []), *self.rank(question, SHORTLIST), *self.headline]))[:SHORTLIST]
-        if not keys:
+        if not keys and not whole:
             return []
-        _step("search", question, [f"{k} [{self.catalog.metrics[k]['role']}]" for k in keys])
-        cols = [c for c in self.layer.columns_for(keys[:3]) if self.kit._type(c) != "dateTime" and not _NOT_DRIVER.search(c)]
-        date = (self._date(keys[0]) or "Calendar[Date]:month").rsplit(":", 1)[0]
+        measures = whole if len(whole) <= CATALOG_CHARS else "\n".join(f"- {k}: {self.layer.metrics[k]['label']}{bi.needs(self.layer, k)}" for k in keys)
+        _step("catalog", question, f"{'every measure' if measures is whole else f'{len(keys)} measures'}, {len(measures):,} characters")
+        cols = [c for c in self.values if self.kit._type(c) != "dateTime" and not _NOT_DRIVER.search(c)]
+        date = ((self._date(keys[0]) if keys else None) or "Calendar[Date]:month").rsplit(":", 1)[0]
         shown = [f"{c}: {', '.join(self.values[c][:30])}" if len(self.values.get(c, [])) <= 30 and c in self.values else c for c in cols]
-        ask = (f"Metrics:\n" + "\n".join(f"- {k}: {self.layer.metrics[k]['label']}{bi.needs(self.layer, k)}" for k in keys)
-               + "\n\nColumns:\n" + "\n".join(shown) + f"\n\nDate column: {date}"
+        scope = f"\n\nAlready applied to every number, so never add these: {', '.join(self.defaults)}" if self.defaults else ""
+        # the catalog first and the same every time, so a model that caches a prompt's start reads it once
+        ask = (f"Measures:\n{measures}\n\nColumns:\n" + "\n".join(shown) + f"\n\nDate column: {date}{scope}"
                + (f"\n\nPrevious question: {led['said'][-1][0]}\nPrevious form: {json.dumps(last)}" if last and led.get("said") else "")
                + (f"\n\nAlready known:\n{known}" if (known := self.known(900)) else "")
                + f"\n\nQuestion: {question}")
@@ -1670,6 +1678,10 @@ class Harness:
         before = asof[2] if asof else f"{y - (mo == 1)}-{(mo - 2) % 12 + 1:02d}" if _MONTHS.search(question) else f"{y - 1}-{mo:02d}"
         filters = {c: v for c, v in (steps.get("filters") or {}).items() if self._kind(c) != "dateTime"}
         out = self.explain(metric, col, latest, before, filters)
+        if re.match(r"[^\n]*: 0 in \S+, 0 in \S+,", out):
+            if (t := TRACE.get()) is not None:
+                _why(t, f"{metric}: nothing in either period")
+            return ""  # no data in this scope is not "it did not change"
         if out.startswith("Error") and (t := TRACE.get()) is not None:
             _why(t, f"{metric}: {out[:140]}")
         return "" if out.startswith("Error") else out
@@ -1825,7 +1837,7 @@ def install(kit, folder=None):
                 if again:
                     t["read"] = "map"
                     tried.append(again["form"])
-                elif form := h.next_layer(message) or h.read(message) or h.read_why(message):
+                elif form := h.next_layer(message) or h.read(message):  # every word accounted for: nothing to choose
                     t["read"] = "code"
                     tried.append(form)
                 else:
@@ -2019,4 +2031,5 @@ def install(kit, folder=None):
         orch.stream = stream
         return orch
 
-    return tools, prompt(kit), wrap
+    whole = h.catalog.context()
+    return tools, prompt(kit) + (f"\n\nEvery measure, with its versions as role:key:\n{whole}" if len(whole) <= CATALOG_CHARS else ""), wrap
