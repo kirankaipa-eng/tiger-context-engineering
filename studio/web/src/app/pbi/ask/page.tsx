@@ -304,11 +304,12 @@ async function layout(model: string, question: string, lead: ExhibitData, focus:
 
 /** One question of the conversation, with what came of it. `repeat`: its pictures are all above already. */
 /** `measure`: what the turn was about, for a follow-up that names none. */
-type Turn = { id: string; question: string; answer: string; views: View[]; focus: Focus; error?: string; repeat?: boolean; note?: string; measure?: string[]; picture?: Picture };
-const newTurn = (question: string): Turn => ({ id: Math.random().toString(36).slice(2, 10), question, answer: "", views: [], focus: [] });
+type Turn = { id: string; question: string; answer: string; views: View[]; focus: Focus; pending?: boolean; held?: boolean; error?: string; repeat?: boolean; note?: string; measure?: string[]; picture?: Picture };
+const newTurn = (question: string): Turn => ({ id: Math.random().toString(36).slice(2, 10), question, answer: "", views: [], focus: [], pending: true });
+const HELD_STEP = "Working on this in the background. You can keep asking, or go to another chat.";
 /** A kept turn as saved (views under `specs`); one saved before views existed opens with its answer only. */
 const fromSaved = (t: { id: string; question: string; answer: string; specs: unknown[]; focus: Focus; error?: string }): Turn =>
-  ({ id: t.id, question: t.question, answer: t.answer, focus: t.focus, error: t.error, note: (t as any).note, measure: (t as any).measure, picture: (t as any).picture, views: (t.specs as any[]).filter((v) => v && "queries" in v && "kind" in v) });
+  ({ id: t.id, question: t.question, answer: t.answer, focus: t.focus, error: t.error, pending: (t as any).pending, note: (t as any).note, measure: (t as any).measure, picture: (t as any).picture, views: (t.specs as any[]).filter((v) => v && "queries" in v && "kind" in v) });
 
 /** A turn's answer and its views: each runs here, re-run when its trail changes. */
 function Answer({ turn, model, labels, cache, live, step, first, setFocus, setViews, setPicture, onAsk, dates, types }: {
@@ -614,6 +615,10 @@ export default function AskPage() {
   const [busy, setBusy] = useState(false);
   const cache = useRef(new Map<string, Result>());
   const abort = useRef<AbortController | null>(null);
+  /** What this page is still following in the background: left behind with the chat, picked up again when it reopens. */
+  const following = useRef(new Set<AbortController>());
+  const stopped = useRef(false);
+  const leave = () => { abort.current?.abort(); following.current.forEach((c) => c.abort()); following.current.clear(); };
   const box = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -643,7 +648,13 @@ export default function AskPage() {
     setTurns((ts) => [...ts, turn]);
     // the new question goes to the top of the window, as in a chat; what came before stays above it
     setTimeout(() => document.getElementById(`turn-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
-    const results: ExhibitData[] = [];
+    await follow(id, message, session, turns, false);
+  };
+  /** One question to its end. The server may let the chat go while it works: the box is free again and this carries on,
+      filling the same turn. `behind`: it is already in the background, reopened with its chat. */
+  const follow = async (id: string, message: string, session: string, turns: Turn[], behind: boolean) => {
+    let held = behind;
+    let results: ExhibitData[] = [];
     /** The pictures for what has come back. Choosing them is the slow part, so it starts with the first rows and is
         not done again unless more arrive. */
     const choose = async (rs: ExhibitData[], quiet: boolean) => {
@@ -668,7 +679,7 @@ export default function AskPage() {
       const basis = lead ? { ...lead, metrics: [...new Set([...lead.metrics, ...named])] }
         : own.length ? { kind: "compute", columns: [], rows: [], metrics: own, by: [], filters: {}, labels, origin: "agent" } as ExhibitData : undefined;
       if (basis) {
-        if (!quiet) setStep("Choosing the pictures");
+        if (!quiet && !held) setStep("Choosing the pictures");
         // a follow-up on "it" after a "why" keeps explaining the change ("break it down by age")
         const prior = turns.at(-1)?.views.find((v) => !v.table)?.kind;
         const carry = prior === "waterfall" && /\b(it|this|that|them)\b/i.test(message) ? "drivers" : undefined;
@@ -696,15 +707,19 @@ export default function AskPage() {
         : `The agent did not compute this, so these are drawn straight from ${drawn} in the model.`;
       return { views: fresh, focus, note, measure: basis?.metrics.slice(0, 1), repeat: !fresh.length && views.length > 0, picture };
     };
-    let answer = "", ended = false;
+    let answer = "", ended = false, letGo = false;
     let early = null as Promise<{ chosen: Awaited<ReturnType<typeof choose>>; n: number } | null> | null;
     let soon: ReturnType<typeof setTimeout> | undefined;
-    const ctrl = new AbortController();
-    abort.current = ctrl;
+    let ctrl = new AbortController();
+    if (behind) { following.current.add(ctrl); update(id, () => ({ held: true })); } else abort.current = ctrl;
     try {
+     for (;;) {
+      letGo = false;
       await streamNdjson(pbi.askPath(pbiModel), { message, session_id: session }, (e) => {
-        if (e.type === "chunk") { answer += e.data.text ?? ""; update(id, (t) => ({ answer: t.answer + (e.data.text ?? "") })); }
-        else if (e.type === "agent_tool_call" && e.data.status === "started") { answer = ""; update(id, () => ({ answer: "" })); if (STEP[e.data.tool]) setStep(STEP[e.data.tool]); }
+        if (letGo) return;
+        if (e.type === "held") letGo = true;
+        else if (e.type === "chunk") { answer += e.data.text ?? ""; update(id, (t) => ({ answer: t.answer + (e.data.text ?? "") })); }
+        else if (e.type === "agent_tool_call" && e.data.status === "started") { answer = ""; update(id, () => ({ answer: "" })); if (STEP[e.data.tool] && !held) setStep(STEP[e.data.tool]); }
         else if (e.type === "pbi_result") {
           const d = e.data as any, r: ExhibitData = { ...d, filters: d.filters ?? {}, origin: "agent" };
           results.push(r);
@@ -725,24 +740,40 @@ export default function AskPage() {
         } else if (e.type === "error") update(id, () => ({ error: e.data.message }));
         else if (e.type === "result") { answer = answer || e.data.answer || ""; update(id, (t) => ({ answer: t.answer || e.data.answer || "" })); }
       }, ctrl.signal);
+      if (!letGo) break;
+      // the server is still on it: the box is free, and the same turn goes on filling from the start of the job
+      held = true; answer = ""; results = []; clearTimeout(soon); early = null;
+      update(id, () => ({ answer: "", held: true }));
+      abort.current = null; ctrl = new AbortController(); following.current.add(ctrl);
+      setStep(""); setBusy(false);
+     }
       clearTimeout(soon);
       ended = true;
       const got = early ? await early : null;
       const chosen = got && got.n === results.length ? got.chosen : await choose(results, false);
-      update(id, () => settle(chosen, results, answer));
+      update(id, () => ({ ...settle(chosen, results, answer), pending: false, held: false }));
     } catch (err: any) {
-      if (err?.name !== "AbortError") update(id, () => ({ error: String(err?.message ?? err) }));
-    } finally { setStep(""); setBusy(false); abort.current = null; }
+      if (err?.name !== "AbortError") update(id, () => ({ error: String(err?.message ?? err), pending: false, held: false }));
+      else if (stopped.current) update(id, () => ({ pending: false, held: false }));
+      // left for another chat: it stays pending, and is picked up when this chat reopens
+    } finally {
+      stopped.current = false;
+      following.current.delete(ctrl);
+      if (!held) { setStep(""); setBusy(false); abort.current = null; }
+    }
   };
-  const fresh = () => { abort.current?.abort(); setSession(newSession()); setTurns([]); setError(""); setTimeout(() => box.current?.focus()); };
+  const fresh = () => { leave(); setBusy(false); setStep(""); setSession(newSession()); setTurns([]); setError(""); setTimeout(() => box.current?.focus()); };
   /** A conversation kept in this browser, reopened where it left off: every question with its answer,
       pictures and focus, and its session, so a follow-up still knows what came before. */
   const reopen = (id: string) => {
     const a = readAsked(pbiModel).find((x) => x.id === id);
     if (!a) return fresh();
-    abort.current?.abort();
+    leave(); setBusy(false); setStep("");
     setSession(a.id); setError("");
-    setTurns((a.turns ?? [{ id: "t0", question: a.question, answer: a.answer, specs: a.specs, focus: a.focus }]).map(fromSaved));
+    const opened = (a.turns ?? [{ id: "t0", question: a.question, answer: a.answer, specs: a.specs, focus: a.focus }]).map(fromSaved);
+    setTurns(opened);
+    // what was still at work when this chat was left: its job kept going, and is followed from where it is
+    opened.filter((t) => t.pending).forEach((t) => { void follow(t.id, t.question, a.id, opened.filter((o) => o.id !== t.id), true); });
   };
   // the sidebar opens a conversation (or a new one); arriving with ?c= opens it, and with ?q= (from a brief or a
   // kept exhibit) asks that question, once the model is known
@@ -766,9 +797,11 @@ export default function AskPage() {
   useEffect(() => { window.dispatchEvent(new CustomEvent("ask:showing", { detail: turns.length ? session : null })); }, [turns.length, session]);
   // each conversation kept, titled by its first question; a new question moves it to the top
   useEffect(() => {
-    if (busy || !turns.length || !pbiModel) return;
+    if (!turns.length || !pbiModel) return;
     const list = readAsked(pbiModel), prev = list.find((x) => x.id === session), last = turns[turns.length - 1];
-    const saved = turns.map((t) => ({ id: t.id, question: t.question, answer: t.answer, specs: t.views, focus: t.focus, error: t.error, note: t.note, measure: t.measure, picture: t.picture }));
+    // a new question is kept at once, so leaving this chat cannot lose it; its words are kept when they settle
+    if (busy && prev && (prev.turns?.length ?? 1) === turns.length) return;
+    const saved = turns.map((t) => ({ id: t.id, question: t.question, answer: t.answer, specs: t.views, focus: t.focus, error: t.error, note: t.note, measure: t.measure, picture: t.picture, pending: t.pending }));
     const entry = { id: session, title: prev?.title ?? turns[0].question, question: last.question, answer: last.answer, specs: last.views, focus: last.focus, turns: saved, at: Date.now() / 1000 };
     const same = prev && (prev.turns?.length ?? 1) === turns.length;
     writeAsked(pbiModel, same ? list.map((x) => (x.id === session ? entry : x)) : [entry, ...list.filter((x) => x.id !== session)]);
@@ -785,7 +818,7 @@ export default function AskPage() {
           className={`w-full bg-transparent text-[var(--d-ink)] outline-none placeholder:text-[var(--d-muted)] ${big ? "text-[18px]" : "text-[15px]"}`} />
       </label>
       {busy ? (
-        <button type="button" onClick={() => abort.current?.abort()} aria-label="Stop" className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--d-navy)] text-white"><Square size={14} /></button>
+        <button type="button" onClick={() => { stopped.current = true; abort.current?.abort(); }} aria-label="Stop" className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--d-navy)] text-white"><Square size={14} /></button>
       ) : (
         <button type="submit" disabled={!input.trim()} aria-label="Ask" className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--d-teal)] text-white disabled:opacity-30"><ArrowUp size={18} /></button>
       )}
@@ -819,7 +852,7 @@ export default function AskPage() {
               // the last question keeps a window's height below it, so it can sit at the top while its answer comes
               <div key={t.id} style={i === turns.length - 1 && i > 0 ? { minHeight: "calc(100vh - 160px)" } : undefined}>
                 <Answer turn={t} model={pbiModel} labels={labels} cache={cache.current} first={i === 0}
-                  live={busy && i === turns.length - 1} step={step}
+                  live={(busy && i === turns.length - 1) || !!t.held} step={t.held ? HELD_STEP : step}
                   setFocus={(f) => update(t.id, (x) => ({ focus: typeof f === "function" ? f(x.focus) : f }))}
                   setViews={(change) => update(t.id, (x) => ({ views: change(x.views) }))} setPicture={(p) => update(t.id, () => ({ picture: p }))}
                   onAsk={ask} dates={cols.dates} types={cols.types} />

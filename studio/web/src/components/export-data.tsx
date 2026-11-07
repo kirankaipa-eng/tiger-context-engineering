@@ -29,7 +29,11 @@ export const csvOf = (tables: Table[], labels: Record<string, string> = {}): str
 export const fileName = (title: string): string =>
   `${title.replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 80).toLowerCase() || "data"}.csv`;
 
+/** Held back for now: NEXT_PUBLIC_DESK_EXPORT=on shows it. */
+const SHOWN = process.env.NEXT_PUBLIC_DESK_EXPORT === "on";
+
 export function ExportData({ title, tables, labels }: { title: string; tables: Table[] | null | undefined; labels?: Record<string, string> }) {
+  if (!SHOWN) return null;
   const ready = !!tables?.some((t) => t.rows.length);
   const save = () => {
     // the mark at the start tells Excel this is UTF-8, so names with accents survive
