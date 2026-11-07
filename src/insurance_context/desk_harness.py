@@ -27,6 +27,10 @@
                       (the captured model), its queries (together) and its answer (the number at once, then a sentence).
                       What this cannot settle goes to the agent, as before
 
+analysis_default.yaml beside capture.yaml (optional) is the scope owners have set: `filters`, {Table[Column]: value}, applied on every
+route to every metric they reach, unless the question filters that column itself. `latest` is resolved once per conversation against
+the other defaults of its table, then pinned, and a change is then that value against the one a year before. Every answer says its scope.
+
 precedents.yaml beside capture.yaml (optional) holds what owners have decided:
 
     terms: {pmpm: total_pmpm}   this word means this metric
@@ -160,6 +164,7 @@ _LOOSE = {"primary", "main", "key", "top", "biggest", "major", "drivers", "drive
 # a measure that holds a period, an id or a caption for other measures to read: never what a business question means
 _PLUMBING = re.compile(r"(^|_)(id|key|flag|sort|index|title|caption|tooltip|header)(_|$)|(day|month|period|year|date)_?id|"
                        r"(start|end|max|min|last|latest|current|first)_?(date|month|period|day)|selected|slicer", re.IGNORECASE)
+_LOOKING = ("find_metrics", "about_metric", "metric_needs", "column_values", "list_columns")
 _LEANS = re.compile(r"\b(what about|how about|and|that|those|these|this one|it|same|instead|also|only|just|now|then|them|there|their)\b", re.IGNORECASE)
 _GRAIN_SAID = {"monthly": "month", "mon": "month", "yearly": "year", "annual": "year", "yr": "year", "quarterly": "quarter", "qtr": "quarter",
                "weekly": "week", "daily": "day", "date": "day"}
@@ -265,6 +270,15 @@ def _when(text: str) -> tuple[str, str | None] | None:
     if not 1 <= mo <= 12 or (d and not 1 <= int(d) <= calendar.monthrange(int(y), mo)[1]):
         return None
     return f"{y}-{mo:02d}", f"{y}-{mo:02d}-{int(d):02d}" if d else None
+
+
+def _month_of(value) -> tuple[int, int] | None:
+    """(year, month) of a period value, as a date, 20260930, 202609 or "Sep 2026" write it. None: not a period."""
+    s = str(value).strip()
+    if m := re.fullmatch(r"(\d{4})(\d{2})(\d{2})?", s):
+        return (int(m.group(1)), int(m.group(2))) if 1 <= int(m.group(2)) <= 12 else None
+    w = _when(s)
+    return (int(w[0][:4]), int(w[0][5:7])) if w else None
 
 
 class Job:
@@ -398,11 +412,17 @@ def _squeeze(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(text).lower())
 
 
+def _beside(folder, name: str) -> Path:
+    """A file kept with the capture: in the model's folder, or in its capture folder, where the loader finds capture.yaml too."""
+    base = Path(folder or ".")
+    return next((p for p in (base / name, base / "capture" / name) if p.exists()), base / name)
+
+
 class Harness:
     def __init__(self, kit, folder: str | Path | None = None):
         self.kit, self.layer = kit, kit.layer
         self.idx = index(self.layer)
-        p = Path(folder or kit.folder or ".") / "precedents.yaml"
+        p = _beside(folder or kit.folder, "precedents.yaml")
         conf = (yaml.safe_load(p.read_text(encoding="utf-8")) or {}) if p.exists() else {}
         self.terms = {" ".join(_words(k)): v for k, v in (conf.get("terms") or {}).items()}
         self.period = conf.get("period", "latest_month")
@@ -429,6 +449,12 @@ class Harness:
         self._known_values: dict[str, tuple[list, bool] | None] = {}  # what a column holds, and whether that is all of it
         tables = getattr(self.layer, "tables", None) or {}
         self._refs = {(_squeeze(t), _squeeze(c)): ref(t, c) for t, i in tables.items() for c in (i.get("columns") or {})}
+        d = _beside(folder or kit.folder, "analysis_default.yaml")
+        print(f"[desk] owner scope: {d if d.exists() else 'none'}", file=sys.stderr, flush=True)
+        scope = ((yaml.safe_load(d.read_text(encoding="utf-8")) or {}).get("filters") or {}) if d.exists() else {}
+        self.defaults = {self._column(c): v for c, v in scope.items()}
+        self._fits: dict[tuple, set] = {}
+        self._scoped: dict[str, bool] = {}
         self._resolve = getattr(kit, "resolve", None)
         if self._resolve:
             kit.resolve = self.resolve
@@ -472,7 +498,7 @@ class Harness:
         pool = [k for k in pool if self.idx[k]["kind"] == "base" or
                 set(words) & (set(_words(self.layer.metrics[k]["label"])) - set(_words(self.layer.metrics[self.idx[k]["base"]]["label"])))]
         covers = lambda k: len(set(words) & set(self.docs[k]))  # every word asked beats a shorter name
-        return list(dict.fromkeys(fixed + sorted(pool, key=lambda k: (-covers(k), -score(k), k))))[:n]
+        return list(dict.fromkeys(fixed + sorted(pool, key=lambda k: (not self._in_scope(k), -covers(k), -score(k), k))))[:n]
 
     def find(self, query: str) -> str:
         """What rank found, as the agent reads it: what each needs and what it can be cut by."""
@@ -520,7 +546,7 @@ class Harness:
         wrong = [c for c in some if self._kind(c) == "dateTime"]
         if wrong:
             lines.append(f"Reach only part of it, so do not use them for its period: {', '.join(wrong)}.")
-        return "\n".join(lines)
+        return "\n".join(lines + self._need_lines(self.requires(key)))
 
     def _map(self) -> Known:
         return self.ledger.setdefault(SESSION.get(), {}).setdefault("map", Known())
@@ -591,11 +617,15 @@ class Harness:
         on a copy of the toolkit so nothing else meets the limited warehouse."""
         metric = _root(self.idx, metric)
         t = TRACE.get()
-        period = self._column(period, [metric])
-        period = period if ":" in period else f"{period}:month"
-        grain = period.split(":")[1]
-        now, before = (str(_at(grain, v) or v) for v in (now, before))
+        if asof := self._asof():
+            period, now, before = asof
+        else:
+            period = self._column(period, [metric])
+            period = period if ":" in period else f"{period}:month"
+            grain = period.split(":")[1]
+            now, before = (str(_at(grain, v) or v) for v in (now, before))
         filters = self._grains({self._column(c, [metric]): v for c, v in (filters or {}).items()})
+        filters = {**self._scope_for([metric], None, {**filters, period: now}), **filters}
         layer = (metric, period, now, before, _scope(filters))
         known = self._map().layers.get(layer)
         if known and time.monotonic() - known["at"] < MAP_SECONDS:
@@ -700,7 +730,8 @@ class Harness:
         column, and ahead of the first question, because it reads the whole history."""
         if col not in self._latest:
             try:
-                sql = self.layer.compile([metric], [col], dialect=self.kit.wh.dialect, row_filters=self.kit.row_filters)
+                sql = self.layer.compile([metric], [col], self._scope_for([metric], [col], {}), dialect=self.kit.wh.dialect,
+                                         row_filters=self.kit.row_filters)
                 have = [str(r[0]) for r in self.kit.wh.query(sql, limit=5000)[1] if r[-1] is not None]
             except Exception as exc:  # noqa: BLE001 - without it a question keeps the period the agent gave
                 if (t := TRACE.get()) is not None:
@@ -768,6 +799,135 @@ class Harness:
                 self._memo[key] = (time.monotonic(), out)
             return out
         wh.query = query
+
+    def _under(self, col: str) -> list:
+        """What a default column holds under the other defaults of its table."""
+        table = col.split("[")[0]
+        others = {c: v for c, v in self.defaults.items() if c != col and c.split("[")[0] == table and str(v).lower() != "latest"}
+        rows = self.kit.wh.query(self.kit._values_sql(col, self.kit.resolve(others)[0]), limit=bi.MAX_VALUES + 1)[1]
+        return [r[0] for r in rows if r[0] is not None]
+
+    def _pinned(self) -> dict:
+        """The owner's scope with `latest` settled, once per conversation, so a conversation keeps to one period."""
+        led = self.ledger.setdefault(SESSION.get(), {})
+        if "pinned" not in led:
+            out = {}
+            for c, v in self.defaults.items():
+                if str(v).lower() != "latest":
+                    out[c] = v
+                    continue
+                try:
+                    out[c] = max(self._under(c), key=lambda x: (_month_of(x) or (0, 0), str(x)))
+                except Exception as exc:  # noqa: BLE001 - said in the log; a scope with a hole is not pinned
+                    print(f"[desk] no latest value for {c}: {str(exc)[:140]}", file=sys.stderr, flush=True)
+                    return out
+            led["pinned"] = out
+        return led["pinned"]
+
+    def _scope_for(self, metrics: list[str], by, given: dict) -> dict:
+        """The defaults these metrics reach, but for a column the question filters itself."""
+        if not self.defaults or not metrics:
+            return {}
+        taken = {c.split(":")[0] for c in given}
+        out = {c: v for c, v in self._pinned().items() if c not in taken}
+        key = (tuple(metrics), tuple(by or []), tuple(sorted(out)), tuple(sorted(given)))
+        if key not in self._fits:
+            self._fits[key] = self._out_of_reach(metrics, by, {**out, **given})
+        return {c: v for c, v in out.items() if c.split("[")[0].strip("'") not in self._fits[key]}
+
+    def _refused(self, metrics: list[str], by, filters: dict) -> str:
+        """Why the model will not compile this, "" when it will."""
+        try:
+            self.layer.compile(metrics, by, filters, dialect=self.kit.wh.dialect, row_filters=self.kit.row_filters)
+            return ""
+        except Exception as exc:  # noqa: BLE001 - the refusal is the answer
+            return str(exc)
+
+    def _out_of_reach(self, metrics: list[str], by, filters: dict) -> set:
+        """The tables the model says these rows do not reach. Tried together: a model may want a reporting context whole, and
+        a filter tried alone would be refused in words that name the very table it wants. Only "not related" means gone."""
+        gone, left = set(), dict(filters)
+        while left and (why := self._refused(metrics, by, left)):
+            table = next((t for t in {c.split("[")[0].strip("'") for c in left} if f"{t} is not related" in why), None)
+            if not table:
+                break
+            gone.add(table)
+            left = {c: v for c, v in left.items() if c.split("[")[0].strip("'") != table}
+        return gone
+
+    def _in_scope(self, key: str) -> bool:
+        """Can this metric be put in the owner's scope at all? One that cannot is not the number the report shows."""
+        if not self.defaults:
+            return True
+        if key not in self._scoped:
+            try:
+                self._scoped[key] = bool(set(self.defaults) & set(self.layer.columns_for([key])))
+            except Exception:  # noqa: BLE001 - a metric that cannot say is not held against it
+                self._scoped[key] = True
+        return self._scoped[key]
+
+    def requires(self, metric: str, by=None, filters=None) -> dict | str:
+        """What one metric needs before it has a number: what the model demands, what the owner's scope fills, what the
+        question must still give. Asked of the compiler, so it is what compute will do, and nothing is run."""
+        key = _root(self.idx, metric)
+        if key not in self.idx:
+            best = self.rank(metric)
+            if not best:
+                return f"Error: no metric {metric!r}. Call find_metrics with the business words."
+            key = best[0]
+        given = {self._column(c, [key]): v for c, v in (filters or {}).items()}
+        n = bi.metric_needs(self.layer, key)
+        by = [self._column(c, [key]) for c in by] if by else list(n["by"])
+        scope = self._scope_for([key], by, given)
+        taken = {c.split(":")[0] for c in given}
+        return {"metric": key, "label": self.layer.metrics[key]["label"], "by": by, "params": n["params"], "period": self._date(key),
+                "scope": scope, "given": given, "unreached": [c for c in self.defaults if c not in scope and c not in taken],
+                "in_scope": self._in_scope(key), "alone": self._refused([key], by, given),
+                "missing": self._refused([key], by, {**scope, **given})}
+
+    def _need_lines(self, r: dict) -> list[str]:
+        lines = []
+        if r["by"]:
+            lines.append(f"Must be grouped by: {', '.join(r['by'])}")
+        if r["params"]:
+            lines.append(f"What-if inputs: {', '.join(r['params'])}")
+        if r["alone"] and not r["missing"]:
+            lines.append(f"The model asks for: {r['alone']}")
+        if r["scope"]:
+            lines.append("The owner's scope gives, and compute applies it for you: " + "; ".join(f"{c} = {v}" for c, v in r["scope"].items()))
+        if r["unreached"]:
+            lines.append(f"The owner's scope is not on it for: {', '.join(r['unreached'])}")
+        if not r["in_scope"]:
+            lines.append("It reaches none of the owner's scope, so it is not the number the report shows. Prefer another metric.")
+        lines.append(f"Still needed: {r['missing']}" if r["missing"] else "Nothing else is needed: compute it.")
+        return lines
+
+    def needs_text(self, metric: str, by=None, filters=None) -> str:
+        r = self.requires(metric, by, filters)
+        return r if isinstance(r, str) else "\n".join([f"{r['label']} ({r['metric']})", *self._need_lines(r)])
+
+    def _asof(self) -> tuple[str, str, str] | None:
+        """(column, now, before) when the owner's scope pins a period: a change is that period against the one a year before,
+        or a month before when asked. Rolling windows compare with rolling windows, not one month with another."""
+        col = next((c for c, v in self.defaults.items() if str(v).lower() == "latest"), None)
+        now = self._pinned().get(col) if col else None
+        if now is None:
+            return None
+        if not (at := _month_of(now)):
+            if (t := TRACE.get()) is not None:
+                _why(t, f"{col} holds {now!r}, which does not read as a period")
+            return None
+        y, mo = at
+        want = (y - (mo == 1), (mo - 2) % 12 + 1) if _MONTHS.search(QUESTION.get()) else (y - 1, mo)
+        before = next((v for v in self._under(col) if _month_of(v) == want), None)
+        if before is None and (t := TRACE.get()) is not None:
+            _why(t, f"{col} has no {want[0]}-{want[1]:02d} to compare {now} with")
+        return (col, str(now), str(before)) if before is not None else None
+
+    def scope_line(self) -> str:
+        """The scope an answer is in, as the reader needs it said."""
+        said = [str(v) for v in self._pinned().values() if len(str(v)) > 1 and not str(v).isdigit()]
+        return f"*{' · '.join(said)}*\n\n" if said else ""
 
     def _kind(self, column: str) -> str | None:
         try:
@@ -978,6 +1138,11 @@ class Harness:
         if inner:
             return f"Error: {', '.join(inner)} is not a metric to ask for. Call find_metrics with the business words."
         given, moved = self._whole(metrics, self._grains({self._column(c, metrics): v for c, v in (filters or {}).items()}))
+        scope = self._scope_for(metrics, by, given)
+        if (gap := [c for c in self.defaults if c not in scope and c not in {g.split(":")[0] for g in given}]) and metrics and \
+                (t := TRACE.get()) is not None:
+            _why(t, f"owner scope not on {metrics[0]}: {', '.join(gap)}")
+        given = {**scope, **given}  # in `given` too: a fallback must never drop the owner's scope
         filters, notes = dict(given), moved
         dated = [c for c in [*(by or []), *filters] if metrics and self._kind(c) == "dateTime"]
         if dated:
@@ -988,10 +1153,10 @@ class Harness:
             if led.get("period"):
                 filters.update(led["period"])
                 notes.append("the period already in this conversation")
-            elif self.period == "latest_month" and (col := self._date(metrics[0])) and (m := self._latest_month(metrics[0], col)):
+            elif self.period == "latest_month" and not scope and (col := self._date(metrics[0])) and (m := self._latest_month(metrics[0], col)):
                 filters[col] = m
                 notes.append(f"latest month with data, {m}")
-        if metrics and not any(self._kind(c) == "dateTime" for c in by or []) and \
+        if metrics and not scope and not any(self._kind(c) == "dateTime" for c in by or []) and \
                 (_THIS.search(question) or _LAST.search(question)) and (col := self._date(metrics[0])) and \
                 (m := self._latest_month(metrics[0], col)):
             # "this month" is the data's latest, not the calendar's: the month under way has nothing in it yet
@@ -1292,7 +1457,7 @@ class Harness:
         month a year before. A measure with a period of its own shows that; one the model refuses is left out."""
         keys = [_root(self.idx, k) for k in form.get("metrics") or [] if k in self.idx][:PLAN_STEPS] or self.headline
         col = self._date(keys[0]) if keys else None
-        now = self._latest_month(keys[0], col) if col else None
+        now = self._latest_month(keys[0], col) if col and not self.defaults else None
         then = f"{int(now[:4]) - 1}{now[4:]}" if now else None
         led = self.ledger.setdefault(SESSION.get(), {})
         steps = []
@@ -1347,14 +1512,15 @@ class Harness:
         return "\n\n".join(said + [f"Could not be looked into: {', '.join(missed)}."] * bool(said and missed))
 
     def _why_one(self, metric: str, steps: dict, question: str) -> str:
-        col = self._date(metric) if metric in self.idx else None
-        latest = self._latest_month(metric, col) if col else None
+        asof = self._asof()
+        col = (asof[0] if asof else self._date(metric)) if metric in self.idx else None
+        latest = asof[1] if asof else self._latest_month(metric, col) if col else None
         if not latest:
             if (t := TRACE.get()) is not None:
                 _why(t, f"{metric}: no date column it reaches" if not col else f"{metric}: {col} has no month with a number")
             return ""
-        y, mo = int(latest[:4]), int(latest[5:7])
-        before = f"{y - (mo == 1)}-{(mo - 2) % 12 + 1:02d}" if _MONTHS.search(question) else f"{y - 1}-{mo:02d}"
+        y, mo = (0, 1) if asof else (int(latest[:4]), int(latest[5:7]))
+        before = asof[2] if asof else f"{y - (mo == 1)}-{(mo - 2) % 12 + 1:02d}" if _MONTHS.search(question) else f"{y - 1}-{mo:02d}"
         filters = {c: v for c, v in (steps.get("filters") or {}).items() if self._kind(c) != "dateTime"}
         out = self.explain(metric, col, latest, before, filters)
         if out.startswith("Error") and (t := TRACE.get()) is not None:
@@ -1412,6 +1578,12 @@ def install(kit, folder=None):
         with what each needs."""
         return h.find(query)
 
+    async def metric_needs(ctx: bi.RunContext, metric: str, by: list[str] | None = None, filters: dict | None = None) -> str:
+        """What one metric needs before it has a number, without running it: what the model demands, what the owner's scope
+        already gives, and what the question must still say. Pass the `by` and `filters` you mean to use. Call it when a metric
+        is refused for missing context, instead of guessing at filters."""
+        return await asyncio.to_thread(h.needs_text, metric, by, filters)
+
     async def about_metric(ctx: bi.RunContext, metric: str) -> str:
         """All of one metric, from the model and the tables: what it is made of, what it needs, the period it has data for
         and how to write one, what each column it can be cut by holds, and what reaches only part of it. For a metric that
@@ -1437,7 +1609,7 @@ def install(kit, folder=None):
         except TimeoutError:
             return "Error: the warehouse did not answer within the time limit. Say so, and offer a narrower question."
 
-    for fn in (find_metrics, about_metric, compute, explain):
+    for fn in (find_metrics, about_metric, metric_needs, compute, explain):
         fn.__annotations__["ctx"] = bi.RunContext
 
     def within_turn(fn):
@@ -1447,8 +1619,7 @@ def install(kit, folder=None):
             if t is not None:
                 t["calls"] += 1
                 t.setdefault("tools", Counter())[fn.__name__] += 1
-                if fn.__name__ in ("find_metrics", "about_metric", "column_values", "list_columns") and \
-                        sum(t["tools"][k] for k in ("find_metrics", "about_metric", "column_values", "list_columns")) > LOOKUPS:
+                if fn.__name__ in _LOOKING and sum(t["tools"][k] for k in _LOOKING) > LOOKUPS:
                     return ENOUGH
                 # a slow model must not cost the question its answer: a plan yet to run still runs, within its own limits
                 unplanned = fn.__name__ == "compute" and (not t.get("plans") or t.get("failed"))
@@ -1466,7 +1637,7 @@ def install(kit, folder=None):
             return out
         return run
 
-    tools = [within_turn(t) for t in [find_metrics, about_metric, compute, explain, *[t for t in kit.tools() if t.__name__ not in ("list_metrics", "compute", "explain")]]]
+    tools = [within_turn(t) for t in [find_metrics, about_metric, metric_needs, compute, explain, *[t for t in kit.tools() if t.__name__ not in ("list_metrics", "compute", "explain")]]]
 
     def wrap(orch):
         inner = orch.stream
@@ -1533,6 +1704,8 @@ def install(kit, folder=None):
                     head, offer = h.scoreboard(seen, form) if out and open_ended and form.get("now") else (h.number(seen) if out else "", "")
                     if out and tool == "explain":
                         head, offer = h.layer_line(seen), h.layer_offer()
+                    if head and h.defaults:
+                        head += h.scope_line()
                     if head:  # ahead of the rows: the page picks the answer's picture by the numbers it states
                         yield json.dumps({"type": "chunk", "data": {"text": head}}) + "\n"
                     yield Event.tool_call(agent, tool, status="completed", summary=out[:4000]).line() + "\n"

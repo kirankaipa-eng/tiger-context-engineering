@@ -1199,3 +1199,164 @@ def test_the_log_says_why_a_layer_could_not_start(kit):
     del kit.layer.columns_for
     dh.TRACE.set(None)
     assert t["why"] == "total_pmpm: no date column it reaches"
+
+
+class Periods(Months):
+    def query(self, sql, limit=None):
+        return ([], [(20250930,), (20260831,), (20260930,)]) if sql == "asof" else super().query(sql, limit)
+
+
+@pytest.fixture
+def scoped(tmp_path, monkeypatch):
+    """An owner's scope: a rolling range, a toggle on a table nothing reaches, and the latest as-of."""
+    monkeypatch.setattr(dh.bi, "describe", lambda layer, k: "formula")
+    monkeypatch.setattr(dh.bi, "needs", lambda layer, k: "")
+    monkeypatch.setattr(dh.bi, "metric_needs", lambda layer, k: {"by": [], "params": {}})
+    (tmp_path / "analysis_default.yaml").write_text("filters:\n  Period[Range]: Rolling 12 months\n  Period[AsOf]: latest\n  Toggle[Basis]: ADP\n")
+    k = Kit()
+    k.folder, k.wh = tmp_path, Periods()
+    k._values_sql = lambda col, where=None: "asof" if col == "Period[AsOf]" else (_ for _ in ()).throw(ValueError("not read"))
+    k.resolve = lambda filters: (filters or {}, [])
+
+    class Reach(Layer):
+        def leaves(self, key):
+            return [key]
+
+        def compile(self, metrics, by, filters=None, *rest, **kw):
+            if "Toggle[Basis]" in (filters or {}):
+                raise ValueError("Toggle is not related to Claims")
+            return "sql"
+
+    k.layer = Reach()
+    k.tools_ = dh.install(k, tmp_path)[0]
+    k.compute.__self__.kit = k
+    return k.compute.__self__
+
+
+SCOPE = {"Period[Range]": "Rolling 12 months", "Period[AsOf]": 20260930}
+
+
+def test_the_owners_scope_is_on_every_number_and_the_month_default_gives_way(scoped):
+    ask("What is Total PMPM?")
+    assert scoped._settle(["total_pmpm"], None, None)["filters"] == SCOPE
+
+
+def test_this_month_stays_in_the_owners_scope(scoped):
+    ask("What is this month's Total PMPM?")
+    assert scoped._settle(["total_pmpm"], None, None)["filters"] == SCOPE
+
+
+def test_a_fallback_cannot_drop_the_scope(scoped):
+    ask("What is Total PMPM?")
+    assert scoped._settle(["total_pmpm"], None, None)["given"] == SCOPE
+
+
+def test_a_column_the_question_filters_itself_is_the_questions(scoped):
+    ask("Total PMPM for rolling 3 months")
+    got = scoped._settle(["total_pmpm"], None, {"Period[Range]": "Rolling 3 months"})["filters"]
+    assert got == {"Period[Range]": "Rolling 3 months", "Period[AsOf]": 20260930}
+
+
+def test_latest_is_pinned_for_the_conversation(scoped):
+    ask("q", "one")
+    assert scoped._pinned()["Period[AsOf]"] == 20260930
+    scoped.kit.wh.query = lambda sql, limit=None: ([], [(20261031,)])
+    assert scoped._pinned()["Period[AsOf]"] == 20260930
+    ask("q", "two")
+    assert scoped._pinned()["Period[AsOf]"] == 20261031
+
+
+def test_a_change_compares_the_scope_with_the_same_scope_a_year_before(scoped):
+    ask("what is driving Total PMPM")
+    assert scoped._asof() == ("Period[AsOf]", "20260930", "20250930")
+    ask("what moved from last month")
+    assert scoped._asof() == ("Period[AsOf]", "20260930", "20260831")
+
+
+def test_every_answer_says_its_scope(scoped):
+    ask("q")
+    assert scoped.scope_line() == "*Rolling 12 months · ADP*\n\n"
+
+
+def test_with_no_file_nothing_changes(kit):
+    ask("What is Total PMPM?")
+    h = kit.compute.__self__
+    assert h.defaults == {} and h._scope_for(["total_pmpm"], None, {}) == {} and h._asof() is None
+
+
+@pytest.mark.parametrize("name", ["analysis_default.yaml", "precedents.yaml"])
+def test_what_owners_set_is_found_in_the_capture_folder_too(tmp_path, name):
+    (tmp_path / "capture").mkdir()
+    (tmp_path / "capture" / name).write_text("filters: {}")
+    assert dh._beside(tmp_path, name) == tmp_path / "capture" / name
+    (tmp_path / name).write_text("filters: {}")
+    assert dh._beside(tmp_path, name) == tmp_path / name
+
+
+@pytest.fixture
+def contract(scoped):
+    """A model that refuses a metric until its whole reporting context is given, naming the table it wants."""
+    plain = scoped.layer.compile
+
+    def compile(metrics, by, filters=None, *rest, **kw):
+        if not {"Period[Range]", "Period[AsOf]"} <= {c.split(":")[0] for c in filters or {}}:
+            raise ValueError("Specify the missing reporting context: Period[Range], Period[AsOf]")
+        return plain(metrics, by, filters, *rest, **kw)
+
+    scoped.layer.compile = compile
+    return scoped
+
+
+def test_a_reporting_context_is_given_whole_and_a_table_it_names_is_not_out_of_reach(contract):
+    ask("What is Total PMPM?")
+    assert contract._settle(["total_pmpm"], None, None)["filters"] == SCOPE
+
+
+def test_the_latest_month_is_read_inside_the_reporting_context(contract):
+    ask("What is Total PMPM?")
+    assert contract._latest_month("total_pmpm", "Calendar[Date]:month")
+
+
+def test_a_table_truly_out_of_reach_still_leaves_the_rest_of_the_scope(contract):
+    ask("q")
+    assert contract._scope_for(["total_pmpm"], None, {}) == SCOPE  # Toggle is said to be not related, and goes alone
+
+
+def test_metric_needs_says_what_the_model_wants_and_what_the_scope_gives(contract):
+    ask("q")
+    r = contract.requires("total_pmpm")
+    assert "reporting context" in r["alone"] and r["scope"] == SCOPE and r["missing"] == "" and r["unreached"] == ["Toggle[Basis]"]
+    text = contract.needs_text("total_pmpm")
+    assert "Period[Range] = Rolling 12 months" in text and "Nothing else is needed" in text
+
+
+def test_metric_needs_says_what_is_still_missing(contract):
+    ask("q")
+    contract.ledger.setdefault(dh.SESSION.get(), {})["pinned"] = {"Period[Range]": "Rolling 12 months"}
+    assert "Still needed: Specify the missing reporting context" in contract.needs_text("total_pmpm")
+
+
+def test_metric_needs_is_a_tool_and_about_metric_says_it_too(contract):
+    ask("q")
+    assert "The owner's scope gives" in contract.details("total_pmpm")
+    tool = next(t for t in contract.kit.tools_ if t.__name__ == "metric_needs")
+    assert "Nothing else is needed" in asyncio.run(tool(None, "total_pmpm"))
+
+
+def test_a_metric_outside_the_owners_scope_never_comes_first(scoped):
+    first, second = scoped.rank("pmpm", 2)
+    scoped._scoped.clear()
+    scoped.layer.columns_for = lambda ks: [] if ks == [first] else ["Period[Range]"]
+    assert scoped.rank("pmpm", 2)[:2] == [second, first]
+
+
+@pytest.mark.parametrize("value,month", [(20260930, (2026, 9)), ("202609", (2026, 9)), ("2026-09-30", (2026, 9)), ("Sep 2026", (2026, 9)),
+                                         ("September 2026", (2026, 9)), ("9/30/2026", (2026, 9)), ("Rolling 12", None), (20261399, None)])
+def test_a_period_reads_however_the_column_writes_it(value, month):
+    assert dh._month_of(value) == month
+
+
+def test_latest_goes_by_the_calendar_not_the_alphabet(scoped):
+    ask("q", "text months")
+    scoped.kit.wh.query = lambda sql, limit=None: ([], [("Sep 2025",), ("Oct 2025",), ("Jan 2026",)])
+    assert scoped._pinned()["Period[AsOf]"] == "Jan 2026"
