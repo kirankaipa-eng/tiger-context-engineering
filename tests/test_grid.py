@@ -64,3 +64,39 @@ def test_a_grid_of_another_capture_is_not_read(model):
     assert grid.load(model) is not None
     (model / "capture.yaml").write_text((model / "capture.yaml").read_text() + "\n# changed\n")
     assert grid.load(model) is None
+
+
+def test_with_the_toolkit_the_grid_compiles_as_the_desk_does_resolved_and_with_the_real_latest(model):
+    (model / "analysis_default.yaml").write_text("filters:\n  Member[Line of Business]: Commercial\n  Member[Plan]: latest\n")
+    layer = BILayer.load(model)
+    real = layer.compile
+
+    def compile(metrics, by=None, where=None, *a, **k):  # a model that wants its reporting context settled first
+        if not (where or {}).get("settled"):
+            raise ValueError("This measure requires query-context resolution; use the PBI toolkit")
+        return real(metrics, by, {c: v for c, v in where.items() if c != "settled"})
+
+    layer.compile = compile
+
+    class Kit:
+        row_filters = None
+
+        class wh:
+            dialect = "duckdb"
+
+            @staticmethod
+            def query(sql, limit=None):
+                return [], [("Bronze",), ("Gold",), (None,)]
+
+        @staticmethod
+        def _values_sql(col, where=None):
+            return "values"
+
+        @staticmethod
+        def resolve(filters):
+            return {**filters, "settled": True}, []
+
+    g = grid.build(layer, model, Kit())
+    assert g["scope"]["Member[Plan]"] == "Gold"
+    assert "slices" in g["metrics"]["medical_pmpm"]
+    assert "slices" not in grid.build(layer, model)["metrics"]["medical_pmpm"]  # offline it is refused, as on the AVD

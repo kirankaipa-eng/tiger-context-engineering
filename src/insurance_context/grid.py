@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import re
+from collections import Counter
 from pathlib import Path
 
 import yaml
@@ -98,15 +99,50 @@ def _base(m: dict) -> str:
     return said + (f" where {' and '.join(keep)}" if keep else "")
 
 
-def build(layer, folder) -> dict:
-    """The grid of a capture: compiled, never run."""
-    scope = {c: _stand_in(layer, c, v) for c, v in _scope(folder).items()}
+def _settled(kit, layer, raw: dict) -> dict:
+    """The owner's scope with `latest` read from the warehouse, as the desk reads it: the last value of the column under the
+    other defaults of its table. One small query a column."""
+    from .desk_harness import _latest_of
+
+    out = {}
+    for c, v in raw.items():
+        if str(v).lower() != "latest":
+            out[c] = v
+            continue
+        table = c.split("[")[0]
+        others = {x: y for x, y in raw.items() if x != c and x.split("[")[0] == table and str(y).lower() != "latest"}
+        rows = kit.wh.query(kit._values_sql(c, kit.resolve(others)[0]), limit=10001)[1]
+        out[c] = _latest_of([r[0] for r in rows if r[0] is not None])
+    return out
+
+
+def build(layer, folder, kit=None) -> dict:
+    """The grid of a capture: compiled, never run. With the toolkit (`kit`), as the desk compiles: the scope's `latest` read
+    from the warehouse, and the toolkit's resolve before each compile, which some models need to settle their reporting
+    context. Without it, offline, with a stand-in for `latest`."""
+    raw = _scope(folder)
+    scope = _settled(kit, layer, raw) if kit else {c: _stand_in(layer, c, v) for c, v in raw.items()}
+    seen: dict[str, dict] = {}
+
+    def resolved(where: dict) -> dict:
+        if not kit:
+            return where
+        key = repr(sorted(where.items(), key=str))
+        if key not in seen:
+            seen[key] = kit.resolve(dict(where))[0]
+        return seen[key]
+
+    def compile(metrics, by, where):
+        if kit:
+            return layer.compile(metrics, by, resolved(where), dialect=kit.wh.dialect, row_filters=kit.row_filters)
+        return layer.compile(metrics, by, where)
+
     metrics = dict(layer.captured())
     for m in list(metrics.values()):  # a part reaches further than the ratio it is part of: it gets its own row
         for r in _BRACES.findall(str(m.get("formula") or "")):
             if r in layer.metrics and r not in metrics:
                 metrics[r] = {**layer.metrics[r], "part_of": True}
-    out: dict = {"version": fingerprint(folder), "scope": dict(_scope(folder)), "slices": {}, "metrics": {}}
+    out: dict = {"version": fingerprint(folder), "scope": {c: str(v) for c, v in scope.items()}, "slices": {}, "metrics": {}}
     sets: dict[tuple, str] = {}
     added = {x.replace("'", "") for m in layer.metrics.values() for x in _BRACES.findall(str(m.get("expr") or ""))}
     for k, m in metrics.items():
@@ -129,7 +165,7 @@ def build(layer, folder) -> dict:
         where = dict(scope)
         for _ in range(len(scope) + 1):  # a scope table the measure's rows never reach is no part of its question
             try:
-                layer.compile([k], given, where)
+                compile([k], given, where)
                 break
             except Exception as exc:  # noqa: BLE001
                 gone = next((c for c in where if f"{c.split('[')[0].strip(chr(39))} is not related" in str(exc)), None)
@@ -143,7 +179,7 @@ def build(layer, folder) -> dict:
         ok, refused = [], {}
         for col in (c for c in layer.columns_for([k]) if _sliceable(layer, c, added) and c not in given):
             try:
-                layer.compile([k], [col, *given], where)
+                compile([k], [col, *given], where)
                 ok.append(col)
             except Exception as exc:  # noqa: BLE001 - the reason is the finding
                 refused.setdefault(_reason(exc), []).append(col)
@@ -200,22 +236,39 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description="Work out where each captured measure can be asked: compiled, never run.")
     ap.add_argument("folder")
     ap.add_argument("--show", help="show one measure from the grid, and write nothing")
+    ap.add_argument("--offline", action="store_true", help="compile without the warehouse: `latest` is a stand-in, and a model "
+                                                         "that settles its reporting context with queries refuses")
     a = ap.parse_args(argv)
     layer = BILayer.load(a.folder)
-    if a.show:
-        print(show(load(a.folder) or build(layer, a.folder), a.show))
+    if a.show and (g := load(a.folder)):
+        print(show(g, a.show))
         return
-    g = build(layer, a.folder)
+    kit = None
+    if not a.offline:
+        from .bi_agent import BIToolkit
+        from .biwarehouse import Warehouse
+
+        kit = BIToolkit(layer, Warehouse.open(a.folder, layer))
+        layer = kit.layer  # what the toolkit compiles with, as the desk does
+        print(f"compiling as the desk does, on {kit.wh.describe()}")
+    g = build(layer, a.folder, kit)
+    if a.show:
+        print(show(g, a.show))
+        return
     out = Path(a.folder) / NAME
     out.write_text(yaml.safe_dump(g, sort_keys=False, allow_unicode=True, width=200), encoding="utf-8")
     ms = g["metrics"].values()
     whole = sum(1 for e in ms if "slices" in e)
     cut = sum(len(slices(g, k)) for k in g["metrics"])
+    print(f"scope: {g['scope']}")
     print(f"{out}: {len(g['metrics'])} measures, {whole} answerable under the owner's scope, {len(g['slices'])} slice sets, "
           f"{cut} measure-column pairs that work")
     stuck = [k for k, e in g["metrics"].items() if "slices" not in e]
     if stuck:
-        print(f"refused whole ({len(stuck)}): " + ", ".join(stuck[:20]) + (" ..." if len(stuck) > 20 else ""))
+        why = Counter(next(iter(g["metrics"][k]["refused"])) for k in stuck)
+        print(f"refused whole ({len(stuck)}), by reason:")
+        for r, n in why.most_common(5):
+            print(f"  {n}  {r}")
 
 
 if __name__ == "__main__":
