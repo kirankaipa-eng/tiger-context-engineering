@@ -574,7 +574,8 @@ class Harness:
         self.catalog = findable.load(folder or kit.folder, self.layer.captured())
         self.grid = grids.load(folder or kit.folder)
         g = _beside(folder or kit.folder, grids.NAME)
-        print(f"[desk] grid: {g if self.grid else (f'{g} is of another capture, not read: build it again' if g.exists() else 'none')}",
+        part = "" if not self.grid or self.grid.get("complete", True) else f" (part way: {len(self.grid.get('metrics') or {})} measures so far)"
+        print(f"[desk] grid: {g if self.grid else (f'{g} is of another capture, not read: build it again' if g.exists() else 'none')}{part}",
               file=sys.stderr, flush=True)
         self.docs = {k: Counter([*_words(f"{m['label']} {m.get('description') or ''} {made_of(m)}"), *self.catalog.metrics[k]["words"]])
                      for k, m in self.layer.captured().items()}

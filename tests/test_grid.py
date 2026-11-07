@@ -100,3 +100,21 @@ def test_with_the_toolkit_the_grid_compiles_as_the_desk_does_resolved_and_with_t
     assert g["scope"]["Member[Plan]"] == "Gold"
     assert "slices" in g["metrics"]["medical_pmpm"]
     assert "slices" not in grid.build(layer, model)["metrics"]["medical_pmpm"]  # offline it is refused, as on the AVD
+
+
+def test_a_run_stopped_part_way_is_picked_up_where_it_stopped(model):
+    import json
+
+    layer = BILayer.load(model)
+    out = model / grid.NAME
+    whole = grid.build(layer, model, out_path=out, workers=4)
+    assert whole["complete"] and json.loads(out.read_text())["complete"]
+    half = {**whole, "complete": False, "metrics": dict(list(whole["metrics"].items())[:10])}
+    out.write_text(json.dumps(half))
+    asked = []
+    real = layer.compile
+    layer.compile = lambda metrics, *a, **k: asked.append(metrics[0]) or real(metrics, *a, **k)
+    again = grid.build(layer, model, out_path=out, workers=4)
+    assert not set(asked) & set(half["metrics"])  # what it had found is not checked again
+    assert again["metrics"].keys() == whole["metrics"].keys() and again["complete"]
+    assert grid.slices(again, "medical_pmpm") == grid.slices(whole, "medical_pmpm")

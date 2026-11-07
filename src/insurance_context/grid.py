@@ -20,7 +20,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import os
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 from pathlib import Path
 
@@ -116,21 +121,91 @@ def _settled(kit, layer, raw: dict) -> dict:
     return out
 
 
-def build(layer, folder, kit=None) -> dict:
+def _asked_once(wh) -> None:
+    """The warehouse asked each query once: a model that settles its context with queries asks the same ones for every
+    measure. Counted and timed, so the progress line says what went to the warehouse and how long it was waited on."""
+    inner, kept, lock = wh.query, {}, threading.Lock()
+    wh.asked = wh.sent = 0
+    wh.secs = 0.0
+
+    def query(sql, limit=None):
+        with lock:
+            wh.asked += 1
+            hit = kept.get((sql, limit))
+        if hit is not None:
+            return hit
+        t0 = time.monotonic()
+        got = inner(sql, limit=limit)
+        with lock:
+            wh.sent += 1
+            wh.secs += time.monotonic() - t0
+            kept[(sql, limit)] = got
+        return got
+
+    wh.query = query
+
+
+class _Progress:
+    """One line, redrawn: how far, how long, how long to go, and where the time goes."""
+
+    def __init__(self, total: int, kit, quiet: bool):
+        self.total, self.kit, self.quiet, self.began, self.done, self.busy = total, kit, quiet, time.monotonic(), 0, 0.0
+        self.lock = threading.Lock()
+
+    def tick(self, secs: float) -> None:
+        with self.lock:
+            self.done += 1
+            self.busy += secs
+            if self.quiet:
+                return
+            took = time.monotonic() - self.began
+            left = took / self.done * (self.total - self.done)
+            bar = "#" * int(30 * self.done / self.total)
+            wh = getattr(self.kit, "wh", None) if self.kit else None
+            db = (f" | warehouse: {wh.sent} sent, {wh.asked} asked, {100 * wh.secs / max(self.busy, 1e-9):.0f}% of the time"
+                  if wh is not None and hasattr(wh, "secs") else "")
+            print(f"\r[{bar:<30}] {self.done}/{self.total}  {_clock(took)}, about {_clock(left)} to go{db}   ", end="", flush=True)
+
+    def end(self) -> None:
+        if not self.quiet:
+            print(flush=True)
+
+
+def _clock(secs: float) -> str:
+    secs = int(secs)
+    return f"{secs // 3600}h{secs % 3600 // 60:02d}m" if secs >= 3600 else f"{secs // 60}m{secs % 60:02d}s"
+
+
+def _write(path: Path, g: dict) -> None:
+    """Whole or not at all: a reader never meets half a file."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(g, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def build(layer, folder, kit=None, out_path: Path | None = None, workers: int = 1, quiet: bool = True) -> dict:
     """The grid of a capture: compiled, never run. With the toolkit (`kit`), as the desk compiles: the scope's `latest` read
     from the warehouse, and the toolkit's resolve before each compile, which some models need to settle their reporting
-    context. Without it, offline, with a stand-in for `latest`."""
+    context. Without it, offline, with a stand-in for `latest`.
+
+    With `out_path` it is written as it goes, every few measures, marked complete only at the end; a run stopped part way is
+    picked up where it stopped when the capture and the scope are the same. `workers` measures are checked at once."""
     raw = _scope(folder)
     scope = _settled(kit, layer, raw) if kit else {c: _stand_in(layer, c, v) for c, v in raw.items()}
     seen: dict[str, dict] = {}
+    lock = threading.Lock()
 
     def resolved(where: dict) -> dict:
         if not kit:
             return where
         key = repr(sorted(where.items(), key=str))
-        if key not in seen:
-            seen[key] = kit.resolve(dict(where))[0]
-        return seen[key]
+        with lock:
+            hit = seen.get(key)
+        if hit is None:
+            hit = kit.resolve(dict(where))[0]
+            with lock:
+                seen[key] = hit
+        return hit
 
     def compile(metrics, by, where):
         if kit:
@@ -142,10 +217,19 @@ def build(layer, folder, kit=None) -> dict:
         for r in _BRACES.findall(str(m.get("formula") or "")):
             if r in layer.metrics and r not in metrics:
                 metrics[r] = {**layer.metrics[r], "part_of": True}
-    out: dict = {"version": fingerprint(folder), "scope": {c: str(v) for c, v in scope.items()}, "slices": {}, "metrics": {}}
-    sets: dict[tuple, str] = {}
+    out: dict = {"version": fingerprint(folder), "scope": {c: str(v) for c, v in scope.items()}, "complete": False,
+                 "slices": {}, "metrics": {}}
+    if out_path and out_path.exists():  # a run stopped part way, of this capture and this scope: what it found stands
+        try:
+            old = json.loads(out_path.read_text(encoding="utf-8"))
+            if old.get("version") == out["version"] and old.get("scope") == out["scope"] and not old.get("complete"):
+                out["slices"], out["metrics"] = old.get("slices") or {}, old.get("metrics") or {}
+        except ValueError:
+            pass
+    sets = {tuple(cols): name for name, cols in out["slices"].items()}
     added = {x.replace("'", "") for m in layer.metrics.values() for x in _BRACES.findall(str(m.get("expr") or ""))}
-    for k, m in metrics.items():
+
+    def one(k: str, m: dict) -> tuple[dict, tuple | None]:
         entry: dict = {"label": m.get("label") or k, **({"part": True} if m.get("part_of") else {})}
         if m.get("formula"):
             entry["formula"] = plain(m["formula"])
@@ -171,11 +255,8 @@ def build(layer, folder, kit=None) -> dict:
                 gone = next((c for c in where if f"{c.split('[')[0].strip(chr(39))} is not related" in str(exc)), None)
                 if not gone:
                     entry["refused"] = {_reason(exc): ["(the measure itself)"]}
-                    break
+                    return entry, None
                 where = {c: v for c, v in where.items() if c.split("[")[0] != gone.split("[")[0]}
-        if "refused" in entry:
-            out["metrics"][k] = entry
-            continue
         ok, refused = [], {}
         for col in (c for c in layer.columns_for([k]) if _sliceable(layer, c, added) and c not in given):
             try:
@@ -183,14 +264,44 @@ def build(layer, folder, kit=None) -> dict:
                 ok.append(col)
             except Exception as exc:  # noqa: BLE001 - the reason is the finding
                 refused.setdefault(_reason(exc), []).append(col)
-        key = tuple(ok)
-        if key not in sets:
-            sets[key] = f"S{len(sets) + 1}"
-            out["slices"][sets[key]] = list(key)
-        entry["slices"] = sets[key]
         if refused:
             entry["refused"] = refused
-        out["metrics"][k] = entry
+        return entry, tuple(ok)
+
+    todo = [(k, m) for k, m in metrics.items() if k not in out["metrics"]]
+    bar = _Progress(len(metrics), kit, quiet)
+    bar.done = len(metrics) - len(todo)
+    last = [time.monotonic()]
+
+    def keep(k: str, entry: dict, cut: tuple | None) -> None:
+        with lock:
+            if cut is not None:
+                if cut not in sets:
+                    sets[cut] = f"S{len(sets) + 1}"
+                    out["slices"][sets[cut]] = list(cut)
+                entry["slices"] = sets[cut]
+            out["metrics"][k] = entry
+            if out_path and time.monotonic() - last[0] > 10:  # what it has found, readable while it works
+                _write(out_path, out)
+                last[0] = time.monotonic()
+
+    def run(item):
+        t0 = time.monotonic()
+        entry, cut = one(*item)
+        keep(item[0], entry, cut)
+        bar.tick(time.monotonic() - t0)
+
+    if workers > 1:
+        with ThreadPoolExecutor(workers) as pool:
+            list(pool.map(run, todo))
+    else:
+        for item in todo:
+            run(item)
+    bar.end()
+    out["complete"] = True
+    out["metrics"] = {k: out["metrics"][k] for k in metrics if k in out["metrics"]}  # the capture's order, however it finished
+    if out_path:
+        _write(out_path, out)
     return out
 
 
@@ -200,7 +311,11 @@ def load(folder, layer=None) -> dict | None:
     p = next((x for x in (base / NAME, base / "capture" / NAME) if x.exists()), None)
     if not p:
         return None
-    g = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    text = p.read_text(encoding="utf-8")
+    try:  # written as JSON, which is YAML too and reads many times faster; one written by hand is read as YAML
+        g = json.loads(text)
+    except ValueError:
+        g = yaml.load(text, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)) or {}
     return g if g.get("version") == fingerprint(base) else None
 
 
@@ -238,11 +353,13 @@ def main(argv=None) -> None:
     ap.add_argument("--show", help="show one measure from the grid, and write nothing")
     ap.add_argument("--offline", action="store_true", help="compile without the warehouse: `latest` is a stand-in, and a model "
                                                          "that settles its reporting context with queries refuses")
+    ap.add_argument("--workers", type=int, default=4, help="measures checked at once (default 4); 1 for one at a time")
+    ap.add_argument("--fresh", action="store_true", help="start again rather than pick up a run that stopped part way")
     a = ap.parse_args(argv)
-    layer = BILayer.load(a.folder)
-    if a.show and (g := load(a.folder)):
+    if a.show and (g := load(a.folder)):  # the grid alone: the capture is not read
         print(show(g, a.show))
         return
+    layer = BILayer.load(a.folder)
     kit = None
     if not a.offline:
         from .bi_agent import BIToolkit
@@ -250,17 +367,20 @@ def main(argv=None) -> None:
 
         kit = BIToolkit(layer, Warehouse.open(a.folder, layer))
         layer = kit.layer  # what the toolkit compiles with, as the desk does
-        print(f"compiling as the desk does, on {kit.wh.describe()}")
-    g = build(layer, a.folder, kit)
-    if a.show:
-        print(show(g, a.show))
-        return
+        print(f"compiling as the desk does, on {kit.wh.describe()}", flush=True)
+        _asked_once(kit.wh)
     out = Path(a.folder) / NAME
-    out.write_text(yaml.safe_dump(g, sort_keys=False, allow_unicode=True, width=200), encoding="utf-8")
+    if a.show:
+        print(show(build(layer, a.folder, kit), a.show))
+        return
+    if a.fresh and out.exists():
+        out.unlink()
+    print(f"writing {out} as it goes; stop it any time and run it again to carry on", flush=True)
+    g = build(layer, a.folder, kit, out_path=out, workers=max(1, a.workers), quiet=False)
+    print(f"scope: {g['scope']}")
     ms = g["metrics"].values()
     whole = sum(1 for e in ms if "slices" in e)
     cut = sum(len(slices(g, k)) for k in g["metrics"])
-    print(f"scope: {g['scope']}")
     print(f"{out}: {len(g['metrics'])} measures, {whole} answerable under the owner's scope, {len(g['slices'])} slice sets, "
           f"{cut} measure-column pairs that work")
     stuck = [k for k, e in g["metrics"].items() if "slices" not in e]
