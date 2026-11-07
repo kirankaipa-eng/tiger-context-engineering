@@ -1510,8 +1510,57 @@ def test_a_word_of_a_measure_is_not_a_slice(kit):
     assert "Member[Kind]" not in (form or {}).get("filters", {})
 
 
-def test_nothing_in_either_period_is_a_failed_read_not_a_finding(kit):
+ZERO = "Total PMPM: 0 in 2025-09, 0 in 2026-09, a change of +0.\nNothing changed, so there is nothing to explain."
+
+
+def test_nothing_for_two_periods_is_asked_alone_and_says_what_stands(kit):
     h = kit.compute.__self__
     ask("what is driving total pmpm")
-    h.explain = lambda *a, **k: "Total PMPM: 0 in 2025-09, 0 in 2026-09, a change of +0.\nNothing changed."
-    assert h._why_one("total_pmpm", {}, "q") == ""
+    h.explain = lambda *a, **k: ZERO
+    kit.resolve = lambda f: (f or {}, [])
+    kit.wh.query = lambda sql, limit=None: ([], [(812.5,)])
+    got = h._why_one("total_pmpm", {}, "q")
+    assert "812" in got and "could not be worked out" in got
+
+
+def test_no_data_at_all_is_said_as_that_and_never_as_no_movement(kit):
+    h = kit.compute.__self__
+    ask("what is driving total pmpm")
+    h.explain = lambda *a, **k: ZERO
+    kit.resolve = lambda f: (f or {}, [])
+    kit.wh.query = lambda sql, limit=None: ([], [(None,)])
+    got = h._why_one("total_pmpm", {}, "q")
+    assert got.endswith("no data in this scope.") and "movement" not in got
+    assert h._why({"metrics": ["total_pmpm"]}, "q")  # the question ends here: no fallback runs
+
+
+def test_a_small_rate_that_moved_is_not_taken_for_nothing(kit):
+    h = kit.compute.__self__
+    ask("what is driving total pmpm")
+    moved = "Rate: 0 in 2025-09, 0 in 2026-09, a change of +0 (+25.0%).\nLevel 1"
+    h.explain = lambda *a, **k: moved
+    assert h._why_one("total_pmpm", {}, "q") == moved
+
+
+@pytest.mark.parametrize("column,fits", [("Member[Plan]", True), ("Claims[Paid]", True), ("Claims[Line Of Business]", True), ("Claims[ClaimId]", False),
+                                         ("Member[MemberKey]", False), ("Claims[Id]", False), ("Claims[SortOrder]", False), ("Claims[RowIndex]", False),
+                                         ("Claims[AsofDay]", False), ("Claims[PeriodRange]", False), ("Claims[IsActive]", False), ("Claims[PageNumber]", False),
+                                         ("Claims[Issuer]", True), ("Claims[EndMonth]", False)])
+def test_a_driver_is_something_a_reader_could_be_told(kit, column, fits):
+    assert kit.compute.__self__._driver(column) is fits
+
+
+def test_the_owners_tables_and_a_yes_or_no_are_not_drivers(scoped):
+    scoped.values = {"Member[Active]": ["Y", "N"], "Member[Plan]": ["Gold", "Silver"]}
+    assert not scoped._driver("Toggle[Basis]") and not scoped._driver("Member[Active]") and scoped._driver("Member[Plan]")
+
+
+def test_every_measure_a_question_names_is_looked_into(kit):
+    h = kit.compute.__self__
+    ask("what is driving these")
+    seen = []
+    h._why_one = lambda k, *a: seen.append(k) or f"{k} looked at"
+    keys = [f"measure_{i}" for i in range(4)]
+    h.idx.update({k: h.idx["total_pmpm"] for k in keys})
+    h._why({"metrics": keys}, "q")
+    assert sorted(seen) == keys

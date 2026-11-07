@@ -145,7 +145,7 @@ TURN_SECONDS = 75      # past this a turn's tools stop and it answers from what 
 TURN_CALLS = 8         # or past this many tool calls, so a question cannot go round and round
 LOOKUPS = 3            # calls that only look things up, before the agent is told to compute with what it has
 REFUSALS = 2           # the same refusal this often and asking again will not help: the turn answers from what it has
-WHY_METRICS = 3        # the measures one "what is driving" question looks into
+WHY_METRICS = 6        # the measures one "what is driving" question looks into: as many as a plan, so none it names is dropped
 PLAN_STEPS = 6         # what one plan may ask for; more than this is more than one question
 PLAN_SECONDS = 5       # a plan late in its turn still gets this long
 PLAN_RAN = ("Error: this question's plan has run. Do not call compute again. Answer from its results, and say in one line "
@@ -177,7 +177,9 @@ _LOOKING = ("find_metrics", "about_metric", "metric_needs", "column_values", "li
 _LEANS = re.compile(r"\b(what about|how about|and|that|those|these|this one|it|same|instead|also|only|just|now|then|them|there|their)\b", re.IGNORECASE)
 _GRAIN_SAID = {"monthly": "month", "mon": "month", "yearly": "year", "annual": "year", "yr": "year", "quarterly": "quarter", "qtr": "quarter",
                "weekly": "week", "daily": "day", "date": "day"}
-_NOT_DRIVER = re.compile(r"\b(id|key|guid|number|no|date|time|month|year)\]", re.IGNORECASE)
+_NOT_DRIVER = re.compile(r"(?:(?<=[a-z])(?:Id|ID|Key|Guid|Flag|Sort|Order|Index|Number|Date|Time|Month|Year)|"
+                         r"\b(?i:id|key|guid|flag|sort|order|index|number|no|date|time|month|year))\]|"
+                         r"\[(?:(?i:asof|as of|period|page|valid)|(?:Is|Has)[A-Z_ ])")
 
 
 class Step(TypedDict, total=False):
@@ -550,6 +552,7 @@ class Harness:
         scope = ((yaml.safe_load(d.read_text(encoding="utf-8")) or {}).get("filters") or {}) if d.exists() else {}
         self.defaults = {self._column(c): v for c, v in scope.items()}
         self._fits: dict[tuple, set] = {}
+        self.reads: dict[str, dict] = {}  # what a first question was read as: asked again by anyone, the model need not read it
         self._scoped: dict[str, bool] = {}
         self._resolve = getattr(kit, "resolve", None)
         if self._resolve:
@@ -714,6 +717,12 @@ class Harness:
         if r and r.get("kind") == "compute" and r.get("metrics") == step["metrics"]:
             self._map().keep(step["metrics"], by, r.get("filters") or {}, r, len(r.get("shown") or []) < getattr(kit, "max_rows", 10 ** 9))
 
+    def _driver(self, column: str) -> bool:
+        """Could this column explain a change to a reader? Not a key or a date, not the tables the owner's scope fixes, not a yes or no."""
+        held = {v.lower() for v in self.values.get(column, [])}
+        return not (_NOT_DRIVER.search(column) or column.split("[")[0] in {d.split("[")[0] for d in self.defaults}
+                    or (held and held <= {"y", "n", "yes", "no", "true", "false", "0", "1"}))
+
     def _spread(self, cols: list[str]) -> list[str]:
         """Columns taken a table at a time, so one layer looks across the business and not five ways at one table."""
         tables: dict[str, list[str]] = {}
@@ -755,7 +764,7 @@ class Harness:
         run = copy.copy(self.kit)
         run.wh = wh = Limited(self.kit.wh, self.seconds, EXPLAIN_QUERIES, self.at_once)
         every = [c for c in self.kit._splits(metric, period) if c not in used]
-        cols = ([c for c in self.drivers if c in every] or self._spread([c for c in every if not _NOT_DRIVER.search(c)]))[:LAYER_COLUMNS]
+        cols = ([c for c in self.drivers if c in every] or self._spread([c for c in every if self._driver(c)]))[:LAYER_COLUMNS]
         run._splits = lambda *_: cols
         if asof:  # a year of swings, and a year before the comparison: all an investigation reads
             held = sorted((v for v in self._under(period) if _order(v) <= _order(now)), key=_order)
@@ -886,7 +895,7 @@ class Harness:
         base = next((k for k, v in self.idx.items() if v["kind"] == "base"), None)
         if not base:
             return
-        cols = self.drivers or [c for c in self.layer.columns_for([base]) if self.kit._type(c) == "string" and not _NOT_DRIVER.search(c)]
+        cols = self.drivers or [c for c in self.layer.columns_for([base]) if self.kit._type(c) == "string" and self._driver(c)]
 
         def one(c):
             try:
@@ -1544,7 +1553,7 @@ class Harness:
         if not _HELLO.fullmatch(said):
             return None
         names = [self.layer.metrics[k]["label"] for k in self.headline if k in self.layer.metrics]
-        cuts = [c.split("[")[-1].rstrip("]") for c, v in self.values.items() if 2 <= len(v) <= 12 and not _NOT_DRIVER.search(c)]
+        cuts = [c.split("[")[-1].rstrip("]") for c, v in self.values.items() if 2 <= len(v) <= 12 and self._driver(c)]
         lines = ["I answer questions from your governed Power BI measures, with the numbers straight from the warehouse. Ask for a number, a "
                  "comparison, a breakdown, or what is driving a change, and I go one layer deeper each time you ask."]
         if names:
@@ -1568,7 +1577,7 @@ class Harness:
             return []
         measures = whole if len(whole) <= CATALOG_CHARS else "\n".join(f"- {k}: {self.layer.metrics[k]['label']}{bi.needs(self.layer, k)}" for k in keys)
         _step("catalog", question, f"{'every measure' if measures is whole else f'{len(keys)} measures'}, {len(measures):,} characters")
-        cols = [c for c in self.values if self.kit._type(c) != "dateTime" and not _NOT_DRIVER.search(c)]
+        cols = [c for c in self.values if self.kit._type(c) != "dateTime" and self._driver(c)]
         date = ((self._date(keys[0]) if keys else None) or "Calendar[Date]:month").rsplit(":", 1)[0]
         shown = [f"{c}: {', '.join(self.values[c][:30])}" if len(self.values.get(c, [])) <= 30 and c in self.values else c for c in cols]
         scope = f"\n\nAlready applied to every number, so never add these: {', '.join(self.defaults)}" if self.defaults else ""
@@ -1678,13 +1687,29 @@ class Harness:
         before = asof[2] if asof else f"{y - (mo == 1)}-{(mo - 2) % 12 + 1:02d}" if _MONTHS.search(question) else f"{y - 1}-{mo:02d}"
         filters = {c: v for c, v in (steps.get("filters") or {}).items() if self._kind(c) != "dateTime"}
         out = self.explain(metric, col, latest, before, filters)
-        if re.match(r"[^\n]*: 0 in \S+, 0 in \S+,", out):
-            if (t := TRACE.get()) is not None:
-                _why(t, f"{metric}: nothing in either period")
-            return ""  # no data in this scope is not "it did not change"
+        if "Nothing changed" in out and re.match(r"[^\n]*: 0 in \S+, 0 in \S+,", out):
+            return self._alone(metric, filters, {} if asof else {col: latest})
         if out.startswith("Error") and (t := TRACE.get()) is not None:
             _why(t, f"{metric}: {out[:140]}")
         return "" if out.startswith("Error") else out
+
+    def _alone(self, metric: str, filters: dict, period: dict) -> str:
+        """Nothing in either period, asked together. That is no finding, nor "no movement": a measure of the current period may
+        answer one period and not two. So it is asked alone, and what stands is said, which also ends the question here."""
+        label = _nice(self.layer.metrics[metric]["label"])
+        given = {**filters, **period}
+        try:
+            where = self.kit.resolve({**self._scope_for([metric], [], given), **given})[0]
+            rows = self.kit.wh.query(self.layer.compile([metric], [], where, dialect=self.kit.wh.dialect, row_filters=self.kit.row_filters), limit=5)[1]
+            value = rows[0][-1] if rows else None
+        except Exception as exc:  # noqa: BLE001 - said in the log; the answer says only what is known
+            _step("alone", metric, f"failed: {exc}")
+            value = None
+        _step("alone", metric, value)
+        if (t := TRACE.get()) is not None:
+            _why(t, f"{metric}: nothing for two periods together, {value} alone")
+        return (f"{label}: {self._show(metric, value)} for the period. Its change could not be worked out." if value
+                else f"{label}: no data in this scope.")
 
     def _show(self, key: str, value) -> str:
         """A number the way the report shows it, from the measure's Power BI format."""
@@ -1816,7 +1841,9 @@ def install(kit, folder=None):
             sent = h.form_for(message, session_id)
             if not sent:
                 return None
+            began = time.monotonic()
             reply = await asyncio.wait_for(model.ainvoke(sent), READ_SECONDS)
+            _step("model", "read the question", f"{time.monotonic() - began:.1f}s")
             found = re.search(r"\{.*\}", _text(reply.content), re.DOTALL)
             form = json.loads(found.group()) if found else {}
             return form if form.get("route") in ("overview", "known") or (form.get("route") in ("compute", "explain") and form.get("metrics")) else None
@@ -1833,10 +1860,15 @@ def install(kit, folder=None):
                 model, seen = chat(http), h.kit._seq
                 yield Event.agent_status(agent, "active", "Analyzing request...").line() + "\n"
                 tried = []
-                again = led.get("asked", {}).get(" ".join(_words(message)))  # this very question, in this conversation
+                said_as = " ".join(_words(message))
+                again = led.get("asked", {}).get(said_as)  # this very question, in this conversation
+                opening = not led.get("form")  # a first question leans on nothing, so its reading holds for anyone who asks it
                 if again:
                     t["read"] = "map"
                     tried.append(again["form"])
+                elif opening and said_as in h.reads:
+                    t["read"] = "memory"
+                    tried.append(h.reads[said_as])
                 elif form := h.next_layer(message) or h.read(message):  # every word accounted for: nothing to choose
                     t["read"] = "code"
                     tried.append(form)
@@ -1888,7 +1920,7 @@ def install(kit, folder=None):
                         said = before() if again and not t["n"] else aiter(model.astream([("system", _SAY), ("human", f"Question: {message}\n\nOn screen, as the report shows it:\n{head}\n{moved}\nResults:\n{results[:6000]}{earlier}")]))
                         if t.get("stalled"):  # it could not read the question: it will not write about it either
                             raise StopAsyncIteration
-                        ends = time.monotonic() + SAY_SECONDS
+                        ends, began = time.monotonic() + SAY_SECONDS, time.monotonic()
                         while True:
                             part = _text((await asyncio.wait_for(anext(said), max(ends - time.monotonic(), 0.1))).content)
                             if part:
@@ -1901,9 +1933,12 @@ def install(kit, folder=None):
                     if offer:
                         yield json.dumps({"type": "chunk", "data": {"text": offer}}) + "\n"
                     answer = head + words + offer or "The results are in the table."
+                    _step("model", "wrote the sentence", f"{len(words)} characters")
                     _step("answer", "", answer)
                     yield Event("result", {"type": "analysis", "answer": answer}).line() + "\n"
                     t["answered"] = True
+                    if opening and t["read"] == "model":
+                        h.reads[said_as] = form
                     led["form"] = form
                     led.setdefault("asked", {})[" ".join(_words(message))] = {"form": form, "words": words}
                     led.setdefault("said", []).append((message, answer))
