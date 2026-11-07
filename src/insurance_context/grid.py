@@ -1,6 +1,6 @@
 """The grid: every captured measure against every column it could be cut by, worked out once from the capture.
 
-    python -m insurance_context.grid <model folder>                 write grid.yaml beside the capture, and report
+    python -m insurance_context.grid <model folder>                 write grid.json beside the capture, and report
     python -m insurance_context.grid <model folder> --show <metric> what one measure is made of and can be cut by
 
 Captured measures were checked when they were captured, so what the grid adds is not whether a number is right but where it
@@ -33,7 +33,8 @@ import yaml
 
 from . import findable
 
-NAME = "grid.yaml"
+NAME = "grid.json"
+OLD = "grid.yaml"  # what an earlier version wrote; read when there is no grid.json
 _BRACES = re.compile(r"\{([^{}]+)\}")
 _NULLIF = re.compile(r"nullif\(([^()]+?), 0\)", re.IGNORECASE)
 
@@ -308,7 +309,7 @@ def build(layer, folder, kit=None, out_path: Path | None = None, workers: int = 
 def load(folder, layer=None) -> dict | None:
     """The grid beside the capture, when it is this capture's."""
     base = Path(folder or ".")
-    p = next((x for x in (base / NAME, base / "capture" / NAME) if x.exists()), None)
+    p = next((x for n in (NAME, OLD) for x in (base / n, base / "capture" / n) if x.exists()), None)
     if not p:
         return None
     text = p.read_text(encoding="utf-8")

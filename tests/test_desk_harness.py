@@ -1664,3 +1664,15 @@ def test_a_why_that_finds_no_number_anywhere_is_handed_to_the_agent_with_what_wa
     keyed._why_one = lambda k, steps, q: "Total PMPM: no data in this scope."
     assert keyed._why({"metrics": ["total_pmpm"]}, "q") == ""
     assert "no data in this scope" in t["tried"] and "without Period[Range]: 412.0" in t["tried"]
+
+
+def test_a_month_column_written_as_text_is_matched_by_the_month_it_means(kit):
+    h = kit.compute.__self__
+    held = ["Apr 2025", "Aug 2025", "Aug 2026", "Sep 2026", "Jan 2026"]
+    h._days = lambda col, fresh=False: sorted(held)
+    h._known = lambda col, fresh=False: (held, True)
+    notes = []
+    assert h._on("Dim[AsOf]", "Aug 2026", dh._when("Aug 2026"), notes) == "Aug 2026" and not notes
+    assert h._on("Dim[AsOf]", "2026-08", dh._when("2026-08"), notes) == "Aug 2026"
+    with pytest.raises(dh.bi.LayerError, match="runs from Apr 2025 to Sep 2026"):
+        h._on("Dim[AsOf]", "2027-01", dh._when("2027-01"), notes)

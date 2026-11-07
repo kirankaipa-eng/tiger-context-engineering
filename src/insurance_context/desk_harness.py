@@ -1187,22 +1187,28 @@ class Harness:
         return sorted(map(str, vals))
 
     def _on(self, col: str, said: str, when: tuple, notes: list[str]) -> str | None:
-        """The value of `col` a date means; None for a month of many days, which is read at month grain."""
+        """The value of `col` a date means; None for a month of many days, which is read at month grain. A column may hold
+        dates, or months written as text ("Aug 2026"): each value is read as the month and day it means, not by its letters."""
         month, day = when
         for fresh in (False, True):
             days = self._days(col, fresh) or []
-            hit = [d for d in days if d[:10] == day]
+            if said in days:
+                return said
+            read = [(d, _when(d) or (d[:7], d[:10])) for d in days]
+            hit = [d for d, (_, dd) in read if dd and dd[:10] == day]
             if hit:
                 return hit[0]
-            inside = [d for d in days if d[:7] == month]
+            inside = [d for d, (mm, _) in read if mm == month]
             if len(inside) == 1:
-                notes.append(f"read {col}={said!r} as {inside[0][:10]!r}")
+                if inside[0] != said:
+                    notes.append(f"read {col}={said!r} as {inside[0]!r}")
                 return inside[0]
             if inside and not day:
                 return None
         if not days or not self._known(col)[1]:
             return day
-        raise bi.LayerError(f"{col} has no {said}: it runs from {days[0][:10]} to {days[-1][:10]}")
+        span = sorted(read, key=lambda x: (x[1][0], x[1][1] or ""))
+        raise bi.LayerError(f"{col} has no {said}: it runs from {span[0][0]} to {span[-1][0]}")
 
     def _pick(self, col: str, said, notes: list[str]):
         """The value of `col` a spelling means: exactly, or by case, initials, one word of it, or a slip of the keys."""
