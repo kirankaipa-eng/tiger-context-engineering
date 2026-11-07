@@ -1360,3 +1360,73 @@ def test_latest_goes_by_the_calendar_not_the_alphabet(scoped):
     ask("q", "text months")
     scoped.kit.wh.query = lambda sql, limit=None: ([], [("Sep 2025",), ("Oct 2025",), ("Jan 2026",)])
     assert scoped._pinned()["Period[AsOf]"] == "Jan 2026"
+
+
+MONTH_ENDS = [37164, 37195, 37225, 37256, 37287, 37315, 37346, 37376, 37407, 37437, 37468, 37499, 37529]
+
+
+@pytest.mark.parametrize("now,values,months,before", [
+    (37529, MONTH_ENDS, 12, 37164), (37529, MONTH_ENDS, 1, 37499),
+    ("37529", [str(v) for v in MONTH_ENDS], 12, "37164"),
+    (120, list(range(100, 121)), 12, 108), (120, list(range(100, 121)), 1, 119),
+    (20260930, [20250930, 20260831, 20260930], 12, 20250930), ("2026-01", ["2025-12", "2026-01"], 1, "2025-12"),
+    (37529, [37529, 37499], 12, None), (500, [100, 300, 500], 12, None), ("Rolling", ["Rolling"], 12, None)])
+def test_a_period_before_is_read_from_how_the_column_steps(now, values, months, before):
+    assert dh._back(now, values, months) == before
+
+
+def test_the_latest_key_goes_by_number_not_the_alphabet():
+    assert dh._latest_of([9999, 37529]) == 37529 and dh._latest_of(["9999", "37529"]) == "37529"
+
+
+@pytest.fixture
+def keyed(scoped):
+    """The as-of is a day count, as a warehouse key often is."""
+    rows = [(v,) for v in MONTH_ENDS]
+    scoped.kit.wh.query = lambda sql, limit=None: ([], rows)
+    return scoped
+
+
+def test_an_as_of_key_compares_with_a_year_before_and_is_never_shown(keyed):
+    ask("what is driving Total PMPM")
+    assert keyed._asof() == ("Period[AsOf]", "37529", "37164")
+    assert keyed._against("37529", "37164") == "against the same period a year before"
+
+
+def test_with_no_period_to_compare_a_scope_does_not_fall_back_to_months(scoped):
+    ask("what is driving Total PMPM", "none")
+    scoped.kit.wh.query = lambda sql, limit=None: ([], [("Current",)])
+    t = {"n": 0, "secs": 0.0, "slowest": 0.0, "calls": 0, "start": dh.time.monotonic()}
+    dh.TRACE.set(t)
+    scoped._latest_month = lambda *a: pytest.fail("months are not what the scope compares")
+    assert scoped._why_one("total_pmpm", {}, "q") == ""
+    dh.TRACE.set(None)
+    assert "has no value 12 months before Current" in t["why"]
+
+
+def test_the_log_says_a_reason_once():
+    t = {}
+    dh._why(t, "a"); dh._why(t, "b"); dh._why(t, "a")
+    assert t["why"] == "a; b"
+
+
+def test_history_names_its_periods_so_a_reporting_context_is_whole():
+    seen = {}
+
+    class Strict:
+        tables = "kept"
+
+        def compile(self, metrics, by=None, filters=None, *rest, **kw):
+            seen.update(filters or {})
+            return "sql"
+
+    layer = dh.Named(Strict(), "Period[AsOf]", [1, 2])
+    assert layer.tables == "kept"
+    layer.compile(["m"], ["Period[AsOf]"], {"Period[Range]": "R"})
+    assert seen == {"Period[Range]": "R", "Period[AsOf]": [1, 2]}
+    seen.clear()
+    layer.compile(["m"], ["Period[AsOf]"], {"Period[AsOf]": [9]})
+    assert seen == {"Period[AsOf]": [9]}
+    seen.clear()
+    layer.compile(["m"], ["Member[LOB]"], {"Period[Range]": "R"})
+    assert seen == {"Period[Range]": "R"}

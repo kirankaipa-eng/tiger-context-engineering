@@ -96,7 +96,8 @@ SHOWN = 6
 SLICES = 30            # the columns whose values are read ahead, once
 SHORTLIST = 20         # the metrics one small call chooses from
 READ_SECONDS = 20      # past this the question is read in code
-RUN_SECONDS = 60       # what a settled question may take before the agent is asked instead
+HISTORY = 26           # the periods an investigation reads under the owner's as-of
+RUN_SECONDS = 150      # what a settled question may take before the agent is asked instead: it runs behind a free chat, and the agent would only ask the same warehouse again
 JOB_SECONDS = 300      # what the agent may take in the background before the answer is what there is
 GAVE_UP = "I could not finish that one. Name a measure and a period, and I will answer it straight away."
 SAY_SECONDS = 30       # past this the number stands without its sentence
@@ -248,6 +249,23 @@ class Limited:
         return self._wh.query(sql, limit=limit)
 
 
+class Named:
+    """The layer for a comparison on the owner's as-of. An investigation reads the history of a period without filtering it,
+    and a model that wants a whole reporting context refuses that; the check that keeps noise from being called a driver would
+    go with it. So history names its periods."""
+
+    def __init__(self, layer, period: str, values: list):
+        self._layer, self._period, self._values = layer, period, values
+
+    def __getattr__(self, name):
+        return getattr(self._layer, name)
+
+    def compile(self, metrics, by=None, filters=None, *rest, **kw):
+        if self._period in (by or []) and self._period not in (filters or {}):
+            filters = {**(filters or {}), self._period: self._values}
+        return self._layer.compile(metrics, by, filters, *rest, **kw)
+
+
 def _root(idx: dict, key: str) -> str:
     seen = set()
     while key in idx and idx[key]["kind"] in ("alias", "legacy") and idx[key]["base"] != key and key not in seen:
@@ -279,6 +297,44 @@ def _month_of(value) -> tuple[int, int] | None:
         return (int(m.group(1)), int(m.group(2))) if 1 <= int(m.group(2)) <= 12 else None
     w = _when(s)
     return (int(w[0][:4]), int(w[0][5:7])) if w else None
+
+
+def _number(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _order(value) -> tuple:
+    return (_month_of(value) or (0, 0), _number(value) or 0, str(value))
+
+
+def _latest_of(values: list):
+    """The last period: by the calendar when it reads as one, else by number. Never by the alphabet, where 9999 follows 37529."""
+    return max(values, key=_order)
+
+
+def _is_id(value) -> bool:
+    """A period written as a number that means nothing to a reader."""
+    return _number(value) is not None and _month_of(value) is None
+
+
+def _back(now, values: list, months: int):
+    """The value of a period column `months` before `now`, or None. A key that is no date is read from how its values step:
+    about a month of days between them is a day count, one is a month count. Anything else is not guessed at."""
+    if at := _month_of(now):
+        y, mo = divmod(at[0] * 12 + at[1] - 1 - months, 12)
+        return next((v for v in values if _month_of(v) == (y, mo + 1)), None)
+    held = {n: v for v in values if (n := _number(v)) is not None}
+    ordered = sorted(held)
+    gaps = sorted(b - a for a, b in zip(ordered, ordered[1:]))
+    step = gaps[len(gaps) // 2] if gaps else 0
+    if (n := _number(now)) is None or not (step == 1 or 28 <= step <= 31):
+        return None
+    target, slack = (n - months, 0) if step == 1 else (n - (365 if months == 12 else 30 * months), 3)
+    near = min(ordered, key=lambda x: abs(x - target))
+    return held[near] if abs(near - target) <= slack else None
 
 
 class Job:
@@ -367,7 +423,8 @@ class Known:
 
 def _why(t: dict, said: str) -> None:
     """Why a turn went the way it did, for the log: each reason, in the order they came."""
-    t["why"] = f"{t['why']}; {said}" if t.get("why") else said
+    if said not in (t.get("why") or "").split("; "):
+        t["why"] = f"{t['why']}; {said}" if t.get("why") else said
 
 
 def _quarter(text: str) -> str | None:
@@ -646,11 +703,19 @@ class Harness:
         every = [c for c in self.kit._splits(metric, period) if c not in used]
         cols = ([c for c in self.drivers if c in every] or self._spread([c for c in every if not _NOT_DRIVER.search(c)]))[:LAYER_COLUMNS]
         run._splits = lambda *_: cols
+        if asof:  # a year of swings, and a year before the comparison: all an investigation reads
+            held = sorted((v for v in self._under(period) if _order(v) <= _order(now)), key=_order)
+            run.layer = Named(self.layer, period, held[-HISTORY:])
         try:
             where = self.kit.resolve(filters)[0]
-            sql = lambda by, w: self.layer.compile([metric], by, w, dialect=wh.dialect, row_filters=self.kit.row_filters)
             pair = {**where, period: [now, before]}
-            wh.ahead([sql([period], pair), sql([period], where), *[sql([c, period], pair) for c in cols]])
+            ahead = []
+            for by, w in [([period], pair), ([period], where), *[([c, period], pair) for c in cols]]:
+                try:
+                    ahead.append(run.layer.compile([metric], by, w, dialect=wh.dialect, row_filters=self.kit.row_filters))
+                except Exception:  # noqa: BLE001, S112 - one the model refuses must not cost the others their fetching together
+                    continue
+            wh.ahead(ahead)
         except Exception:  # noqa: BLE001, S110 - the investigation reports what is wrong with its arguments
             pass
         out = bi.BIToolkit.explain(run, metric, period, now, before, filters, depth=1)
@@ -668,6 +733,8 @@ class Harness:
         else:
             out += ("\n\nThis is a first look, one layer down, and that is the answer for now: do not look further unless asked."
                     + (f" End by offering to dig into {lead[1]}." if lead else ""))
+        if _is_id(now):
+            out += f"\n\n{now} and {before} are keys of the reporting period: never say them. Say {self._against(now, before)}."
         record = next((r for r in reversed(fresh) if r.get("explain")), None)
         if record and not wh.stopped:  # a partial layer is not what is known
             self._map().layers[layer] = {"record": record, "said": out, "peel": peel, "where": filters, "at": time.monotonic()}
@@ -711,8 +778,13 @@ class Harness:
             lead = f" · led by {e['steps'][-1]['value']}" if e.get("steps") else ""
             within = [str(v) for c, v in (r.get("filters") or {}).items() if self._kind(c) != "dateTime"]  # a layer's number is of its part
             where = f" in {', '.join(within)}" if within else ""
-            lines.append(f"{e['label']}{where} **{change:+.1%}** · {_period(e['now'])} against {_period(e['before'])}{lead}")
+            lines.append(f"{e['label']}{where} **{change:+.1%}** · {self._against(e['now'], e['before'])}{lead}")
         return "\n\n".join(lines) + "\n\n" if lines else ""
+
+    def _against(self, now, before) -> str:
+        if _is_id(now):
+            return "against the month before" if _MONTHS.search(QUESTION.get()) else "against the same period a year before"
+        return f"{_period(now)} against {_period(before)}"
 
     def layer_offer(self) -> str:
         """What the next layer would be, to ask for with a click."""
@@ -817,7 +889,7 @@ class Harness:
                     out[c] = v
                     continue
                 try:
-                    out[c] = max(self._under(c), key=lambda x: (_month_of(x) or (0, 0), str(x)))
+                    out[c] = _latest_of(self._under(c))
                 except Exception as exc:  # noqa: BLE001 - said in the log; a scope with a hole is not pinned
                     print(f"[desk] no latest value for {c}: {str(exc)[:140]}", file=sys.stderr, flush=True)
                     return out
@@ -913,15 +985,10 @@ class Harness:
         now = self._pinned().get(col) if col else None
         if now is None:
             return None
-        if not (at := _month_of(now)):
-            if (t := TRACE.get()) is not None:
-                _why(t, f"{col} holds {now!r}, which does not read as a period")
-            return None
-        y, mo = at
-        want = (y - (mo == 1), (mo - 2) % 12 + 1) if _MONTHS.search(QUESTION.get()) else (y - 1, mo)
-        before = next((v for v in self._under(col) if _month_of(v) == want), None)
+        months = 1 if _MONTHS.search(QUESTION.get()) else 12
+        before = _back(now, self._under(col), months)
         if before is None and (t := TRACE.get()) is not None:
-            _why(t, f"{col} has no {want[0]}-{want[1]:02d} to compare {now} with")
+            _why(t, f"{col} has no value {months} months before {now}")
         return (col, str(now), str(before)) if before is not None else None
 
     def scope_line(self) -> str:
@@ -1513,6 +1580,8 @@ class Harness:
 
     def _why_one(self, metric: str, steps: dict, question: str) -> str:
         asof = self._asof()
+        if not asof and any(str(v).lower() == "latest" for v in self.defaults.values()):
+            return ""  # months are not what the owner's scope compares: the log has said why
         col = (asof[0] if asof else self._date(metric)) if metric in self.idx else None
         latest = asof[1] if asof else self._latest_month(metric, col) if col else None
         if not latest:
@@ -1781,7 +1850,7 @@ def install(kit, folder=None):
                             yield line
                     except Exception as exc:  # noqa: BLE001 - whatever went wrong, the agent can still answer
                         t.update(read="agent", plans=0, failed=False)
-                        _why(t, f"{type(exc).__name__}: {str(exc)[:140]}")
+                        _why(t, f"{type(exc).__name__}: {str(exc)[:140] or f'past {RUN_SECONDS}s'}")
                     if t.get("answered"):
                         return
                 led = h.ledger.setdefault(session_id, {})
