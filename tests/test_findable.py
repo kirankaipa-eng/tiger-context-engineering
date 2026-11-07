@@ -91,5 +91,21 @@ def test_why_is_quiet_when_nothing_is_in_the_way():
 
 def test_a_model_reads_every_measure_with_its_versions_and_no_helpers():
     text = f.Catalog(METRICS).context()
-    assert "current:current_billedpmpm_dental prior:prior_billedpmpm_dental change_percent:billedpmpm_pct_change_dental" in text
+    assert 'current:current_billedpmpm_dental "Current_BilledPMPM_Dental" | prior:prior_billedpmpm_dental' in text
     assert "lastdayid" not in text and "Business words: unitcost = unit cost" in text
+
+
+def test_a_label_that_says_more_than_its_key_is_what_the_model_reads():
+    c = f.Catalog({"visits_q": {"label": "Dental visits in the quarter", "description": "Counted  at discharge", "dax": "x"},
+                   "total_pmpm": {"label": "Total PMPM", "dax": "x"}})
+    text = c.context()
+    assert 'base:visits_q "Dental visits in the quarter" (Counted at discharge)' in text
+    assert 'base:total_pmpm\n' in text
+
+
+def test_a_preview_pinned_to_one_period_is_no_measure_to_answer_with():
+    c = f.Catalog({"sql_candidate_visits_dental": {"label": "SQL preview dental visits (May 2025 R12, 0M runout)", "dax": "x"},
+                   "sql_preview_x": {"label": "SQL preview dental visits (June 2025)", "dax": "x"}})
+    assert {e["role"] for e in c.metrics.values()} == {"helper"}
+    assert "2025" not in c.metrics["sql_candidate_visits_dental"]["family"]
+    assert "sql_candidate" not in c.context()

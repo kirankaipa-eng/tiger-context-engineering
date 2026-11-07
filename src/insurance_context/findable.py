@@ -44,7 +44,7 @@ _CHANGE = {"change", "chg", "delta", "variance", "yoy", "growth"}
 _PERCENT = {"percent", "pct"}
 _AMOUNT = {"dollar", "amount", "amt"}
 _VERSION = _PRIOR | _CHANGE | _PERCENT | _AMOUNT | {"current", "curr", "cy"}
-HELPER = re.compile(r"(^|_)(id|key|flag|sort|index|title|caption|tooltip|header|candidate|staging|tmp|temp|test|debug)(_|$)|"
+HELPER = re.compile(r"(^|_)(id|key|flag|sort|index|title|caption|tooltip|header|candidate|preview|staging|tmp|temp|test|debug)(_|$)|"
                     r"(day|month|period|year|date)_?id|(start|end|max|min|last|latest|current|first)_?(date|month|period|day)|"
                     r"selected|slicer", re.IGNORECASE)
 
@@ -96,12 +96,12 @@ class Catalog:
         self.families: dict[str, dict[str, str]] = {}
         for k, m in metrics.items():
             mine = (owner.get("metrics") or {}).get(k) or {}
-            name = split(m.get("label") or k)
+            name = split(re.sub(r"\([^)]*\)", " ", str(m.get("label") or k)) or k)  # "(May 2025)" says when, not what
             read = [r for r in re.findall(r"\[([^\]]+)\]", str(m.get("dax") or "")) if r.lower() in labels]
             more = [*split(" ".join(read)), *split(m.get("description") or ""), *split(" ".join(mine.get("also") or []))]
             tags = heard(name, self.terms)
             tags = [x for x in tags if x != "utilization"] if "unitcost" in tags else tags  # a cost per admit is a price, not a count
-            entry = {"name": name, "words": list(dict.fromkeys([*name, *tags, *more])), "also": mine.get("also") or [],
+            entry = {"label": str(m.get("label") or k), "about": " ".join(str(m.get("description") or "").split())[:160], "name": name, "words": list(dict.fromkeys([*name, *tags, *more])), "also": mine.get("also") or [],
                      "role": mine.get("role") or role_of(k, name), "family": mine.get("family") or family_of(name)}
             self.metrics[k] = entry
             if entry["family"]:
@@ -117,9 +117,10 @@ class Catalog:
         lines: dict[str, list[str]] = {}
         for k, e in self.metrics.items():
             if e["role"] != "helper":
-                lines.setdefault(e["family"] or k, []).append(f"{e['role']}:{k}")
-        said = "; ".join(f"{t} = {', '.join(ps)}" for t, ps in self.terms.items())
-        return "\n".join(f"{f} | {' '.join(ks)}" for f, ks in lines.items()) + f"\nBusiness words: {said}"
+                said = "" if split(e["label"]) == split(k) else f' "{e["label"]}"'  # a label that says more than its key is what to read
+                lines.setdefault(e["family"] or k, []).append(f"{e['role']}:{k}{said}" + (f" ({e['about']})" if e["about"] else ""))
+        words = "; ".join(f"{t} = {', '.join(ps)}" for t, ps in self.terms.items())
+        return "\n".join(" | ".join(ks) for ks in lines.values()) + f"\nBusiness words: {words}"
 
     def query(self, text: str) -> list[str]:
         """What a question asks for, in the catalog's words."""
