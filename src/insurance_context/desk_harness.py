@@ -57,6 +57,7 @@ import difflib
 import functools
 import json
 import math
+import os
 import re
 import sys
 import threading
@@ -71,6 +72,7 @@ from typing import TypedDict
 import yaml
 
 from . import bi_agent as bi
+from . import findable
 from .bilayer import GRAINS, ref
 
 QUESTION = contextvars.ContextVar("desk_question", default="")
@@ -126,8 +128,9 @@ people say them (September 2026). A ratio or rate reads as a percent. Say which 
 With several measures, say what stands out most. "Already known" is what this conversation found earlier: use it to connect or compare, and
 say which period a number from it is for.
 Plain sentences only: no headings, lists or bold. No metric keys, formulas, SQL or data source. Add no cause the results do not show."""
-EXPLAIN_SECONDS = 25   # one layer of "why": what it has found by then is the answer, and the next layer is the user's to ask for
+EXPLAIN_SECONDS = 60   # one layer of "why": what it has found by then is the answer, and the next layer is the user's to ask for
 EXPLAIN_QUERIES = 12   # queries a layer may run after the ones it fetches together, to test what it found
+TRACE_CHARS = 240      # of one input or output, in the trace of a question
 MAP_SECONDS = 1800     # how long what a conversation found stands without asking the warehouse again
 MAP_TABLES = 40        # the tables one conversation keeps, newest first
 MAP_CHARS = 1800       # what of it the model reads
@@ -299,6 +302,14 @@ def _month_of(value) -> tuple[int, int] | None:
     return (int(w[0][:4]), int(w[0][5:7])) if w else None
 
 
+def _nice(label: str) -> str:
+    """A measure's name as a reader says it, when the model keeps it as code: Visits%Change_Dental is Visits % Change Dental."""
+    if " " in label.strip() or not re.search(r"[_%$]|[a-z][A-Z]", label):
+        return label
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", label.replace("_", " "))
+    return " ".join(re.sub(r"\s*([%$])\s*", r" \1 ", s).split())
+
+
 def _number(value) -> float | None:
     try:
         return float(value)
@@ -427,6 +438,27 @@ def _why(t: dict, said: str) -> None:
         t["why"] = f"{t['why']}; {said}" if t.get("why") else said
 
 
+def _step(node: str, given="", got="") -> None:
+    """One step of a question, what went in and what came out, for the trace the log prints when it ends."""
+    if (t := TRACE.get()) is not None:
+        t.setdefault("steps", []).append((time.monotonic() - t["start"], node, given, got))
+
+
+def _brief(value, size: int = TRACE_CHARS) -> str:
+    s = " ".join(str(value).split())
+    return s if len(s) <= size else f"{s[:size]}..."
+
+
+def _trace(question: str, t: dict) -> str:
+    """A question from end to end: each step, when it started, and its input and output. DESK_TRACE=off leaves it out."""
+    lines = [f"[trace] {_brief(question)}"]
+    for at, node, given, got in t.get("steps", []):
+        lines.append(f"  {at:6.1f}s  {node:<10} in:  {_brief(given)}")
+        if got != "":
+            lines.append(f"  {'':7}  {'':<10} out: {_brief(got)}")
+    return "\n".join(lines)
+
+
 def _quarter(text: str) -> str | None:
     """2026-Q3, however it is written."""
     if m := re.fullmatch(r"(\d{4})[-\s]?Q([1-4])", text.strip(), re.IGNORECASE):
@@ -492,10 +524,12 @@ class Harness:
         # what a metric is made of counts too: Rx PMPM is found by "pharmacy" through [Pharmacy Paid]
         labels = {m["label"].lower() for m in self.layer.captured().values()}
         made_of = lambda m: " ".join(r for r in re.findall(r"\[([^\]]+)\]", str(m.get("dax") or "")) if r.lower() in labels)
-        self.docs = {k: Counter(_words(f"{m['label']} {m.get('description') or ''} {made_of(m)}")) for k, m in self.layer.captured().items()}
+        self.catalog = findable.load(folder or kit.folder, self.layer.captured())
+        self.docs = {k: Counter([*_words(f"{m['label']} {m.get('description') or ''} {made_of(m)}"), *self.catalog.metrics[k]["words"]])
+                     for k, m in self.layer.captured().items()}
         self.df = Counter(w for d in self.docs.values() for w in d)
-        self.names = {k: " ".join(_words(m["label"])) for k, m in self.layer.captured().items()
-                      if self.idx[k]["kind"] in ("base", "variant", "prior") and len(_words(m["label"])) > 1}
+        self.names = {k: " ".join(self.catalog.metrics[k]["name"]) for k in self.layer.captured()
+                      if self.idx[k]["kind"] in ("base", "variant", "prior") and len(self.catalog.metrics[k]["name"]) > 1}
         self.direct = conf.get("direct", True)
         self.values: dict[str, list[str]] = {}  # what the columns a question slices by hold, for reading it
         self.headline = [k for k in conf.get("headline") or [] if k in self.idx] or self._pulse()
@@ -528,7 +562,12 @@ class Harness:
         return sorted(rates, key=lambda k: (total(k), -daxes.count(f"[{self.layer.metrics[k]['label'].lower()}]"), k))[:HEADLINES]
 
     def _plumbing(self, key: str) -> bool:
-        return bool(_PLUMBING.search(key) or _PLUMBING.search("_".join(_words(self.layer.metrics[key]["label"]))))
+        return bool(_PLUMBING.search(key) or self._said(key) and self.catalog.metrics[key]["role"] == "helper"
+                    or _PLUMBING.search("_".join(self._said(key))))
+
+    def _said(self, key: str) -> list[str]:
+        """A metric's name as words, as the catalog reads it."""
+        return self.catalog.metrics[key]["name"] if key in self.catalog.metrics else _words(self.layer.metrics[key]["label"])
 
     def _shown_as_number(self, key: str) -> bool:
         """Money or a percent in the report: what a business reads. A helper rarely has either."""
@@ -537,14 +576,14 @@ class Harness:
     def rank(self, query: str, n: int = SHOWN) -> list[str]:
         """The metrics a question means, best first: an owner's precedent, then base metrics on the words asked."""
         said = " ".join(_words(query))
-        words = [w for w in _words(_WHEN.sub(" ", query)) if w not in _QUIET]
+        words = [w for w in self.catalog.query(_WHEN.sub(" ", query)) if w not in _QUIET]
         fixed = [v for t, v in self.terms.items() if re.search(rf"\b{re.escape(t)}\b", said)]
         total = len(self.docs)
 
         def score(k: str) -> float:
             d, kind = self.docs[k], self.idx[k]["kind"]
             s = sum(math.log(1 + total / (1 + self.df[w])) for w in set(words) if w in d)
-            label = _words(self.layer.metrics[k]["label"])
+            label = self._said(k)
             extra = len([w for w in label if w not in words])
             return s - 0.25 * extra + (1.5 if kind == "base" else 0) + (0.5 if "total" in label else 0)
 
@@ -553,13 +592,23 @@ class Harness:
             pool = [k for k in pool if self.idx[k]["kind"] != "prior"]
         # a variant only when the question names what sets it apart from its base
         pool = [k for k in pool if self.idx[k]["kind"] == "base" or
-                set(words) & (set(_words(self.layer.metrics[k]["label"])) - set(_words(self.layer.metrics[self.idx[k]["base"]]["label"])))]
+                set(words) & (set(self._said(k)) - set(self._said(self.idx[k]["base"])))]
         covers = lambda k: len(set(words) & set(self.docs[k]))  # every word asked beats a shorter name
-        return list(dict.fromkeys(fixed + sorted(pool, key=lambda k: (not self._in_scope(k), -covers(k), -score(k), k))))[:n]
+        asks_change = bool(re.search(r"%|\bpercent\b|\bpct\b", query))  # "the change in PMPM" is about PMPM
+        named = lambda k: len(set(words) & set(self._said(k)))  # its own name before what its formula reads
+        ranked = sorted(pool, key=lambda k: (not self._in_scope(k), self._is_change(k) and not asks_change, -named(k), -covers(k), -score(k), k))
+        # a question of several things ("utilization versus unit cost") brings the best of each, not five of one
+        each = [next((k for k in ranked if c in self.docs[k]), None) for c in self.catalog.concepts(query)]
+        if len([k for k in each if k]) > 1:
+            ranked = [*[k for k in each if k], *ranked]
+        # of a measure's versions, the one meant: the change in PMPM is about PMPM, not about a measure of its change
+        prior = bool(_ASKS_PRIOR.search(query))
+        return list(dict.fromkeys(fixed + [self.catalog.version(k, change=asks_change, prior=prior) for k in ranked]))[:n]
 
     def find(self, query: str) -> str:
         """What rank found, as the agent reads it: what each needs and what it can be cut by."""
         best = self.rank(query)
+        _step("search", query, [f"{k} [{self.catalog.metrics[k]['role']}]" for k in best])
         if not best:
             return f"No metric matches {query!r}. Try other words, or say it is not in the model."
         lines = [f"- {k} ({self.layer.metrics[k]['label']}): {bi.describe(self.layer, k)}{bi.needs(self.layer, k)}" for k in best]
@@ -719,6 +768,7 @@ class Harness:
         except Exception:  # noqa: BLE001, S110 - the investigation reports what is wrong with its arguments
             pass
         out = bi.BIToolkit.explain(run, metric, period, now, before, filters, depth=1)
+        _step("explain", f"{metric}: {now} against {before}, filters {filters}", out.split("\n")[0])
         fresh = [r for r in run.results if r["seq"] > seen]
         with self._lock:  # another measure's layer may be finishing beside this one
             for r in fresh:
@@ -728,8 +778,8 @@ class Harness:
         peel = {"metric": metric, "period": period, "now": now, "before": before, "filters": filters, "used": [*used, *cols], "lead": lead}
         self.ledger.setdefault(SESSION.get(), {}).setdefault("peel", {})[metric] = peel
         if wh.stopped:
-            out += ("\n\nThis layer stopped at its limit, so it is partial: report what it found, and do not say there is no driver. "
-                    "Do not run it again for this question.")
+            out += ("\n\nThis layer is partial: report what it found as a first read, do not say there is no driver, and do not talk about "
+                    "limits or how it ran. Do not run it again for this question.")
         else:
             out += ("\n\nThis is a first look, one layer down, and that is the answer for now: do not look further unless asked."
                     + (f" End by offering to dig into {lead[1]}." if lead else ""))
@@ -774,11 +824,14 @@ class Harness:
             e = r.get("explain")
             if not e or not e.get("total_before"):
                 continue
-            change = e["total_after"] / e["total_before"] - 1
+            a, b = e["total_after"], e["total_before"]
+            shown = str(self.layer.metrics.get(e.get("metric"), {}).get("format") or "")
+            change = f"{(a - b) * 100:+.1f} pts" if "%" in shown else f"{a / b - 1:+.1%}" if b > 0 else f"{a - b:+,.2f}"
             lead = f" · led by {e['steps'][-1]['value']}" if e.get("steps") else ""
-            within = [str(v) for c, v in (r.get("filters") or {}).items() if self._kind(c) != "dateTime"]  # a layer's number is of its part
+            within = [str(v) for c, v in (r.get("filters") or {}).items()  # a layer's number is of its part; the scope is said once, below
+                      if self._kind(c) != "dateTime" and c.split(":")[0] not in self.defaults and c.split(":")[0] != e.get("period")]
             where = f" in {', '.join(within)}" if within else ""
-            lines.append(f"{e['label']}{where} **{change:+.1%}** · {self._against(e['now'], e['before'])}{lead}")
+            lines.append(f"{_nice(e['label'])}{where} **{change}** · {self._against(e['now'], e['before'])}{lead}")
         return "\n\n".join(lines) + "\n\n" if lines else ""
 
     def _against(self, now, before) -> str:
@@ -789,7 +842,7 @@ class Harness:
     def layer_offer(self) -> str:
         """What the next layer would be, to ask for with a click."""
         peel = self.ledger.get(SESSION.get(), {}).get("peel") or {}
-        asks = [f"what is driving {self.layer.metrics[p['metric']]['label']} in {p['lead'][1]}" for p in peel.values() if p.get("lead")]
+        asks = [f"what is driving {_nice(self.layer.metrics[p['metric']]['label'])} in {p['lead'][1]}" for p in peel.values() if p.get("lead")]
         return f"\n\nWould you like {' or '.join(asks[:WHY_METRICS])}?" if asks else ""
 
     def _date(self, metric: str) -> str | None:
@@ -858,6 +911,10 @@ class Harness:
                         t.setdefault("since", t0) if t["live"] > 1 else t.update(since=t0)
                 try:
                     out = inner(sql, limit=limit)
+                    _step("query", f"{sql[:60]} ... {sql[-170:]}", f"{len(out[1])} rows in {time.monotonic() - t0:.1f}s")
+                except Exception as exc:
+                    _step("query", f"{sql[:60]} ... {sql[-170:]}", f"failed in {time.monotonic() - t0:.1f}s: {exc}")
+                    raise
                 finally:
                     if t is not None:
                         ended = time.monotonic()
@@ -926,6 +983,21 @@ class Harness:
             gone.add(table)
             left = {c: v for c, v in left.items() if c.split("[")[0].strip("'") != table}
         return gone
+
+    def _is_change(self, key: str) -> bool:
+        return self.catalog.is_change(key)
+
+    def _changing(self, key: str) -> str | None:
+        """What a change measure is the change of: the current measure its formula reads, not the prior one. A change of a
+        change is no number: from -5% to +5% would read as -200%."""
+        if not self._is_change(key):
+            return key
+        if not self.catalog.is_change(kin := self.catalog.version(key)):
+            return kin
+        labels = {m["label"].lower(): k for k, m in self.layer.captured().items()}
+        read = [labels[r.lower()] for r in re.findall(r"\[([^\]]+)\]", str(self.layer.metrics[key].get("dax") or "")) if r.lower() in labels]
+        return next((k for k in read if k in self.idx and not self._is_change(k) and self.idx[k]["kind"] != "prior"
+                     and not re.search(r"(?i)prior|previous|(^|_)py(_|$)", k)), None)
 
     def _in_scope(self, key: str) -> bool:
         """Can this metric be put in the owner's scope at all? One that cannot is not the number the report shows."""
@@ -1232,6 +1304,7 @@ class Harness:
             filters = {c: v for c, v in filters.items() if self._kind(c) != "dateTime"} | {col: m}
             led["period"] = {col: m}
             notes = [f"the latest month with data is {self._latest[col]}"]
+        _step("settle", metrics, f"filters {filters}" + (f"; {'; '.join(notes)}" if notes else ""))
         return {"metrics": metrics, "filters": filters, "given": given, "notes": notes}
 
     def _run(self, step: dict, compute, by, top, order_by, ascending, params, kit=None) -> str:
@@ -1439,7 +1512,7 @@ class Harness:
             words = [w for w in part.split() if w not in _QUIET and w not in _LOOSE and not re.fullmatch(r"20\d\d|in|to|by|from|with|for", w)]
             whole = [w for w in part.split() if w not in _QUIET and not re.fullmatch(r"20\d\d|in|to|by|from|with|for", w)]
             pool = self.rank(" ".join(words) or " ".join(whole), 20) if whole else []
-            fits = [k for k in pool if set(words) <= set(_words(self.layer.metrics[k]["label"]))] if words else []
+            fits = [k for k in pool if set(words) <= set(self._said(k))] if words else []
             if fits:
                 metrics.append(max(fits, key=lambda k: (self.idx[k]["kind"] == "base", self._shown_as_number(k), self._leaned_on(k))))
             elif pool and not every_word:
@@ -1487,6 +1560,7 @@ class Harness:
         keys = list(dict.fromkeys([*(last.get("metrics") or []), *self.rank(question, SHORTLIST), *self.headline]))[:SHORTLIST]
         if not keys:
             return []
+        _step("search", question, [f"{k} [{self.catalog.metrics[k]['role']}]" for k in keys])
         cols = [c for c in self.layer.columns_for(keys[:3]) if self.kit._type(c) != "dateTime" and not _NOT_DRIVER.search(c)]
         date = (self._date(keys[0]) or "Calendar[Date]:month").rsplit(":", 1)[0]
         shown = [f"{c}: {', '.join(self.values[c][:30])}" if len(self.values.get(c, [])) <= 30 and c in self.values else c for c in cols]
@@ -1555,7 +1629,7 @@ class Harness:
             if isinstance(now, (int, float)) and isinstance(then, (int, float)) and then:
                 moved[k] = abs(now / then - 1)
                 change = (f"{(now - then) * 100:+.1f} pts" if "%" in str(self.layer.metrics[k].get("format") or "") else f"{(now / then - 1) * 100:+.1f}%")
-            rows.append(f"| {self.layer.metrics[k]['label']} | {self._show(k, now) if now is not None else ''} | "
+            rows.append(f"| {_nice(self.layer.metrics[k]['label'])} | {self._show(k, now) if now is not None else ''} | "
                         f"{self._show(k, then) if then is not None else ''} | {change} |")
         if not rows:
             return "", ""
@@ -1571,7 +1645,11 @@ class Harness:
     def _why(self, steps: dict, question: str) -> str:
         """What is driving each measure the question names, together. One that cannot be looked into is said, and the others
         stand."""
-        keys = list(dict.fromkeys(_root(self.idx, k) for k in steps.get("metrics") or [""]))[:WHY_METRICS]
+        asked = [_root(self.idx, k) for k in steps.get("metrics") or [""]]
+        keys = list(dict.fromkeys(c for k in asked if (c := self._changing(k) if k in self.idx else k)))[:WHY_METRICS]
+        _step("why", asked, keys)
+        if not keys:
+            return ""  # only change measures, with nothing they read to look into: their value still stands
         self.ledger.setdefault(SESSION.get(), {})["peel"] = {}  # a new question starts from the top
         found = dict(zip(keys, self._together([functools.partial(self._why_one, k, steps, question) for k in keys])))
         said = [out for out in found.values() if out]
@@ -1615,7 +1693,7 @@ class Harness:
         for row in r["shown"]:
             cells = dict(zip(r["columns"], row))
             head = " · ".join(str(v) for c, v in cells.items() if c not in r["metrics"])
-            said = " · ".join(f"{self.layer.metrics[k]['label']} **{self._show(k, cells[k])}**" for k in r["metrics"] if cells.get(k) is not None)
+            said = " · ".join(f"{_nice(self.layer.metrics[k]['label'])} **{self._show(k, cells[k])}**" for k in r["metrics"] if cells.get(k) is not None)
             if said:
                 lines.append(" · ".join(x for x in (f"{head}: {said}" if head else said, when) if x))
         return "\n\n".join(lines) + "\n\n"
@@ -1695,6 +1773,7 @@ def install(kit, folder=None):
                 if t["calls"] > TURN_CALLS or (time.monotonic() - t["start"] > h.turn_seconds and not unplanned):
                     return OUT_OF_TURN
             out = await fn(*a, **k)
+            _step(f"agent:{fn.__name__}", {**k} or a[1:], out)
             if t is not None and isinstance(out, str) and out.startswith("Error") and out != PLAN_RAN:
                 # a value in the refusal is what a retry changes: the refusal itself is what repeats
                 shape = re.sub(r"'[^']*'|\d+", "#", out.split("Values in the data")[0])
@@ -1766,9 +1845,11 @@ def install(kit, folder=None):
                         t["read"] = "agent"
                         t.setdefault("why", "the reading found no form for it")
                 for form in tried:
+                    _step("read", f"by {t['read']}", form)
                     tool = "explain" if form["route"] in ("explain", "layer") else "compute"
                     yield Event.tool_call(agent, tool, {"form": form}).line() + "\n"
                     out, tool = await asyncio.wait_for(asyncio.to_thread(h.run, form, message), RUN_SECONDS)
+                    _step("result", tool, out or "nothing to show: the agent takes it")
                     open_ended = form["route"] == "overview"
                     head, offer = h.scoreboard(seen, form) if out and open_ended and form.get("now") else (h.number(seen) if out else "", "")
                     if out and tool == "explain":
@@ -1808,6 +1889,7 @@ def install(kit, folder=None):
                     if offer:
                         yield json.dumps({"type": "chunk", "data": {"text": offer}}) + "\n"
                     answer = head + words + offer or "The results are in the table."
+                    _step("answer", "", answer)
                     yield Event("result", {"type": "analysis", "answer": answer}).line() + "\n"
                     t["answered"] = True
                     led["form"] = form
@@ -1886,6 +1968,8 @@ def install(kit, folder=None):
                 recalled = f", {t['recalled']} from the map" if t.get("recalled") else ""
                 print(f"[desk] {took:.1f}s, read by {t['read']}{why}{first}{recalled}, {t['calls']} tool calls{used}: warehouse {wall:.1f}s, {t['secs']:.1f}s of queries "
                       f"over {t['n']} (slowest {t['slowest']:.1f}s), model and the rest {max(took - wall, 0):.1f}s", file=sys.stderr, flush=True)
+                if os.environ.get("DESK_TRACE", "on").lower() != "off":
+                    print(_trace(message, t), file=sys.stderr, flush=True)
 
         async def work(job, message, session_id, kw):
             """The question, whoever is watching. Its results are its own until a chat following it takes them."""

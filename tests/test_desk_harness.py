@@ -1430,3 +1430,66 @@ def test_history_names_its_periods_so_a_reporting_context_is_whole():
     seen.clear()
     layer.compile(["m"], ["Member[LOB]"], {"Period[Range]": "R"})
     assert seen == {"Period[Range]": "R"}
+
+
+@pytest.mark.parametrize("label,shown", [("Visits%Change_Dental", "Visits % Change Dental"), ("Billed$Change_Dental", "Billed $ Change Dental"),
+                                         ("Current_VisitCostBilled_Dental", "Current Visit Cost Billed Dental"), ("Total PMPM", "Total PMPM"),
+                                         ("Admits per 1,000", "Admits per 1,000"), ("Members", "Members")])
+def test_a_measure_kept_as_code_is_said_as_a_reader_says_it(label, shown):
+    assert dh._nice(label) == shown
+
+
+CHANGES = {"units_change": m("Visits%Change_Dental", "DIVIDE([Prior_Units]-[Current_Units],[Prior_Units])"),
+           "current_units": m("Current_Units", "SUM(Claims[Units])"), "prior_units": m("Prior_Units", "SUM(Claims[Units])"),
+           "lonely_change": m("Lonely Change", "1")}
+
+
+@pytest.fixture
+def changes(tmp_path, monkeypatch):
+    for k, v in CHANGES.items():
+        monkeypatch.setitem(METRICS, k, v)
+    monkeypatch.setattr(dh.bi, "describe", lambda layer, k: "formula")
+    monkeypatch.setattr(dh.bi, "needs", lambda layer, k: "")
+    k = Kit()
+    k.folder = tmp_path
+    dh.install(k, tmp_path)
+    dh.QUESTION.set("")
+    return k.compute.__self__
+
+
+def test_why_looks_at_what_a_change_measure_is_the_change_of(changes):
+    assert changes._changing("units_change") == "current_units"
+    assert changes._changing("current_units") == "current_units"
+    assert changes._changing("lonely_change") is None
+
+
+def test_a_change_measure_with_nothing_to_look_into_is_read_not_explained(changes):
+    assert changes._why({"metrics": ["lonely_change"]}, "why") == ""
+
+
+def test_the_change_in_a_measure_means_the_measure(changes):
+    assert changes.rank("change in units")[0] == "current_units"
+    assert changes.rank("units % change")[0] == "units_change"
+
+
+def test_the_line_says_a_number_a_reader_can_trust(scoped):
+    ask("what is driving it")
+    rec = lambda a, b, metric="total_pmpm": {"seq": 1, "filters": {"Period[Range]": "Rolling 12 months", "Member[LOB]": "Commercial"},
+                                             "explain": {"metric": metric, "label": "Visits_Dental", "period": "Period[AsOf]", "now": "37529", "before": "37164",
+                                                         "total_after": a, "total_before": b, "steps": []}}
+    scoped.kit.results = [rec(110.0, 100.0)]
+    assert scoped.layer_line(0).strip() == "Visits Dental in Commercial **+10.0%** · against the same period a year before"
+    scoped.kit.results = [rec(-5.0, -2.0)]
+    assert "**-3.00**" in scoped.layer_line(0)
+
+
+def test_a_trace_says_each_step_in_and_out():
+    t = {"start": dh.time.monotonic()}
+    dh.TRACE.set(t)
+    dh._step("settle", ["total_pmpm"], "filters {}")
+    dh._step("query", "select " + "x" * 400)
+    dh.TRACE.set(None)
+    dh._step("nowhere")
+    out = dh._trace("what is it", t).splitlines()
+    assert out[0] == "[trace] what is it" and "settle" in out[1] and "total_pmpm" in out[1] and out[2].strip() == "out: filters {}"
+    assert len(out) == 4 and out[3].endswith("...") and len(out[3]) < dh.TRACE_CHARS + 40

@@ -660,7 +660,9 @@ export default function AskPage() {
     const choose = async (rs: ExhibitData[], quiet: boolean) => {
       // the measure it settled on (a "why" answer's too, with the columns it walked down)
       const last = [...rs].reverse().find((r) => (r.kind === "compute" || r.kind === "explain") && r.metrics.length);
-      const lead = last?.explain ? { ...last, by: [...last.explain.steps.map((s) => s.by), last.explain.period] } : last;
+      // a period that is a key (no :month) is no thing to draw: its values mean nothing to a reader, and it is no category
+      const dated = (p: string) => (p.includes(":") ? [p] : []);
+      const lead = last?.explain ? { ...last, by: [...last.explain.steps.map((s) => s.by), ...dated(last.explain.period)] } : last;
       // what the answer narrowed to (Product = Excel) becomes the focus, not a fixed filter: the trail says so,
       // and one click on "Everything" widens it
       const focus: Focus = lead ? Object.entries(lead.filters) : [];
@@ -669,6 +671,14 @@ export default function AskPage() {
       rs.filter((r) => r.kind !== "compute" && r.kind !== "explain" && r.columns.length && r.rows.length).forEach((r, i) => brought.push({
         id: `rows${i}`, kind: "rows", title: r.kind === "explore" ? "The rows behind the answer" : "What the analysis found", metrics: [], queries: [], dims: [], own: [], filters: {},
         table: { columns: r.columns, rows: r.rows.slice(0, 200) }, ran: (r as any).analysis }));
+      // the same comparison, said plainly: each measure then and now
+      const compared = rs.flatMap((r) => (r.explain && !r.explain.period.includes(":") ? [r.explain] : []));
+      const n2 = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+      if (compared.length) brought.unshift({
+        id: "compared", kind: "rows", title: "Then and now", metrics: [], queries: [], dims: [], own: [], filters: {},
+        table: { columns: ["Measure", "Before", "Now", "Change"], rows: compared.map((e) => [
+          e.label.replace(/_/g, " "), n2(e.total_before), n2(e.total_after),
+          e.total_before > 0 ? `${((e.total_after / e.total_before - 1) * 100).toFixed(1)}%` : n2(e.total_after - e.total_before)]) } });
       // no computation of a measure (it ran an analysis, or computed nothing): the measures the question names,
       // or on a follow-up the conversation's own, drawn straight from the measures and said so
       const named = metrics.filter((m) => message.toLowerCase().includes(m.label.toLowerCase())).map((m) => m.key);
