@@ -9,8 +9,10 @@ No language model is involved: what fails here fails for the agent too. It runs 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
+from pathlib import Path
 
 
 def _value(kit, layer, metric: str, where: dict) -> tuple[object, str]:
@@ -76,18 +78,32 @@ def main(argv=None) -> int:
     for t in layer.tables:
         every.setdefault(catalog(t), []).append(t)
     try:
-        mine = sorted({layer.metrics[x]["table"] for x in layer.leaves(key) if layer.metrics[x].get("table")})
+        walk = list(dict.fromkeys([key, *layer.leaves(key)]))
     except Exception:  # noqa: BLE001 - a measure whose parts cannot be walked is refused at step 4
-        mine = []
-    reach = {catalog(t) for t in mine} | {catalog(c.split("[")[0].strip("'")) for c in (layer.columns_for([key]) if mine else [])}
+        walk = [key]
+    named = set()
+    for x in walk:
+        mx = layer.metrics.get(x) or {}
+        named |= {mx["table"]} if mx.get("table") else set()
+        named |= {a or b for a, b in re.findall(r"'([^']+)'\[|\b([A-Za-z_][\w]*)\[", str(mx.get("dax") or ""))}
+    try:
+        named |= {c.split("[")[0].strip("'") for c in layer.columns_for([key])}  # and the tables its rows join to
+    except Exception:  # noqa: BLE001
+        pass
+    mine = sorted(t for t in named if t in layer.tables)
+    reach = {catalog(t) for t in mine}
     lines = ", ".join(f"{c}: {len(ts)} tables" for c, ts in sorted(every.items(), key=lambda x: -len(x[1])))
     odd = "" if len(every) < 2 else "; the fewer: " + "; ".join(f"{c}: {', '.join(ts[:8])}" for c, ts in
                                                                  sorted(every.items(), key=lambda x: len(x[1]))[:-1])
     step(1, "its tables are all in one warehouse catalog", len(reach) < 2,
-         f"this measure reads {sorted(reach)}; the model maps {lines}{odd}")
+         f"this measure reads or joins {sorted(reach)} ({len(mine)} tables); the model maps {lines}{odd}")
 
     # 2. the owner's scope, with latest read from the warehouse
     t0 = time.monotonic()
+    if not h.defaults:
+        base = Path(a.folder)
+        print(f"2. NOTE  no owner scope file: looked for {base / 'analysis_default.yaml'} and "
+              f"{base / 'capture' / 'analysis_default.yaml'}", flush=True)
     try:
         pinned = h._pinned()
         ok = all(str(v).lower() != "latest" for v in pinned.values()) and len(pinned) == len(h.defaults)
@@ -108,7 +124,9 @@ def main(argv=None) -> int:
     t0 = time.monotonic()
     v, sql = _value(kit, layer, key, scope)
     step(4, "compiles and returns a number under the scope", not isinstance(v, Exception) and v is not None,
-         f"{_said(v)} ({time.monotonic() - t0:.1f}s)")
+         f"{_said(v)} ({time.monotonic() - t0:.1f}s)" + ("; no owner scope file was found, so no period was given: put "
+                                                         "analysis_default.yaml back in the model folder" if isinstance(v, Exception)
+                                                         and not h.defaults and "context" in str(v).lower() else ""))
     if a.sql and sql:
         print("      --- SQL ---\n" + "\n".join(f"      {x}" for x in sql.splitlines()) + "\n      --- end ---")
 
