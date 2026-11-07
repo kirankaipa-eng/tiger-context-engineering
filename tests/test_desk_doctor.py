@@ -36,9 +36,25 @@ def test_a_measure_reading_two_catalogs_is_named(model, capsys):
     import yaml
 
     y = yaml.safe_load((model / "capture.yaml").read_text())
-    t = y["tables"]["Member"]
+    t = y["tables"]["Member Months"]
     t["table"] = "other_catalog." + t["table"].split(".", 1)[1]
     (model / "capture.yaml").write_text(yaml.safe_dump(y, sort_keys=False))
     desk_doctor.main([str(model), "medical_pmpm"])
     out = capsys.readouterr().out
-    assert "FAIL  its tables are all in one warehouse catalog" in out and "other_catalog: Member" in out
+    assert "FAIL  its tables are all in one warehouse catalog" in out and "other_catalog: Member Months" in out
+
+
+def test_the_scope_value_that_empties_a_measure_is_named(model, capsys):
+    (model / "analysis_default.yaml").write_text("filters:\n  Member[Line of Business]: Nowhere\n")
+    desk_doctor.main([str(model), "medical_pmpm"])
+    assert "is the value that empties it" in capsys.readouterr().out
+
+
+def test_set_replaces_a_scope_value_for_one_run(model, capsys):
+    import re
+
+    (model / "analysis_default.yaml").write_text("filters:\n  Member[Line of Business]: Nowhere\n")
+    desk_doctor.main([str(model), "medical_pmpm"])
+    line = re.search(r"a number with ([^:]+):", capsys.readouterr().out).group(1)
+    assert desk_doctor.main([str(model), "medical_pmpm", "--set", f"Member[Line of Business]={line}"]) == 0
+    assert "ALL PASSED" in capsys.readouterr().out

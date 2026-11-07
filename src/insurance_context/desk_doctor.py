@@ -15,6 +15,9 @@ import time
 from pathlib import Path
 
 
+OTHERS = 8  # the other values of one scope filter step 8 tries
+
+
 def _value(kit, layer, metric: str, where: dict) -> tuple[object, str]:
     """(the number, the SQL), or (an Exception, the SQL or "")."""
     sql = ""
@@ -43,6 +46,8 @@ def main(argv=None) -> int:
     ap.add_argument("folder")
     ap.add_argument("metric")
     ap.add_argument("--sql", action="store_true", help="print the SQL of the scoped query")
+    ap.add_argument("--set", action="append", default=[], metavar="COLUMN=VALUE",
+                    help="replace one owner scope value for this run, e.g. --set \"Table[Column]=value\"; may be repeated")
     a = ap.parse_args(argv)
 
     layer = BILayer.load(a.folder)
@@ -50,6 +55,10 @@ def main(argv=None) -> int:
     layer = kit.layer
     dh.install(kit, a.folder)
     h = kit.compute.__self__
+    for x in a.set:
+        c, _, v = x.partition("=")
+        h.defaults[h._column(c.strip())] = int(v) if v.strip().isdigit() else v.strip()
+        print(f"[doctor] owner scope for this run: {h._column(c.strip())} = {v.strip()}", flush=True)
     dh.SESSION.set("doctor")
     dh.QUESTION.set(f"what is {a.metric}")
     failed: list[str] = []
@@ -86,17 +95,13 @@ def main(argv=None) -> int:
         mx = layer.metrics.get(x) or {}
         named |= {mx["table"]} if mx.get("table") else set()
         named |= {a or b for a, b in re.findall(r"'([^']+)'\[|\b([A-Za-z_][\w]*)\[", str(mx.get("dax") or ""))}
-    try:
-        named |= {c.split("[")[0].strip("'") for c in layer.columns_for([key])}  # and the tables its rows join to
-    except Exception:  # noqa: BLE001
-        pass
     mine = sorted(t for t in named if t in layer.tables)
     reach = {catalog(t) for t in mine}
     lines = ", ".join(f"{c}: {len(ts)} tables" for c, ts in sorted(every.items(), key=lambda x: -len(x[1])))
     odd = "" if len(every) < 2 else "; the fewer: " + "; ".join(f"{c}: {', '.join(ts[:8])}" for c, ts in
                                                                  sorted(every.items(), key=lambda x: len(x[1]))[:-1])
     step(1, "its tables are all in one warehouse catalog", len(reach) < 2,
-         f"this measure reads or joins {sorted(reach)} ({len(mine)} tables); the model maps {lines}{odd}")
+         f"this measure reads {sorted(reach)} from {', '.join(mine) or 'no mapped table'}; the model maps {lines}{odd}")
 
     # 2. the owner's scope, with latest read from the warehouse
     t0 = time.monotonic()
@@ -152,6 +157,23 @@ def main(argv=None) -> int:
             step(7, "an earlier as-of with a number", bool(found), f"{col} = {found}" if found else "none of the earlier as-ofs has one")
     elif any(str(x).lower() == "latest" for x in h.defaults.values()):
         step(7, "a period a year before the latest, to compare with", False, "none: a why question cannot compare")
+
+    # 8. the other values of each scope filter: which value would give a number
+    if scope and (isinstance(v, Exception) or v is None):
+        period = asof[0] if asof else None
+        for c in scope:
+            if c == period:
+                continue
+            try:
+                held = [r[0] for r in kit.wh.query(kit._values_sql(c, {}), limit=OTHERS + 1)[1] if r[0] is not None]
+            except Exception as exc:  # noqa: BLE001
+                step(8, f"the other values of {c}", False, f"could not list them: {str(exc)[:200]}")
+                continue
+            tried = [(x, _value(kit, layer, key, {**scope, c: x})[0]) for x in held[:OTHERS] if str(x) != str(scope[c])]
+            good = [f"{x}: {w}" for x, w in tried if not isinstance(w, Exception) and w is not None]
+            step(8, f"{c} set to its other values ({', '.join(str(x) for x, _ in tried) or 'none'})", bool(good),
+                 ("a number with " + "; ".join(good) + f"   <-- {c} = {scope[c]} is the value that empties it") if good
+                 else "none of them gives a number either")
 
     print()
     print("FIRST FAILURE: " + failed[0] if failed else "ALL PASSED: this measure answers under the owner's scope.")
