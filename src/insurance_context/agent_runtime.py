@@ -91,6 +91,23 @@ def _text(content) -> str:
     return "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content or [])
 
 
+def chat_openai(**kw):
+    """ChatOpenAI that every OpenAI-compatible endpoint takes. LangChain sends a turn that only calls tools with
+    `content: null`; OpenAI accepts it, Databricks model serving refuses it (INVALID_PARAMETER_VALUE: content must
+    be a string or a list): it is sent as "" instead, which means the same everywhere."""
+    from langchain_openai import ChatOpenAI
+
+    class Chat(ChatOpenAI):
+        def _get_request_payload(self, input_, *, stop=None, **kwargs):
+            payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+            for m in payload.get("messages") or []:
+                if m.get("content") is None:
+                    m["content"] = ""
+            return payload
+
+    return Chat(**kw)
+
+
 def fit(messages: list, budget: int | None = None, old_result: int | None = None) -> list:
     """What of a session's messages to send the model, so a long conversation never outgrows its context
     (once it has, every later turn fails the same way). The current turn, from the last person's message
@@ -189,7 +206,6 @@ class Orchestrator:
         at construction for this turn (who is asking, what they see)."""
         import httpx
         from langchain_core.messages import HumanMessage
-        from langchain_openai import ChatOpenAI
 
         queue: asyncio.Queue[str | None] = asyncio.Queue()
         agent_id = uuid.uuid4().hex[:12]
@@ -202,7 +218,7 @@ class Orchestrator:
             async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=30)) as http:
                 try:
                     await emit(OrchestratorEvent.agent_status(agent_id, "active", "Analyzing request..."))
-                    model = self._chat_model(http) if self._chat_model else ChatOpenAI(
+                    model = self._chat_model(http) if self._chat_model else chat_openai(
                         model=self._model_name, api_key=self._api_key, base_url=self._base_url,
                         http_async_client=http, max_retries=2)
                     tools = self._tools + [as_tool(f(emit, agent_id)) for f in self._factories]

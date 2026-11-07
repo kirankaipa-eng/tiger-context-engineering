@@ -161,3 +161,13 @@ def test_fitting_leaves_the_kept_history_whole():
     sent = fit(msgs, budget=10_000, old_result=100)
     assert len(sent[2].content) < 300 and len(msgs[2].content) == 5000
     assert fit(msgs, budget=50, old_result=100) == [msgs[-1]]
+
+
+def test_a_turn_that_only_calls_tools_is_sent_as_text_databricks_takes():
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from insurance_context.agent_runtime import chat_openai
+    model = chat_openai(model="m", api_key="k", base_url="http://127.0.0.1:9")
+    sent = model._get_request_payload([HumanMessage("q"), AIMessage("", tool_calls=[{"id": "c1", "name": "t", "args": {}}]),
+                                       ToolMessage("r", tool_call_id="c1")])["messages"]
+    assert [m["content"] for m in sent] == ["q", "", "r"] and sent[1]["tool_calls"]
