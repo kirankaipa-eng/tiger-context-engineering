@@ -157,6 +157,9 @@ _DRIVES = re.compile(r"\b(drivers?|driving|drove|drive|why|behind|caus\w+)\b", r
 _LOOSE = {"primary", "main", "key", "top", "biggest", "major", "drivers", "driver", "driving", "drove", "drive", "why", "behind", "trends", "trend", "cost",
           "costs", "spend", "spending", "increase", "increases", "increased", "rise", "rising", "rose", "change", "changes", "changed", "caused", "causing",
           "cause", "recent", "recently", "up", "down", "over", "time", "s", "has", "have", "been", "going", "gone", "so", "much", "high", "higher"}
+# a measure that holds a period, an id or a caption for other measures to read: never what a business question means
+_PLUMBING = re.compile(r"(^|_)(id|key|flag|sort|index|title|caption|tooltip|header)(_|$)|(day|month|period|year|date)_?id|"
+                       r"(start|end|max|min|last|latest|current|first)_?(date|month|period|day)|selected|slicer", re.IGNORECASE)
 _LEANS = re.compile(r"\b(what about|how about|and|that|those|these|this one|it|same|instead|also|only|just|now|then|them|there|their)\b", re.IGNORECASE)
 _GRAIN_SAID = {"monthly": "month", "mon": "month", "yearly": "year", "annual": "year", "yr": "year", "quarterly": "quarter", "qtr": "quarter",
                "weekly": "week", "daily": "day", "date": "day"}
@@ -441,6 +444,13 @@ class Harness:
         total = lambda k: "total" not in self.layer.metrics[k]["label"].lower()  # the whole before its parts
         return sorted(rates, key=lambda k: (total(k), -daxes.count(f"[{self.layer.metrics[k]['label'].lower()}]"), k))[:HEADLINES]
 
+    def _plumbing(self, key: str) -> bool:
+        return bool(_PLUMBING.search(key) or _PLUMBING.search("_".join(_words(self.layer.metrics[key]["label"]))))
+
+    def _shown_as_number(self, key: str) -> bool:
+        """Money or a percent in the report: what a business reads. A helper rarely has either."""
+        return bool(re.search(r"[$%]", str(self.layer.metrics[key].get("format") or "")))
+
     def rank(self, query: str, n: int = SHOWN) -> list[str]:
         """The metrics a question means, best first: an owner's precedent, then base metrics on the words asked."""
         said = " ".join(_words(query))
@@ -455,7 +465,7 @@ class Harness:
             extra = len([w for w in label if w not in words])
             return s - 0.25 * extra + (1.5 if kind == "base" else 0) + (0.5 if "total" in label else 0)
 
-        pool = [k for k in self.docs if self.idx[k]["kind"] not in ("alias", "legacy") and set(words) & set(self.docs[k])]
+        pool = [k for k in self.docs if self.idx[k]["kind"] not in ("alias", "legacy") and set(words) & set(self.docs[k]) and not self._plumbing(k)]
         if not _ASKS_PRIOR.search(query):
             pool = [k for k in pool if self.idx[k]["kind"] != "prior"]
         # a variant only when the question names what sets it apart from its base
@@ -692,7 +702,9 @@ class Harness:
             try:
                 sql = self.layer.compile([metric], [col], dialect=self.kit.wh.dialect, row_filters=self.kit.row_filters)
                 have = [str(r[0]) for r in self.kit.wh.query(sql, limit=5000)[1] if r[-1] is not None]
-            except Exception:  # noqa: BLE001 - without it a question keeps the period the agent gave
+            except Exception as exc:  # noqa: BLE001 - without it a question keeps the period the agent gave
+                if (t := TRACE.get()) is not None:
+                    _why(t, f"{metric}: no latest month on {col}: {str(exc)[:140]}")
                 return None
             if have:
                 self._latest[col] = max(have)[:7]
@@ -1197,7 +1209,7 @@ class Harness:
             pool = self.rank(" ".join(words) or " ".join(whole), 20) if whole else []
             fits = [k for k in pool if set(words) <= set(_words(self.layer.metrics[k]["label"]))] if words else []
             if fits:
-                metrics.append(max(fits, key=lambda k: (self.idx[k]["kind"] == "base", self._leaned_on(k))))
+                metrics.append(max(fits, key=lambda k: (self.idx[k]["kind"] == "base", self._shown_as_number(k), self._leaned_on(k))))
             elif pool and not every_word:
                 metrics.append(pool[0])
             else:
@@ -1270,6 +1282,8 @@ class Harness:
             # a measure a layer cannot split (one that sets its own period): the number still stands
             steps = {"metrics": steps.get("metrics") or [], "filters": steps.get("filters") or {}}
         out = self.plan([steps])
+        if (t := TRACE.get()) is not None and (out.startswith("Error") or "\nStep 1: Error" in out or "No data matches" in out):
+            _why(t, f"the plan: {out.split(chr(10) * 2)[-1][:160]}")
         return ("" if out.startswith("Error") or "\nStep 1: Error" in out or "No data matches" in out or "Step 1: failed" in out
                 or "Step 1: did not finish" in out else out), "compute"
 
@@ -1336,6 +1350,8 @@ class Harness:
         col = self._date(metric) if metric in self.idx else None
         latest = self._latest_month(metric, col) if col else None
         if not latest:
+            if (t := TRACE.get()) is not None:
+                _why(t, f"{metric}: no date column it reaches" if not col else f"{metric}: {col} has no month with a number")
             return ""
         y, mo = int(latest[:4]), int(latest[5:7])
         before = f"{y - (mo == 1)}-{(mo - 2) % 12 + 1:02d}" if _MONTHS.search(question) else f"{y - 1}-{mo:02d}"

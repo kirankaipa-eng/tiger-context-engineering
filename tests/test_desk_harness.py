@@ -1158,3 +1158,44 @@ def test_every_reason_a_turn_went_to_the_agent_is_kept():
     dh._why(t, "the reading found no form for it")
     dh._why(t, "agent error: GraphRecursionError")
     assert t["why"] == "the reading found no form for it; agent error: GraphRecursionError"
+
+
+HELPERS = {"current_enddayid_pharmacy": m("Current EndDayID Pharmacy", "MAX('Dim_Period'[EndDayID])"),
+           "pharmacy_paid": {**m("Pharmacy Paid", "SUM(Claims[Paid])"), "format": "$#,0"},
+           "pharmacy_scripts": m("Pharmacy Scripts", "COUNTROWS(Claims)"),
+           "rx_a": m("Rx A", "[Current EndDayID Pharmacy] + [Pharmacy Paid]"), "rx_b": m("Rx B", "[Current EndDayID Pharmacy]"),
+           "rx_c": m("Rx C", "[Current EndDayID Pharmacy]"), "selected_plan": m("Selected Pharmacy Plan", "SELECTEDVALUE(Plan[Name])")}
+
+
+@pytest.fixture
+def helpers(tmp_path, monkeypatch):
+    for k, v in HELPERS.items():
+        monkeypatch.setitem(METRICS, k, v)
+    monkeypatch.setattr(dh.bi, "describe", lambda layer, k: "formula")
+    monkeypatch.setattr(dh.bi, "needs", lambda layer, k: "")
+    k = Kit()
+    k.folder = tmp_path
+    dh.install(k, tmp_path)
+    dh.QUESTION.set("")
+    return k.compute.__self__
+
+
+def test_a_measure_other_measures_read_for_a_date_is_never_what_a_question_means(helpers):
+    assert "current_enddayid_pharmacy" not in helpers.rank("pharmacy", 20)
+    assert "selected_plan" not in helpers.rank("pharmacy", 20)
+
+
+def test_of_the_measures_a_word_fits_the_one_shown_as_money_comes_first(helpers):
+    assert helpers.guess("what is driving pharmacy cost")["metrics"] == ["pharmacy_paid"]
+
+
+def test_the_log_says_why_a_layer_could_not_start(kit):
+    h = kit.compute.__self__
+    ask("what is driving total pmpm")
+    t = {"n": 0, "secs": 0.0, "slowest": 0.0, "calls": 0, "start": dh.time.monotonic()}
+    dh.TRACE.set(t)
+    kit.layer.columns_for = lambda metrics: []
+    assert h._why_one("total_pmpm", {}, "q") == ""
+    del kit.layer.columns_for
+    dh.TRACE.set(None)
+    assert t["why"] == "total_pmpm: no date column it reaches"
