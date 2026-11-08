@@ -109,6 +109,8 @@ SAY_SECONDS = 30       # past this the number stands without its sentence
 HEADLINES = 4          # the measures an open question shows, when no owner has said which
 HEADLINE_SECONDS = 20  # past this an open question shows what came back
 _PULSE = re.compile(r"pmpm|\bper\b|ratio|\brate\b", re.IGNORECASE)
+_VERSUS = re.compile(r"\b(highest|lowest|higher|lower|most|least|so high|so low|above|below|stands? out|outlier|worst|best|"
+                     r"more expensive|cheaper|costlier|than (the )?(others|rest|average))\b", re.IGNORECASE)
 _SLICE = re.compile(r"line of business|\blob\b|\bplan\b|product|segment|region", re.IGNORECASE)
 _MONTHS = re.compile(r"\b(month before|previous month|prior month|last month|month over month|mom)\b", re.IGNORECASE)
 _NOT_PLAIN = re.compile(r"\b(quarter|year|ytd|q[1-4])\b", re.IGNORECASE)
@@ -126,7 +128,8 @@ driver contributed: read it with route compute. Cost trend means the per-member 
 question names as a slice: a word that is part of a measure's name is not a filter.
 Leave out what the question does not ask for: a question with no period gets no date filter, and one is applied for you.
 Dates: {"DATE:year": 2025}, {"DATE:quarter": "2026-Q1"}, {"DATE:month": "2026-09"}; several periods compared are a list of values with
-the same column in `by`. "Highest" or "top 3" is `by` with `top` (1 or 3); lowest adds ascending true.
+the same column in `by`. "Highest" or "where is it highest" is `by` that column with `order_by` and no `top`: every value is ranked, and the
+answer names the first. "Top 3" is `top` 3. Lowest adds ascending true. A question that also asks how it moved adds the year to `by`.
 A follow-up ("what about X", "and by plan", "that one") starts from the previous form and changes only what it says. A question complete in
 itself starts from nothing: no metric, column or filter of the previous form comes with it.
 
@@ -135,7 +138,8 @@ _SAY = """Write the answer to the question from the results, for a business read
 add what it means: one or two plain sentences, at most three numbers, all taken from the results. Say the period, with months as
 people say them (September 2026). A ratio or rate reads as a percent. Say which metric a result is if the question was loose.
 With several measures, say what stands out most. "Already known" is what this conversation found earlier: use it to connect or compare, and
-say which period a number from it is for.
+say which period a number from it is for. Never write "as already known", "as noted" or "as found earlier": say the finding itself.
+Lead with the measure the question asks about; the others come after it, as what explains it.
 Plain sentences only: no headings, lists or bold. No metric keys, formulas, SQL or data source. Add no cause the results do not show.
 """ + insurance.SAY
 EXPLAIN_SECONDS = 60   # one layer of "why": what it has found by then is the answer, and the next layer is the user's to ask for
@@ -1690,6 +1694,10 @@ class Harness:
         form = self._carried(form, question)
         steps = {k: form[k] for k in ("metrics", "by", "filters", "top", "order_by", "ascending") if form.get(k) not in (None, [], {}, "")}
         steps["metrics"] = list(dict.fromkeys([*self._named(question), *(steps.get("metrics") or [])]))
+        if steps.get("top") == 1 and steps.get("by"):
+            # "the highest" is read from the whole ranking: the page draws every value, the first among them, from the same rows
+            steps.pop("top")
+            steps.setdefault("order_by", steps["metrics"][0] if steps["metrics"] else None)
         if form.get("route") == "overview":
             return self.overview(form, question), "compute"
         if form.get("route") == "known":
@@ -1697,6 +1705,8 @@ class Harness:
         if form.get("route") == "layer":
             return self.peel(form), "explain"
         if form.get("route") == "explain":
+            if _VERSUS.search(question) and (out := self._versus_everyone(steps)):
+                return out, "explain"
             if out := self._why(steps, question):
                 return out, "explain"
             # a measure a layer cannot split (one that sets its own period): the number still stands
@@ -1755,6 +1765,83 @@ class Harness:
             or next(iter(sorted(cols, key=lambda c: len(self.values[c]) < 3)), None)
         by = f"{name} by {cut.split('[')[-1].split(']')[0].lower()}" if cut else f"the trend in {name}"
         return table, f"\n\nWould you like {by} or what drove {name}?"
+
+    def _versus_everyone(self, steps: dict) -> str:
+        """Why one value stands out ("why is IL the highest?"): it against everyone, in the same period, not against its own past.
+        A PMPM is read by service category, each with its utilization and unit cost. Both the one value and the ranking of every
+        value are kept as results, so the page draws the numbers the answer states. "" when the question pins no one value."""
+        asked = [_root(self.idx, k) for k in steps.get("metrics") or [] if k in self.idx]
+        given = steps.get("filters") or {}
+        pinned = [(c, v) for c, v in given.items() if self._kind(c) != "dateTime" and ":" not in c and isinstance(v, (str, int, float))]
+        if not asked or len(pinned) != 1:
+            return ""
+        col, val = pinned[0]
+        metric = asked[0]
+        plan = insurance.plan(self.catalog, metric)
+        keys = insurance.keys(plan) if plan else list(dict.fromkeys(asked))[:PLAN_STEPS]
+        # one level further: the categories under each part (inpatient, outpatient... under medical), asked in the same queries
+        under = {x["pmpm"]: q for x in (plan or {}).get("parts", []) if (q := insurance.plan(self.catalog, x["pmpm"])) and q["parts"]}
+        keys = list(dict.fromkeys([*keys, *(k for q in under.values() for k in insurance.keys(q))]))
+        rest = {c: v for c, v in given.items() if c != col}
+        when = ""
+        if not self._asof() and not any(":" in c or self._kind(c) == "dateTime" for c in rest):
+            date = self._date(metric)
+            latest = self._latest_month(metric, date) if date else None
+            if latest:
+                rest[f"{date.split(':')[0]}:year"] = int(latest[:4])
+                when = f"in {latest[:4]}" + (" so far" if latest[5:7] != "12" else "")
+        _step("against", f"{metric}: {col} = {val}", f"{len(keys)} measures, {when or 'the owner scope period'}")
+        everyone = self.compute(keys, None, dict(rest))
+        if everyone.startswith("Error"):
+            return ""
+        last = self.kit.last
+        all_ = dict(zip(last.get("columns") or [], (last.get("shown") or [[]])[0])) if last.get("shown") else {}
+        ranked = self.compute(keys, [col], dict(rest), None, metric)  # last: the page draws the ranking, the value among the others
+        if ranked.startswith("Error"):
+            return ""
+        last = self.kit.last
+        cols = last.get("columns") or []
+        mine = next((dict(zip(cols, r)) for r in last.get("shown") or [] if str(r[cols.index(col)]).lower() == str(val).lower()), None)
+        if not mine or not isinstance(mine.get(metric), (int, float)):
+            return ""
+        label = lambda k: _nice(self.layer.metrics[k]["label"])
+        place = [r[cols.index(col)] for r in last.get("shown") or []]
+        rank = next((i for i, x in enumerate(place, 1) if str(x).lower() == str(val).lower()), None)
+        a, b = mine.get(metric), all_.get(metric)
+        head = (f"{label(metric)} for {col.split('[')[-1].rstrip(']')} {val}: {self._show(metric, a)}"
+                + (f" against {self._show(metric, b)} for everyone, {insurance._pct(a, b):+.1f}%" if insurance._pct(a, b) is not None else "")
+                + (f", {when}" if when else "") + (f"; {rank} of {len(place)}" if rank else "") + ".")
+        lines = [head]
+        if plan:
+            gaps = sorted(((mine.get(x["pmpm"]) - all_.get(x["pmpm"]), x) for x in plan["parts"]
+                           if isinstance(mine.get(x["pmpm"]), (int, float)) and isinstance(all_.get(x["pmpm"]), (int, float))),
+                          key=lambda g: -abs(g[0]))
+            if gaps:
+                lines.append(f"By service category, {val} against everyone: " + "; ".join(
+                    f"{label(x['pmpm'])} {self._show(x['pmpm'], mine[x['pmpm']])} against {self._show(x['pmpm'], all_[x['pmpm']])}"
+                    f"{insurance._drivers(x, mine, all_, label)}" for _, x in gaps) + ".")
+                d, top = gaps[0]
+                why = insurance.lean(top, mine, all_)
+                lines.append(f"The largest gap is {label(top['pmpm'])}" + (f", more from {why}" if why else "") + ".")
+                if q := under.get(top["pmpm"]):
+                    sub = sorted(((mine.get(x["pmpm"]) - all_.get(x["pmpm"]), x) for x in q["parts"]
+                                  if isinstance(mine.get(x["pmpm"]), (int, float)) and isinstance(all_.get(x["pmpm"]), (int, float))),
+                                 key=lambda g: -abs(g[0]))
+                    if sub:
+                        lines.append(f"Within {label(top['pmpm'])}: " + "; ".join(
+                            f"{label(x['pmpm'])} {self._show(x['pmpm'], mine[x['pmpm']])} against {self._show(x['pmpm'], all_[x['pmpm']])}"
+                            f"{insurance._drivers(x, mine, all_, label)}" for _, x in sub) + ".")
+                        why = insurance.lean(sub[0][1], mine, all_)
+                        lines.append(f"Most of it is {label(sub[0][1]['pmpm'])}" + (f", more from {why}" if why else "") + ".")
+            elif why := insurance.lean(plan["head"], mine, all_):
+                lines.append(f"The gap is more from {why}.")
+        else:
+            for k in keys[1:]:
+                if isinstance(mine.get(k), (int, float)) and isinstance(all_.get(k), (int, float)):
+                    lines.append(f"{label(k)}: {self._show(k, mine[k])} against {self._show(k, all_[k])} for everyone.")
+        lines.append(f"This compares {val} with everyone in the same period, not with its own past: say why it stands out from these gaps, "
+                     "and name the largest.")
+        return "\n".join(lines)
 
     def _why(self, steps: dict, question: str) -> str:
         """What is driving each measure the question names, together. One that cannot be looked into is said, and the others
