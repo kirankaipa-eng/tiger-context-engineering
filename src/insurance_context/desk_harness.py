@@ -130,6 +130,8 @@ Leave out what the question does not ask for: a question with no period gets no 
 Dates: {"DATE:year": 2025}, {"DATE:quarter": "2026-Q1"}, {"DATE:month": "2026-09"}; several periods compared are a list of values with
 the same column in `by`. "Highest" or "where is it highest" is `by` that column with `order_by` and no `top`: every value is ranked, and the
 answer names the first. "Where" asks by place (a state, region or county column) unless the question names another column. "Top 3" is `top` 3. Lowest adds ascending true. A question that also asks how it moved adds the year to `by`.
+A reply to "The last answer offered" that takes one of its choices ("sure", "the second", "do the Rx one") is {"route": "choice",
+"pick": its number}; when it agrees but more than one choice fits, {"route": "choice", "pick": 0}, and the user is asked which.
 A follow-up ("what about X", "and by plan", "that one") starts from the previous form and changes only what it says. A question complete in
 itself starts from nothing: no metric, column or filter of the previous form comes with it.
 
@@ -910,8 +912,25 @@ class Harness:
     def layer_offer(self) -> str:
         """What the next layer would be, to ask for with a click."""
         peel = self.ledger.get(SESSION.get(), {}).get("peel") or {}
-        asks = [f"what is driving {_nice(self.layer.metrics[p['metric']]['label'])} in {p['lead'][1]}" for p in peel.values() if p.get("lead")]
+        leads = [p for p in peel.values() if p.get("lead")]
+        asks = [f"what is driving {_nice(self.layer.metrics[p['metric']]['label'])} in {p['lead'][1]}" for p in leads]
+        self._offer([(a, {"route": "layer", "metrics": [p["metric"]], "peel": [p]}) for a, p in zip(asks, leads)][:WHY_METRICS])
         return f"\n\nWould you like {' or '.join(asks[:WHY_METRICS])}?" if asks else ""
+
+    def _offer(self, choices: list[tuple[str, dict]]) -> None:
+        """The choices an answer ends by offering, each with the form it runs: the next reply is read against them."""
+        if choices:
+            self.ledger.setdefault(SESSION.get(), {})["offer"] = choices
+
+    def choose(self, form: dict, choices: list[tuple[str, dict]]) -> dict | str:
+        """A reply the reading took as a pick of the offer: that choice's form, or, when it did not say which, the question
+        back with the choices to click."""
+        pick = form.get("pick")
+        if isinstance(pick, int) and 1 <= pick <= len(choices):
+            _step("offer", f"choice {pick} of {len(choices)}", choices[pick - 1][0])
+            return choices[pick - 1][1]
+        _step("offer", f"which of {len(choices)}", "asked back")
+        return "Which one?\n\nWould you like " + " or ".join(c for c, _ in choices) + "?"
 
     def _date(self, metric: str) -> str | None:
         cols = [c for c in self.layer.columns_for([metric]) if self.kit._type(c) == "dateTime"]
@@ -1625,6 +1644,8 @@ class Harness:
         if cuts:
             lines.append(f"**Ways to cut them:** {', '.join(dict.fromkeys(cuts[:6]))}")
         asks = ["how is the business doing", *([f"what is driving {names[0]}"] if names else [])]
+        self._offer([("how is the business doing", {"route": "overview", "metrics": []}),
+                     *([(asks[1], {"route": "explain", "metrics": [self.headline[0]]})] if names else [])])
         return "\n\n".join(lines) + f"\n\nWould you like {' or '.join(asks)}?"
 
     def read_why(self, question: str) -> dict | None:
@@ -1672,7 +1693,7 @@ class Harness:
         _step("grid", f"{key} by {col}", "yes")
         return f"{key} can be cut by {col}. Run it with compute; the SQL it runs:\n{sql[:3000]}\n\n{said}"
 
-    def form_for(self, question: str, session: str) -> list:
+    def form_for(self, question: str, session: str, offer: list | None = None) -> list:
         """What one small call is given: the shortlist, what it can be cut by, the last form, and nothing else."""
         led = self.ledger.get(session, {})
         last = led.get("form") or {}
@@ -1691,6 +1712,7 @@ class Harness:
         ask = (f"Measures:\n{measures}\n\nColumns:\n" + "\n".join(shown) + f"\n\nDate column: {date}{scope}"
                + (f"\n\nPrevious question: {led['said'][-1][0]}\nPrevious form: {json.dumps(last)}" if last and led.get("said") else "")
                + (f"\n\nAlready known:\n{known}" if (known := self.known(900)) else "")
+               + ("\n\nThe last answer offered:\n" + "\n".join(f"{i}. {c}" for i, (c, _) in enumerate(offer, 1)) if offer else "")
                + f"\n\nQuestion: {question}")
         return [("system", _READ.replace("DATE", date)), ("human", ask)]
 
@@ -1805,6 +1827,8 @@ class Harness:
         cut = next((c for c in self.drivers if c in cols), None) or next((c for c in self.layer.columns_for([lead]) if _SLICE.search(c)), None) \
             or next(iter(sorted(cols, key=lambda c: len(self.values[c]) < 3)), None)
         by = f"{name} by {cut.split('[')[-1].split(']')[0].lower()}" if cut else f"the trend in {name}"
+        self._offer([*([(by, {"route": "compute", "metrics": [lead], "by": [cut or form["col"]]})] if cut or form.get("col") else []),
+                     (f"what drove {name}", {"route": "explain", "metrics": [lead]})])
         return table, f"\n\nWould you like {by} or what drove {name}?"
 
     def _versus_everyone(self, steps: dict) -> str:
@@ -2182,8 +2206,8 @@ def install(kit, folder=None):
                 from langchain_openai import ChatOpenAI as make
             return make(model=orch._model_name, api_key=orch._api_key, base_url=orch._base_url, http_async_client=http, max_retries=1)
 
-        async def ask_form(model, message, session_id) -> dict | None:
-            sent = h.form_for(message, session_id)
+        async def ask_form(model, message, session_id, offer=None) -> dict | None:
+            sent = h.form_for(message, session_id, offer)
             if not sent:
                 return None
             began = time.monotonic()
@@ -2202,7 +2226,7 @@ def install(kit, folder=None):
             _step("model", "read the question", f"{time.monotonic() - began:.1f}s")
             found = re.search(r"\{.*\}", _text(reply.content), re.DOTALL)
             form = json.loads(found.group()) if found else {}
-            return form if form.get("route") in ("overview", "known") or (form.get("route") in ("compute", "explain") and form.get("metrics")) else None
+            return form if form.get("route") in ("overview", "known") or (form.get("route") == "choice" and offer) or (form.get("route") in ("compute", "explain") and form.get("metrics")) else None
 
         async def direct(message, session_id, t):
             """The four steps. Yields lines; sets t["answered"] once the question is settled. Before that, any failure
@@ -2219,7 +2243,10 @@ def install(kit, folder=None):
                 said_as = " ".join(_words(message))
                 again = led.get("asked", {}).get(said_as)  # this very question, in this conversation
                 opening = not led.get("form")  # a first question leans on nothing, so its reading holds for anyone who asks it
-                if again:
+                offer = led.pop("offer", None)  # what the last answer offered: this reply is read against it, once
+                if offer:
+                    pass  # the reply may only make sense against the offer: the model reads it, below
+                elif again:
                     t["read"] = "map"
                     tried.append(again["form"])
                 elif opening and said_as in h.reads:
@@ -2228,17 +2255,26 @@ def install(kit, folder=None):
                 elif form := h.next_layer(message) or h.read(message):  # every word accounted for: nothing to choose
                     t["read"] = "code"
                     tried.append(form)
-                else:
+                if not tried:
                     if "@" in message:
                         t["why"] = "it names someone"
                         return
                     try:
-                        form = await ask_form(model, message, session_id)
+                        form = await ask_form(model, message, session_id, offer)
                         t["read"] = "model"
                     except Exception as exc:  # noqa: BLE001 - a model that stalls costs the words, never the answer
                         print(f"[desk] the model did not read it ({type(exc).__name__}): reading it in code", file=sys.stderr, flush=True)
-                        form = h.guess(message)
+                        form = {"route": "choice", "pick": 0} if offer else h.guess(message)
                         t.update(read="code", stalled=True, why=f"{type(exc).__name__} reading it")
+                    if form and form.get("route") == "choice":
+                        picked = h.choose(form, offer or [])
+                        if isinstance(picked, str):  # it agreed, but not to which: asked back, the offer still standing
+                            led["offer"] = offer
+                            yield json.dumps({"type": "chunk", "data": {"text": picked}}) + "\n"
+                            yield Event("result", {"type": "analysis", "answer": picked}).line() + "\n"
+                            t["answered"] = True
+                            return
+                        form = picked
                     if form:
                         tried.append(form)
                     else:

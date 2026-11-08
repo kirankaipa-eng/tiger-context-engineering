@@ -1676,3 +1676,34 @@ def test_a_month_column_written_as_text_is_matched_by_the_month_it_means(kit):
     assert h._on("Dim[AsOf]", "2026-08", dh._when("2026-08"), notes) == "Aug 2026"
     with pytest.raises(dh.bi.LayerError, match="runs from Apr 2025 to Sep 2026"):
         h._on("Dim[AsOf]", "2027-01", dh._when("2027-01"), notes)
+
+
+def _offered(h, session="s"):
+    h.ledger.setdefault(session, {})["offer"] = [
+        ("what is driving Total PMPM in Commercial", {"route": "compute", "metrics": ["total_pmpm"]}),
+        ("what is driving Medical PMPM in Commercial", {"route": "compute", "metrics": ["medical_pmpm"]})]
+
+
+def test_a_reply_to_an_offer_is_read_by_the_model_against_its_choices(kit):
+    h = kit.compute.__self__
+    _offered(h)
+    model = Model('{"route": "choice", "pick": 2}')
+    lines, orch = told(kit, model, "sure, the second")
+    assert model.asked == 1 and orch.seen == [] and kit.calls[-1][0] == ["medical_pmpm"]
+    assert "offer" not in h.ledger["s"]  # an offer is answered once
+
+
+def test_a_yes_to_several_choices_is_asked_back_with_them(kit):
+    h = kit.compute.__self__
+    _offered(h)
+    lines, orch = told(kit, Model('{"route": "choice", "pick": 0}'), "sure")
+    answer = lines[-1]["data"]["answer"]
+    assert answer.startswith("Which one?") and "Would you like what is driving Total PMPM" in answer and " or " in answer
+    assert orch.seen == [] and kit.calls == [] and h.ledger["s"]["offer"]  # still standing for the reply that says which
+
+
+def test_the_reading_is_shown_the_offer(kit):
+    h = kit.compute.__self__
+    _offered(h)
+    sent = h.form_for("sure", "s", h.ledger["s"]["offer"])
+    assert "The last answer offered:\n1. what is driving Total PMPM in Commercial\n2." in sent[1][1]
