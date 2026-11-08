@@ -164,7 +164,7 @@ const OFFER = /^(?:would you like|do you want|want me to|shall i|should i|i can 
 function offersOf(answer: string): { body: string; offers: string[] } {
   const paras = answer.trim().split(/\n+/), last = paras.at(-1)?.trim() ?? "", m = last.match(OFFER);
   if (!m || paras.length < 2) return { body: answer, offers: [] };
-  const offers = m[1].split(/,\s*(?:or\s+)?|\s+or\s+/).map((x) => x.replace(/^(a|an|the)\s+/i, "").replace(/[.?]$/, "").trim()).filter((x) => x.length > 3);
+  const offers = m[1].split(/,(?!\d)\s*(?:or\s+)?|\s+or\s+/).map((x) => x.replace(/^(a|an|the)\s+/i, "").replace(/[.?]$/, "").trim()).filter((x) => x.length > 3);
   // what comes before the offer stays exactly as written: a table in it is lines that belong together
   const text = answer.trimEnd();
   return offers.length ? { body: text.slice(0, text.lastIndexOf("\n")).trimEnd(), offers: offers.slice(0, 3) } : { body: answer, offers: [] };

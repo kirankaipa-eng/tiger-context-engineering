@@ -1698,7 +1698,7 @@ def test_a_yes_to_several_choices_is_asked_back_with_them(kit):
     _offered(h)
     lines, orch = told(kit, Model('{"route": "choice", "pick": 0}'), "sure")
     answer = lines[-1]["data"]["answer"]
-    assert answer.startswith("Which one?") and "Would you like what is driving Total PMPM" in answer and " or " in answer
+    assert lines[-1]["data"]["type"] == "chat" and answer.startswith("Which one?") and "Would you like what is driving Total PMPM" in answer and " or " in answer
     assert orch.seen == [] and kit.calls == [] and h.ledger["s"]["offer"]  # still standing for the reply that says which
 
 

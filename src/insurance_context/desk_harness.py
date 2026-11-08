@@ -2271,7 +2271,7 @@ def install(kit, folder=None):
                         if isinstance(picked, str):  # it agreed, but not to which: asked back, the offer still standing
                             led["offer"] = offer
                             yield json.dumps({"type": "chunk", "data": {"text": picked}}) + "\n"
-                            yield Event("result", {"type": "analysis", "answer": picked}).line() + "\n"
+                            yield json.dumps({"type": "result", "data": {"type": "chat", "answer": picked}}) + "\n"  # a question back draws no chart
                             t["answered"] = True
                             return
                         form = picked
