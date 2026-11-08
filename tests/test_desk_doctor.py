@@ -58,3 +58,20 @@ def test_set_replaces_a_scope_value_for_one_run(model, capsys):
     line = re.search(r"a number with ([^:]+):", capsys.readouterr().out).group(1)
     assert desk_doctor.main([str(model), "medical_pmpm", "--set", f"Member[Line of Business]={line}"]) == 0
     assert "ALL PASSED" in capsys.readouterr().out
+
+
+def test_every_measure_is_run_and_summed_up(model, capsys):
+    import json
+
+    (model / "analysis_default.yaml").write_text("filters:\n  Member[Line of Business]: Nowhere\n")
+    desk_doctor.main([str(model), "-", "--all", "--workers", "2"])
+    out = capsys.readouterr().out
+    got = json.loads((model / "doctor.json").read_text())
+    assert got and all(e["result"] in ("answers", "empty", "refused") for e in got.values())
+    assert "captured measures under the owner's scope" in out and "refused, by reason" in out
+    assert not any("value" in e for e in got.values())  # what happened to each, never a number
+
+
+def test_the_tables_its_sql_reads_are_named(model, capsys):
+    desk_doctor.main([str(model), "medical_pmpm"])
+    assert "the tables its SQL reads are in one catalog" in capsys.readouterr().out
