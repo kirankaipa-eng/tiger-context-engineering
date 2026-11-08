@@ -99,6 +99,18 @@ const stated = (t: string) => [...t.replace(/\b(19|20)\d{2}(-\d{2})?\b|\bQ[1-4]\
   });
 const close = (a: number, b: number) => Math.abs(a - b) <= Math.max(Math.abs(b) * 0.006, Math.abs(b) >= 10 && Number.isInteger(a) ? 0.51 : 0.051);
 
+/** A result of two periods (before and after) also states each measure's change between them, in percent: a "why did it
+    change" answer quotes those (+32.5%), so they count as its numbers. */
+const changes = (r: ExhibitData, only?: string) => {
+  if (r.rows.length !== 2 || r.by.length !== 1 || !PERIOD.test(r.by[0])) return [];
+  const at = r.columns.indexOf(r.by[0]);
+  const [a, b] = [...r.rows].sort((x, y) => String(x[at]).localeCompare(String(y[at])));
+  return (only ? [only] : r.metrics).flatMap((m) => {
+    const i = r.columns.indexOf(m), x = Number(a[i]), y = Number(b[i]);
+    return Number.isFinite(x) && Number.isFinite(y) && x ? [(y / x - 1) * 100] : [];
+  });
+};
+
 /** The answer's picture: of the agent's results, the one whose numbers the answer states most, drawn by its shape
     (two values of a column, two periods most often, as a slope; several measures alone as bars; one column as a
     ranking or, over time, a line). None when the answer states none of its numbers. */
@@ -108,7 +120,7 @@ function pictureOf(results: ExhibitData[], answer: string): Picture | undefined 
   for (const r of results) {
     // a breakdown of one row (the agent asked for the top one) shows nothing to compare: the full chart stands in
     if (r.kind !== "compute" || !r.metrics.length || !r.rows.length || (r.by.length && r.rows.length < 2)) continue;
-    const cells = r.rows.flatMap((row) => r.metrics.map((m) => Number(row[r.columns.indexOf(m)])).filter(Number.isFinite));
+    const cells = [...r.rows.flatMap((row) => r.metrics.map((m) => Number(row[r.columns.indexOf(m)])).filter(Number.isFinite)), ...changes(r)];
     const hits = said_.filter((x) => cells.some((c) => close(x, c))).length;
     if (hits >= score && hits > 0) { best = r; score = hits; }
   }
@@ -119,7 +131,8 @@ function pictureOf(results: ExhibitData[], answer: string): Picture | undefined 
     const xs = best!.rows.map((row) => Math.abs(Number(row[best!.columns.indexOf(m)]))).filter((x) => Number.isFinite(x) && x > 0).sort((a, b) => a - b);
     return xs[Math.floor(xs.length / 2)] ?? 0;
   };
-  const hitsOf = (m: string) => said_.filter((x) => best!.rows.some((row) => close(x, Number(row[best!.columns.indexOf(m)])))).length;
+  const hitsOf = (m: string) => said_.filter((x) => best!.rows.some((row) => close(x, Number(row[best!.columns.indexOf(m)])))
+    || changes(best!, m).some((c) => close(x, c))).length;
   const leadM = [...best.metrics].sort((a, b) => hitsOf(b) - hitsOf(a))[0];
   const metrics = best.metrics.filter((m) => m === leadM || (size(m) && size(leadM) && Math.max(size(m), size(leadM)) / Math.min(size(m), size(leadM)) <= 20));
   // a result over every month, an answer about some of them ("from September 2025 to September 2026"): the

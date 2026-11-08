@@ -872,7 +872,7 @@ def test_the_same_refusal_twice_ends_the_trying(tmp_path, monkeypatch):
 
 def test_what_is_driving_looks_into_each_measure_named_and_says_which_it_could_not(kit, monkeypatch):
     h = kit.compute.__self__
-    monkeypatch.setattr(h, "_why_one", lambda k, steps, q: f"found {k}" if k == "medical_pmpm" else "")
+    monkeypatch.setattr(h, "_why_one", lambda k, steps, q, c=None: f"found {k}" if k == "medical_pmpm" else "")
     out = h._why({"metrics": ["medical_pmpm", "total_pmpm"]}, "what drives medical and total")
     assert "found medical_pmpm" in out and "Could not be looked into: Total PMPM." in out
     assert h._why({"metrics": ["total_pmpm"]}, "q") == ""  # nothing found: the agent takes it
@@ -1661,7 +1661,7 @@ def test_a_why_that_finds_no_number_anywhere_is_handed_to_the_agent_with_what_wa
     t = {"n": 0, "secs": 0.0, "slowest": 0.0, "calls": 0, "start": dh.time.monotonic(),
          "steps": [(0.1, "control", "total_pmpm without Period[Range]", 412.0)]}
     dh.TRACE.set(t)
-    keyed._why_one = lambda k, steps, q: "Total PMPM: no data in this scope."
+    keyed._why_one = lambda k, steps, q, c=None: "Total PMPM: no data in this scope."
     assert keyed._why({"metrics": ["total_pmpm"]}, "q") == ""
     assert "no data in this scope" in t["tried"] and "without Period[Range]: 412.0" in t["tried"]
 

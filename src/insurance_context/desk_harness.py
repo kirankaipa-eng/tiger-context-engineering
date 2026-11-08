@@ -129,7 +129,7 @@ question names as a slice: a word that is part of a measure's name is not a filt
 Leave out what the question does not ask for: a question with no period gets no date filter, and one is applied for you.
 Dates: {"DATE:year": 2025}, {"DATE:quarter": "2026-Q1"}, {"DATE:month": "2026-09"}; several periods compared are a list of values with
 the same column in `by`. "Highest" or "where is it highest" is `by` that column with `order_by` and no `top`: every value is ranked, and the
-answer names the first. "Top 3" is `top` 3. Lowest adds ascending true. A question that also asks how it moved adds the year to `by`.
+answer names the first. "Where" asks by place (a state, region or county column) unless the question names another column. "Top 3" is `top` 3. Lowest adds ascending true. A question that also asks how it moved adds the year to `by`.
 A follow-up ("what about X", "and by plan", "that one") starts from the previous form and changes only what it says. A question complete in
 itself starts from nothing: no metric, column or filter of the previous form comes with it.
 
@@ -142,6 +142,8 @@ say which period a number from it is for. Never write "as already known", "as no
 Lead with the measure the question asks about; the others come after it, as what explains it.
 Plain sentences only: no headings, lists or bold. No metric keys, formulas, SQL or data source. Add no cause the results do not show.
 """ + insurance.SAY
+READ_STEADY = [True]   # the read asks for temperature 0 until a model refuses it
+HEADLINES = 3          # the lines over a "why" answer: the measure asked about first, then what explains it
 EXPLAIN_SECONDS = 60   # one layer of "why": what it has found by then is the answer, and the next layer is the user's to ask for
 EXPLAIN_QUERIES = 12   # queries a layer may run after the ones it fetches together, to test what it found
 TRACE_CHARS = 240      # of one input or output, in the trace of a question
@@ -883,7 +885,10 @@ class Harness:
     def layer_line(self, seen: int) -> str:
         """Where each measure moved and what leads it, as soon as the layer is back: ahead of the sentence."""
         lines = []
-        for r in self._mine(seen):
+        asked = self.ledger.get(SESSION.get(), {}).get("asked") or []
+        place = lambda r: asked.index(r["explain"].get("metric")) if r["explain"].get("metric") in asked else len(asked)
+        found = sorted((r for r in self._mine(seen) if r.get("explain")), key=place)  # the measure asked about leads
+        for r in found[:HEADLINES]:
             e = r.get("explain")
             if not e or not e.get("total_before"):
                 continue
@@ -1689,11 +1694,39 @@ class Harness:
                + f"\n\nQuestion: {question}")
         return [("system", _READ.replace("DATE", date)), ("human", ask)]
 
+    def _tidy(self, form: dict) -> dict:
+        """A read put right where its shape slipped: a filter written inside `by` ({"Calendar[Date]:year": 2025}) is a filter,
+        a lone value where a list is meant is that list. The same question then runs the same way however it was written."""
+        # in place: the caller reads what the run adds to the form (the overview's periods)
+        by, filters = [], dict(form.get("filters") or {})
+        for x in form.get("by") or []:
+            if isinstance(x, dict):
+                filters.update(x)
+            elif isinstance(x, str) and x not in by:
+                by.append(x)
+        if "by" in form:
+            form["by"] = by
+        if filters or "filters" in form:
+            form["filters"] = filters
+        if isinstance(form.get("metrics"), str):
+            form["metrics"] = [form["metrics"]]
+        # the catalog lists each measure as role:key; a read that copied the role means the key
+        bare = lambda k: k.split(":", 1)[1] if isinstance(k, str) and ":" in k and k.split(":", 1)[1] in self.layer.metrics else k
+        if "metrics" in form:
+            form["metrics"] = [bare(k) for k in form.get("metrics") or []]
+        if form.get("order_by"):
+            form["order_by"] = bare(form["order_by"])
+        return form
+
     def run(self, form: dict, question: str) -> tuple[str, str]:
         """Steps 2 and 3: (the results, or "" when the agent should take it, and which tool ran)."""
+        form = self._tidy(form)
         form = self._carried(form, question)
         steps = {k: form[k] for k in ("metrics", "by", "filters", "top", "order_by", "ascending") if form.get(k) not in (None, [], {}, "")}
         steps["metrics"] = list(dict.fromkeys([*self._named(question), *(steps.get("metrics") or [])]))
+        over_time = any(":" in c or self._kind(c) == "dateTime" for c in steps.get("by") or [])
+        if over_time and (base := [k for k in steps["metrics"] if k not in self.idx or not self._is_change(k)]):
+            steps["metrics"] = base  # over periods the change is in the rows: a change measure beside them only fails the query
         if steps.get("top") == 1 and steps.get("by"):
             # "the highest" is read from the whole ranking: the page draws every value, the first among them, from the same rows
             steps.pop("top")
@@ -1712,6 +1745,14 @@ class Harness:
             # a measure a layer cannot split (one that sets its own period): the number still stands
             steps = {"metrics": steps.get("metrics") or [], "filters": steps.get("filters") or {}}
         out = self.plan([steps])
+        base = [k for k in steps.get("metrics") or [] if k not in self.idx or (self.idx[k].get("kind") != "prior" and not self._is_change(k))]
+        if out.startswith("Error: the plan was not run") and base and base != steps.get("metrics"):
+            # a prior or change version the read added refused the whole plan: the measure itself still answers, its periods
+            # show the change
+            _step("read", "without the change measures", base)
+            if (t := TRACE.get()) is not None:
+                t.pop("plans", None)
+            out = self.plan([{**steps, "metrics": base, **({"order_by": base[0]} if steps.get("order_by") not in base else {})}])
         if (t := TRACE.get()) is not None and (out.startswith("Error") or "\nStep 1: Error" in out or "No data matches" in out):
             _why(t, f"the plan: {out.split(chr(10) * 2)[-1][:160]}")
         return ("" if out.startswith("Error") or "\nStep 1: Error" in out or "No data matches" in out or "Step 1: failed" in out
@@ -1849,20 +1890,37 @@ class Harness:
         asked = [_root(self.idx, k) for k in steps.get("metrics") or [""]]
         keys = list(dict.fromkeys(c for k in asked if (c := self._changing(k) if k in self.idx else k)))[:WHY_METRICS]
         _step("why", asked, keys)
+        self.ledger.setdefault(SESSION.get(), {})["asked"] = list(dict.fromkeys([*asked, *keys]))
         if not keys:
             return ""  # only change measures, with nothing they read to look into: their value still stands
         self.ledger.setdefault(SESSION.get(), {})["peel"] = {}  # a new question starts from the top
-        found = dict(zip(keys, self._together([functools.partial(self._why_one, k, steps, question) for k in keys])))
+        compared: dict[str, tuple] = {}  # each measure's two periods, as its layer read them
+        found = dict(zip(keys, self._together([functools.partial(self._why_one, k, steps, question, compared) for k in keys])))
         said = [out for out in found.values() if out]
         if said and all(_EMPTY.search(x) for x in said) and (t := TRACE.get()) is not None:
             # no number at all is no answer: the agent takes the question, told what was tried and what the checks showed
             checks = [f"{given}: {got}" for _, node, given, got in t.get("steps", []) if node == "control"]
             t["tried"] = "\n".join(said + checks)
             return ""
+        self._picture_periods(keys, compared)
         missed = [self.layer.metrics[k]["label"] for k, out in found.items() if not out and k in self.layer.metrics]
         return "\n\n".join(said + [f"Could not be looked into: {', '.join(missed)}."] * bool(said and missed))
 
-    def _why_one(self, metric: str, steps: dict, question: str) -> str:
+    def _picture_periods(self, keys: list[str], compared: dict) -> None:
+        """The numbers a "why did it change" answer states, kept last for the page: the measures asked, in the two periods
+        their layers compared, from one query. The page draws these, not a picture of its own guessing."""
+        lead = next((k for k in keys if k in compared), None)
+        if not lead:
+            return
+        col, before, now, filters = compared[lead]
+        same = [k for k in keys if compared.get(k, (None,))[0:3] == (col, before, now) and compared[k][3] == filters]
+        try:
+            self.compute(same, [col], {**filters, col: [before, now]})
+        except Exception as exc:  # noqa: BLE001 - the answer stands without its picture
+            _step("picture", same, f"failed: {str(exc)[:160]}")
+
+    def _why_one(self, metric: str, steps: dict, question: str, compared: dict | None = None) -> str:
+        compared = {} if compared is None else compared
         asof = self._asof()
         if not asof and any(str(v).lower() == "latest" for v in self.defaults.values()):
             return ""  # months are not what the owner's scope compares: the log has said why
@@ -1889,6 +1947,7 @@ class Harness:
                 return moved + self._alone(metric, filters, {col: latest})
             before = str(before)
             trend, have = self._trend(metric, col, latest, before, filters)
+        compared[metric] = (col, str(before), str(latest), filters)
         out = self.explain(metric, col, latest, before, filters, pinned=bool(asof))
         if "Nothing changed" in out and re.match(r"[^\n]*: 0 in \S+, 0 in \S+,", out):
             return moved + trend if trend else self._alone(metric, filters, {} if asof else {col: latest})
@@ -2128,7 +2187,18 @@ def install(kit, folder=None):
             if not sent:
                 return None
             began = time.monotonic()
-            reply = await asyncio.wait_for(model.ainvoke(sent), READ_SECONDS)
+            # the same question read the same way each time: no sampling, where the model takes that setting
+            if READ_STEADY[0]:
+                try:
+                    reply = await asyncio.wait_for(model.bind(temperature=0).ainvoke(sent), READ_SECONDS)
+                except asyncio.TimeoutError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - a model that refuses the setting is asked as it is, from now on
+                    READ_STEADY[0] = False
+                    print(f"[desk] the model does not take temperature 0 ({str(exc)[:120]}); reading without it", file=sys.stderr, flush=True)
+                    reply = await asyncio.wait_for(model.ainvoke(sent), READ_SECONDS)
+            else:
+                reply = await asyncio.wait_for(model.ainvoke(sent), READ_SECONDS)
             _step("model", "read the question", f"{time.monotonic() - began:.1f}s")
             found = re.search(r"\{.*\}", _text(reply.content), re.DOTALL)
             form = json.loads(found.group()) if found else {}
