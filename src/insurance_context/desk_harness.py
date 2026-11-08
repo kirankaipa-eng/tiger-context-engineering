@@ -143,7 +143,7 @@ Lead with the measure the question asks about; the others come after it, as what
 Plain sentences only: no headings, lists or bold. No metric keys, formulas, SQL or data source. Add no cause the results do not show.
 """ + insurance.SAY
 READ_STEADY = [True]   # the read asks for temperature 0 until a model refuses it
-HEADLINES = 3          # the lines over a "why" answer: the measure asked about first, then what explains it
+WHY_LINES = 3          # the lines over a "why" answer: the measure asked about first, then what explains it
 EXPLAIN_SECONDS = 60   # one layer of "why": what it has found by then is the answer, and the next layer is the user's to ask for
 EXPLAIN_QUERIES = 12   # queries a layer may run after the ones it fetches together, to test what it found
 TRACE_CHARS = 240      # of one input or output, in the trace of a question
@@ -885,10 +885,10 @@ class Harness:
     def layer_line(self, seen: int) -> str:
         """Where each measure moved and what leads it, as soon as the layer is back: ahead of the sentence."""
         lines = []
-        asked = self.ledger.get(SESSION.get(), {}).get("asked") or []
+        asked = self.ledger.get(SESSION.get(), {}).get("why_order") or []
         place = lambda r: asked.index(r["explain"].get("metric")) if r["explain"].get("metric") in asked else len(asked)
         found = sorted((r for r in self._mine(seen) if r.get("explain")), key=place)  # the measure asked about leads
-        for r in found[:HEADLINES]:
+        for r in found[:WHY_LINES]:
             e = r.get("explain")
             if not e or not e.get("total_before"):
                 continue
@@ -1890,7 +1890,7 @@ class Harness:
         asked = [_root(self.idx, k) for k in steps.get("metrics") or [""]]
         keys = list(dict.fromkeys(c for k in asked if (c := self._changing(k) if k in self.idx else k)))[:WHY_METRICS]
         _step("why", asked, keys)
-        self.ledger.setdefault(SESSION.get(), {})["asked"] = list(dict.fromkeys([*asked, *keys]))
+        self.ledger.setdefault(SESSION.get(), {})["why_order"] = list(dict.fromkeys([*asked, *keys]))
         if not keys:
             return ""  # only change measures, with nothing they read to look into: their value still stands
         self.ledger.setdefault(SESSION.get(), {})["peel"] = {}  # a new question starts from the top

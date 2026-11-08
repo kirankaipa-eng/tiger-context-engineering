@@ -85,3 +85,14 @@ def test_a_prior_version_the_read_added_does_not_sink_the_answer(desk):
     out, _ = h.run({"route": "compute", "metrics": ["total_pmpm", "total_pmpm_py", "total_pmpm_yoy_pct"], "by": ["Member[State]"],
                     "filters": {"Calendar[Date]:year": 2025}, "order_by": "total_pmpm"}, q)
     assert out and kit.results[-1]["metrics"] == ["total_pmpm"]
+
+
+def test_a_why_answer_leaves_the_conversation_able_to_take_the_next_question(desk):
+    """The order a why answer shows its measures in is kept apart from the questions a conversation has asked."""
+    dh, kit, h = desk
+    h.ledger.setdefault("s-next", {})["asked"] = {"an earlier question": {"form": {}, "words": ""}}
+    dh.SESSION.set("s-next")
+    dh.QUESTION.set("what drove cost up in IL?")
+    h.run({"route": "explain", "metrics": ["total_pmpm"], "filters": {"Member[State]": "IL"}}, "what drove cost up in IL?")
+    led = h.ledger["s-next"]
+    assert isinstance(led.get("asked", {}), dict) and led.get("why_order")
