@@ -2117,6 +2117,9 @@ answer from it.
 
 def install(kit, folder=None):
     """(tools, system prompt, wrap): build the agent from the first two and pass it through `wrap`."""
+    if os.environ.get("ANALYST") == "on":  # the one loop that replaces this file: docs/powerbi/ANALYST_SPEC.md
+        from .analyst import install as analyst
+        return analyst(kit, folder)
     h = Harness(kit, folder)
 
     async def find_metrics(ctx: bi.RunContext, query: str) -> str:

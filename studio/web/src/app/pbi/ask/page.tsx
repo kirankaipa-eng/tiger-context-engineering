@@ -718,6 +718,8 @@ export default function AskPage() {
     /** What the answer's words settle: its own picture and the month it is about. Cheap, so it is redone at the end. */
     const settle = (chosen: Awaited<ReturnType<typeof choose>>, rs: ExhibitData[], said_: string): Partial<Turn> => {
       const { lead, focus, own, brought, views, unique, basis } = chosen;
+      // nothing computed this turn (a question back, an answer from earlier): no picture guessed from its words
+      if (!rs.some((r) => r.kind === "compute" || r.kind === "explain")) return { views: [], focus, note: undefined, picture: undefined, repeat: false };
       // an answer about one month ("highest in Illinois, $952 in September 2026"): a chart not over time is of that
       // month too, so its numbers are the answer's, not an average of every month
       const picture = pictureOf(rs, said_), month = monthIn(said_);
