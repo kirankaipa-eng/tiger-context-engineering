@@ -56,7 +56,8 @@ How to work:
 - "Why is X the highest": compare X with everyone in the same period, the measure and its parts, both in one compute.
 - "Why did it change" or "what drove it": compute the measure and its parts for the two periods, then call explain once
   for the measure to find which slice carried the change. One layer; offer the next.
-- A result marked empty has no number under its scope: say so, never report it as zero.
+- A result marked empty has no number under its scope: say so, never report it as zero, and say what the result says
+  empties it (a part of the owner's scope, or the measure itself), in the owner's words.
 - Only the owner's scope is applied for you, and each result says it. Never add a filter on a scope column.
 
 How to answer: one to three sentences for a business reader. Lead with the measure asked about, name the period
@@ -98,20 +99,37 @@ class Analyst:
     # -- what is read once ------------------------------------------------------------------------------------------
 
     def scope(self) -> dict:
-        """The owner's scope, with "latest" read as the column's last value. Read once."""
+        """The owner's scope, with "latest" read once: the last value at which the headline measure has a number under
+        the rest of the scope. A period table runs past the data, so its last value alone can be a month with nothing."""
         if self._scope is None:
-            out = {}
-            for col, v in self._scope_said.items():
-                if str(v).lower() == "latest":
-                    try:
-                        _, rows = self.kit.wh.query(self.kit._values_sql(col), bi.MAX_VALUES + 1)
-                        held = [r[0] for r in rows if r[0] is not None]
-                        v = max(held, key=lambda x: (_num(x) is None, _num(x) or 0, str(x))) if held else v
-                    except Exception as exc:  # noqa: BLE001 - said in the log; the value stays as written
-                        print(f"[analyst] scope {col}: latest not read ({exc})", file=sys.stderr, flush=True)
-                out[col] = v
+            fixed = {c: v for c, v in self._scope_said.items() if str(v).lower() != "latest"}
+            out = dict(self._scope_said)
+            for col in [c for c, v in self._scope_said.items() if str(v).lower() == "latest"]:
+                try:
+                    out[col] = self._latest_of(col, fixed)
+                except Exception as exc:  # noqa: BLE001 - said in the log; the value stays as written
+                    print(f"[analyst] scope {col}: latest not read ({exc})", file=sys.stderr, flush=True)
             self._scope = out
         return self._scope
+
+    def _latest_of(self, col: str, fixed: dict):
+        last = lambda vs: max(vs, key=lambda x: (_num(x) is not None, _num(x) or 0, str(x)))  # noqa: E731 - 37529 after 9999
+        if k := self.headline():
+            try:
+                reach = {c.split(":")[0] for c in self.layer.columns_for(k)}
+                rest = {c: v for c, v in fixed.items() if c.split(":")[0] in reach}
+                sql = self.layer.compile(k, [col], self.kit.resolve(rest)[0], dialect=self.kit.wh.dialect,
+                                         row_filters=self.kit.row_filters)
+                have = [r[0] for r in self.kit.wh.query(sql, bi.MAX_VALUES + 1)[1] if r[0] is not None and r[-1] not in (None, 0)]
+                if have:
+                    return last(have)
+            except Exception as exc:  # noqa: BLE001 - then the column's own last value, under its table's scope
+                print(f"[analyst] scope {col}: no value with {k[0]} ({str(exc)[:140]})", file=sys.stderr, flush=True)
+        table = col.split("[")[0]
+        same = {c: v for c, v in fixed.items() if c.split("[")[0] == table}
+        held = [r[0] for r in self.kit.wh.query(self.kit._values_sql(col, self.kit.resolve(same)[0]), bi.MAX_VALUES + 1)[1]
+                if r[0] is not None]
+        return last(held) if held else "latest"
 
     def scope_for(self, metrics: list[str]) -> dict:
         """The part of the owner's scope these measures reach."""
@@ -238,10 +256,36 @@ class Analyst:
                 + (f" · owner's scope: {'; '.join(f'{c} = {v}' for c, v in scope.items())}" if scope else "")
                 + "".join(f" · {n}" for n in [*notes, *what_if]))
         if empty:
-            return head, record
+            return head + self._why_empty(metrics, by, given, scope, step), record
         table = bi._markdown(cols, [[bi._fmt(v) if c in metrics else str(v) for c, v in zip(cols, r)] for r in rows[:ROWS]])
         more = f"\n(more than {ROWS} rows; the first {ROWS} shown)" if len(rows) > ROWS else ""
         return f"{head}\n{table}{more}", record
+
+    def _why_empty(self, metrics, by, given, scope, step) -> str:
+        """Which part of the owner's scope leaves a result with no number: the step again without each one, together."""
+        if not scope:
+            return ""
+
+        def has(drop):
+            try:
+                where = self.kit.resolve({**given, **{c: v for c, v in scope.items() if c not in drop}})[0]
+                sql = self.layer.compile(metrics, by, where, step.get("top"), step.get("order_by"), bool(step.get("ascending")),
+                                         dialect=self.kit.wh.dialect, row_filters=self.kit.row_filters)
+                cols, rows = self.kit.wh.query(sql, limit=ROWS + 1)
+                return any(v not in (None, 0) for r in rows for c, v in zip(cols, r) if c in metrics)
+            except Exception:  # noqa: BLE001 - not known is not said
+                return None
+        tries = [[c] for c in scope] + ([list(scope)] if len(scope) > 1 else [])
+        with ThreadPoolExecutor(AT_ONCE) as pool:
+            got = list(pool.map(has, tries))
+        alone = [f"{c} = {scope[c]}" for (c,), ok in zip(tries, got) if ok]
+        if alone:
+            return f" · it has numbers without the owner's {' or without '.join(alone)}"
+        if len(scope) > 1 and got[-1]:
+            return " · no single part of the owner's scope empties it, but it has numbers without the whole scope"
+        if got[-1] is False or (len(scope) == 1 and got[0] is False):
+            return " · it is empty even without the owner's scope: the measure has no number for this cut"
+        return ""
 
     def explain(self, metric: str, period: str, now: str, before: str, filters: dict | None = None) -> str:
         """One layer of what drove a change, under the owner's scope, split by a few columns, within a time limit."""

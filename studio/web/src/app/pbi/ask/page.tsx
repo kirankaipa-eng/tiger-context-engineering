@@ -111,6 +111,12 @@ const changes = (r: ExhibitData, only?: string) => {
   });
 };
 
+/** A result with at least one number in it: one that came back empty under its scope draws nothing. */
+const numbered = (r: ExhibitData) => r.rows.some((row) => r.metrics.some((m) => {
+  const v = row[r.columns.indexOf(m)];
+  return v !== null && v !== undefined && v !== "" && Number(v) !== 0;
+}));
+
 /** The answer's picture: of the agent's results, the one whose numbers the answer states most, drawn by its shape
     (two values of a column, two periods most often, as a slope; several measures alone as bars; one column as a
     ranking or, over time, a line). None when the answer states none of its numbers. */
@@ -719,7 +725,8 @@ export default function AskPage() {
     const settle = (chosen: Awaited<ReturnType<typeof choose>>, rs: ExhibitData[], said_: string): Partial<Turn> => {
       const { lead, focus, own, brought, views, unique, basis } = chosen;
       // nothing computed this turn (a question back, an answer from earlier): no picture guessed from its words
-      if (!rs.some((r) => r.kind === "compute" || r.kind === "explain")) return { views: [], focus, note: undefined, picture: undefined, repeat: false };
+      // and nothing drawn when every number it computed came back empty: an empty chart says nothing the words do not
+      if (!rs.some((r) => r.kind === "explain" || (r.kind === "compute" && numbered(r)))) return { views: [], focus, note: undefined, picture: undefined, repeat: false };
       // an answer about one month ("highest in Illinois, $952 in September 2026"): a chart not over time is of that
       // month too, so its numbers are the answer's, not an average of every month
       const picture = pictureOf(rs, said_), month = monthIn(said_);
@@ -745,7 +752,7 @@ export default function AskPage() {
           const d = e.data as any, r: ExhibitData = { ...d, filters: d.filters ?? {}, origin: "agent" };
           results.push(r);
           // the charts start now, while the words are still being written; results arriving together are drawn together
-          if (!early && (r.kind === "compute" || r.kind === "explain") && r.metrics.length) {
+          if (!early && (r.kind === "explain" || (r.kind === "compute" && numbered(r))) && r.metrics.length) {
             clearTimeout(soon);
             soon = setTimeout(() => {
               const rs = [...results], said_ = answer;

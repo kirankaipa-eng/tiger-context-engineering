@@ -51,6 +51,23 @@ def test_each_step_says_ok_empty_or_refused(made):
     assert "R1 ok" in out and "R2 empty" in out and "R3 refused: no_such_measure is not a measure key" in out
 
 
+def test_an_empty_result_says_which_part_of_the_owners_scope_empties_it(made):
+    _, _, a = made("filters:\n  Member[Line of Business]: Medicare Advantage\n")  # no member under 65 in it
+    out = a.compute([{"metrics": ["total_pmpm"], "filters": {"Member[Age Band]": "0-17"}}])
+    assert out.startswith("R1 empty")
+    assert "it has numbers without the owner's Member[Line of Business] = Medicare Advantage" in out
+
+
+def test_latest_is_the_last_period_with_a_number_not_the_last_row_of_the_calendar(made, tmp_path):
+    import duckdb
+
+    with duckdb.connect(str(tmp_path / "pilot.duckdb")) as db:  # a calendar that runs a year past the data
+        db.execute("insert into plains_health.calendar select d from range(timestamp '2026-10-01', timestamp '2027-10-01', "
+                   "interval 1 day) t(d)")
+    _, _, a = made("filters:\n  Calendar[Date]: latest\n")
+    assert str(a.scope()["Calendar[Date]"]).startswith("2026-09")
+
+
 def test_the_step_the_answer_is_about_is_the_one_drawn(made):
     _, kit, a = made()
     a.compute([{"metrics": ["total_pmpm"], "by": ["Member[State]"], "show": True}, {"metrics": ["rx_pmpm"]}])
